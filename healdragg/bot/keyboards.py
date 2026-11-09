@@ -11,6 +11,14 @@ from ..util import Page
 GROUPS_BUTTON = "👁 Группы"
 
 
+def monitor_row(target_id: int) -> list[InlineKeyboardButton]:
+    """Быстрый доступ к трём режимам наблюдения за целью."""
+    return [
+        _btn("🕸 Сеть", f"net:{target_id}"),
+        _btn("📜 Лента", f"feed:{target_id}"),
+    ]
+
+
 def _btn(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
 
@@ -24,6 +32,7 @@ def home(
     rows: list[list[InlineKeyboardButton]] = []
     if target_id:
         rows.append([_btn(GROUPS_BUTTON, f"g:{target_id}:1")])
+        rows.append(monitor_row(target_id))
         rows.append([_btn("🔄 Обновить", f"r:{target_id}"), _btn("📊 Профиль", f"p:{target_id}")])
         rows.append([_btn("🎯 Цели", "targets"), _btn("📚 База групп", "catalog:1")])
     else:
@@ -62,6 +71,7 @@ def targets_list(targets: Sequence[dict], *, active_id: int | None = None) -> In
 
 def target_menu(target_id: int, *, has_data: bool = True) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [[_btn(GROUPS_BUTTON, f"g:{target_id}:1")]]
+    rows.append(monitor_row(target_id))
     rows.append(
         [
             _btn("🔄 Обновить", f"r:{target_id}"),
@@ -106,6 +116,7 @@ def pager(
             rows.append(numbers[start : start + 5])
 
     rows.extend(list(extra))
+    rows.append(monitor_row(target_id))
     rows.append(
         [
             _btn("🔄 Обновить", f"r:{target_id}"),

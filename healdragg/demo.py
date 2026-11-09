@@ -173,6 +173,21 @@ def seed_demo(store: Store, *, target_id: int = DEMO_TARGET, total: int = 115) -
                     ts=date,
                 )
 
+    if store.count_alerts() == 0:
+        for kind, title, body, hours in (
+            ("new_chat", "🆕 Новый чат: Крипто-чат", "цель появилась в публичном чате · t.me/demo_crypto", 2),
+            ("message", "💬 Написал в «Крипто-чат»", "«Собираем созвон в 21:00, скину ссылку»", 5),
+            ("left_chat", "✖️ Вышел: Мемы 24/7", "цель больше не в чате", 26),
+        ):
+            store.add_alert(
+                kind,
+                title,
+                body=body,
+                target_pk=target_pk,
+                dedup=f"demo:{kind}",
+                ts=ts_now - hours * 3600,
+            )
+
     store.set_meta("demo_seeded", "1")
     store.log_event("info", f"демо-база: {len(rows)} чатов", "demo")
     store.touch_target_scan(target_id)

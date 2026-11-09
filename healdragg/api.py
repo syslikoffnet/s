@@ -128,6 +128,8 @@ def _target_payload(store: Store, target: dict[str, Any]) -> dict[str, Any]:
     return {
         **{k: v for k, v in target.items() if k != "access_hash"},
         "stats": stats,
+        "activity": store.activity_stats(int(target["id"])),
+        "alerts_unread": store.count_alerts(),
         "profile_text": render_profile(target, stats),
         "last_scan": fmt_relative(target.get("last_scan_at")),
     }
@@ -303,6 +305,26 @@ def create_app(settings: Settings) -> FastAPI:
     async def alerts_read(payload: AlertsReadIn | None = None) -> dict[str, Any]:
         changed = state.store.mark_alerts_read((payload or AlertsReadIn()).ids)
         return {"ok": True, "changed": changed, "unread": state.store.count_alerts()}
+
+    @app.get("/api/targets/{tg_id}/links", dependencies=[Depends(guard)])
+    async def target_links(tg_id: int, limit: int = Query(300, ge=1, le=2000)) -> dict[str, Any]:
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        rows = state.store.all_target_groups(int(target["id"]))
+        return {
+            "total": len(rows),
+            "rows": [
+                {
+                    "title": row.get("title"),
+                    "link": row.get("link"),
+                    "username": row.get("username"),
+                    "tg_id": row.get("tg_id"),
+                    "status": row.get("status"),
+                }
+                for row in rows[:limit]
+            ],
+        }
 
     @app.get("/api/targets/{tg_id}/graph", dependencies=[Depends(guard)])
     async def target_graph(tg_id: int, max_peers: int = Query(200, ge=10, le=500)) -> dict[str, Any]:

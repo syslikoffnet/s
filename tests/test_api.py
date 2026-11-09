@@ -63,6 +63,11 @@ def test_targets_and_groups(client: TestClient) -> None:
 
     profile = client.get(f"/api/targets/{DEMO_TARGET}", headers=HEADERS).json()
     assert profile["username"] == "demo_user"
+    assert "activity" in profile and profile["activity"]["messages"] >= 0
+
+    links = client.get(f"/api/targets/{DEMO_TARGET}/links", headers=HEADERS).json()
+    assert links["total"] == 40
+    assert any(row["link"] for row in links["rows"])
 
 
 def test_catalog_and_find(client: TestClient) -> None:

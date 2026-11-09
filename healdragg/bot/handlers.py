@@ -598,6 +598,107 @@ async def cb_links(callback: CallbackQuery, deps: Deps) -> None:
     await callback.answer()
 
 
+def _network_payload(deps: Deps, target: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
+    tg_id = int(target["tg_user_id"])
+    target_pk = int(target["id"])
+    edges = deps.store.target_edges(target_pk, limit=10)
+    stats = deps.store.activity_stats(target_pk)
+    text = render_network(edges, stats, tz=deps.settings.tz)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📜 Лента", callback_data=f"feed:{tg_id}"),
+                InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"lnk:{tg_id}:1"),
+            ],
+            [
+                InlineKeyboardButton(text="📡 Собрать активность", callback_data=f"act:{tg_id}"),
+                InlineKeyboardButton(text="👁 Группы", callback_data=f"g:{tg_id}:1"),
+            ],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="home")],
+        ]
+    )
+    return text, keyboard
+
+
+def _feed_payload(deps: Deps, target: dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
+    tg_id = int(target["tg_user_id"])
+    rows = deps.store.activity_feed(int(target["id"]), limit=8)
+    text = render_feed(rows, tz=deps.settings.tz)
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🕸 Сеть", callback_data=f"net:{tg_id}"),
+                InlineKeyboardButton(text="📡 Собрать", callback_data=f"act:{tg_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"lnk:{tg_id}:1"),
+                InlineKeyboardButton(text="👁 Группы", callback_data=f"g:{tg_id}:1"),
+            ],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="home")],
+        ]
+    )
+    return text, keyboard
+
+
+@router.callback_query(F.data.startswith("net:"))
+async def cb_network(callback: CallbackQuery, deps: Deps) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    target = deps.store.get_target(int(parts[1]))
+    if not target:
+        await callback.answer("Цель не найдена — пришли id заново", show_alert=True)
+        return
+    text, keyboard = _network_payload(deps, target)
+    await safe_edit(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("feed:"))
+async def cb_feed(callback: CallbackQuery, deps: Deps) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    target = deps.store.get_target(int(parts[1]))
+    if not target:
+        await callback.answer("Цель не найдена — пришли id заново", show_alert=True)
+        return
+    text, keyboard = _feed_payload(deps, target)
+    await safe_edit(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("act:"))
+async def cb_activity(callback: CallbackQuery, deps: Deps) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    target = deps.store.get_target(int(parts[1]))
+    if not target:
+        await callback.answer("Цель не найдена — пришли id заново", show_alert=True)
+        return
+    if deps.store.count_target_groups(int(target["id"])) == 0:
+        await callback.answer("Сначала собери список чатов (/target)", show_alert=True)
+        return
+    await callback.answer("📡 Собираю сообщения и связи…")
+    await _launch_activity(callback.message, deps, target)
+
+
 @router.message(Command("links"))
 async def cmd_links(message: Message, deps: Deps, command: CommandObject) -> None:
     raw = (command.args or "").strip()
@@ -630,13 +731,8 @@ async def cmd_network(message: Message, deps: Deps, command: CommandObject) -> N
     if not target:
         await message.answer("Пришли id цели — покажу, с кем она общается.")
         return
-    target_pk = int(target["id"])
-    edges = deps.store.target_edges(target_pk, limit=10)
-    stats = deps.store.activity_stats(target_pk)
-    await message.answer(
-        render_network(edges, stats, tz=deps.settings.tz),
-        disable_web_page_preview=True,
-    )
+    text, keyboard = _network_payload(deps, target)
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.message(Command("feed"))
@@ -645,11 +741,31 @@ async def cmd_feed(message: Message, deps: Deps, command: CommandObject) -> None
     if not target:
         await message.answer("Пришли id цели — покажу, что она пишет.")
         return
-    rows = deps.store.activity_feed(int(target["id"]), limit=8)
-    await message.answer(
-        render_feed(rows, tz=deps.settings.tz),
-        disable_web_page_preview=True,
-    )
+    text, keyboard = _feed_payload(deps, target)
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+async def _launch_activity(message: Message, deps: Deps, target: dict[str, Any]) -> None:
+    async def run() -> None:
+        from ..activity import collect_activity
+
+        try:
+            await collect_activity(
+                deps.pool,
+                deps.store,
+                deps.settings,
+                target,
+                days=deps.settings.activity_days,
+                per_chat=deps.settings.activity_per_chat,
+                max_chats=deps.settings.activity_max_chats,
+            )
+            text, _ = _network_payload(deps, target)
+            await message.answer(text, disable_web_page_preview=True)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("activity failed")
+            await message.answer(f"⚠️ Не удалось собрать активность: {exc}")
+
+    asyncio.create_task(run())
 
 
 @router.message(Command("activity"))
@@ -666,31 +782,7 @@ async def cmd_activity(message: Message, deps: Deps, command: CommandObject) -> 
         "📡 Собираю последние сообщения и связи. Это может занять пару минут — "
         "пришлю итог, когда закончу."
     )
-
-    async def run() -> None:
-        from ..activity import collect_activity
-
-        try:
-            await collect_activity(
-                deps.pool,
-                deps.store,
-                deps.settings,
-                target,
-                days=deps.settings.activity_days,
-                per_chat=deps.settings.activity_per_chat,
-                max_chats=deps.settings.activity_max_chats,
-            )
-            stats = deps.store.activity_stats(int(target["id"]))
-            edges = deps.store.target_edges(int(target["id"]), limit=10)
-            await message.answer(
-                render_network(edges, stats, tz=deps.settings.tz),
-                disable_web_page_preview=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.exception("activity failed")
-            await message.answer(f"⚠️ Не удалось собрать активность: {exc}")
-
-    asyncio.create_task(run())
+    await _launch_activity(message, deps, target)
 
 
 @router.callback_query(F.data.startswith("p:"))

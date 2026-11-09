@@ -123,3 +123,15 @@ def test_alerts_menu() -> None:
     datas = [data for row in flatten(markup) for _, data in row]
     assert "alerts_read" in datas
     assert "alerts" in datas and "home" in datas
+
+
+def test_home_has_monitor_shortcuts() -> None:
+    markup = keyboards.home(has_sessions=True, has_groups=True, target_id=5)
+    datas = [data for row in flatten(markup) for _, data in row]
+    assert "net:5" in datas and "feed:5" in datas
+
+
+def test_pager_has_monitor_shortcuts() -> None:
+    markup = keyboards.pager(5, Page.build(30, 1, 15))
+    datas = [data for row in flatten(markup) for _, data in row]
+    assert "net:5" in datas and "feed:5" in datas

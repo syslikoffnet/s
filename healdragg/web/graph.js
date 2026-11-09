@@ -3,10 +3,10 @@
   "use strict";
 
   const COLORS = {
-    target: "#ff2e63",
-    chat: "#00f5d4",
-    private: "#7b61ff",
-    peer: "#fee440",
+    target: "#ff4d6d",
+    chat: "#22d3ee",
+    private: "#7c5cff",
+    peer: "#6ee7a8",
   };
 
   function esc(value) {
@@ -326,8 +326,8 @@
         const dim = active && !(near.has(link.s.id) && near.has(link.t.id));
         const width = Math.min(3.2, 0.6 + Math.sqrt(link.weight || 1) * 0.45);
         ctx.strokeStyle = link.kind === "peer"
-          ? "rgba(254,228,64," + (dim ? 0.06 : 0.3) + ")"
-          : "rgba(0,245,212," + (dim ? 0.05 : 0.22) + ")";
+          ? "rgba(110,231,168," + (dim ? 0.06 : 0.3) + ")"
+          : "rgba(34,211,238," + (dim ? 0.05 : 0.22) + ")";
         ctx.lineWidth = width;
         ctx.beginPath();
         ctx.moveTo(link.s.x, link.s.y);
