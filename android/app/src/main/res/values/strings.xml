@@ -17,6 +17,7 @@
     <string name="termux_copy">📋 Скопировать команды</string>
     <string name="termux_save">💾 Сохранить скрипт</string>
     <string name="termux_open">▶️ Открыть Termux</string>
+    <string name="termux_need">Сначала заполни API_ID и API_HASH (my.telegram.org → API development tools)</string>
     <string name="termux_copied">Команды скопированы — вставь в Termux</string>
     <string name="termux_saved">Скрипт сохранён: %1$s</string>
     <string name="local_hint">Движок healdragg api можно запустить прямо на телефоне в Termux:

@@ -117,8 +117,8 @@ class MainActivity : AppCompatActivity() {
 
     /** Скрипт, который ставит движок и запускает панель прямо на телефоне. */
     private fun termuxScript(): String {
-        val apiId = termuxApiId.text.toString().trim().ifBlank { "0" }
-        val apiHash = termuxApiHash.text.toString().trim().ifBlank { "PUT_API_HASH_HERE" }
+        val apiId = termuxApiId.text.toString().trim()
+        val apiHash = termuxApiHash.text.toString().trim()
         val botToken = termuxBotToken.text.toString().trim()
         val env = StringBuilder()
         env.appendLine("cat > .env <<'EOF'")
@@ -143,7 +143,16 @@ class MainActivity : AppCompatActivity() {
         """.trimIndent()
     }
 
+    private fun termuxReady(): Boolean {
+        if (termuxApiId.text.isBlank() || termuxApiHash.text.isBlank()) {
+            Toast.makeText(this, R.string.termux_need, Toast.LENGTH_LONG).show()
+            return false
+        }
+        return true
+    }
+
     private fun copyTermuxScript() {
+        if (!termuxReady()) return
         try {
             val clipboard = getSystemService(ClipboardManager::class.java)
             clipboard?.setPrimaryClip(ClipData.newPlainText("healdragg setup", termuxScript()))
@@ -154,6 +163,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveTermuxScript() {
+        if (!termuxReady()) return
         val text = termuxScript()
         val name = "healdragg-termux.sh"
         try {
