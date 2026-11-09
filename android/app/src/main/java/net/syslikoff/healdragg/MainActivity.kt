@@ -253,11 +253,13 @@ class MainActivity : AppCompatActivity() {
         echo "🩺 Healdragg: распаковываю движок"
         mkdir -p "${'$'}HOME/healdragg"
         cd "${'$'}HOME/healdragg"
-        if [ ! -f "$tarPath" ]; then
+        if [ -f "$tarPath" ]; then
+          tar -xzf "$tarPath" -C .
+          rm -f "$tarPath"
+        elif [ ! -x "${'$'}HOME/healdragg/.venv/bin/healdragg" ]; then
           echo "✗ Нет доступа к $tarPath — разреши Termux доступ к файлам и запусти ещё раз"
           exit 1
         fi
-        tar -xzf "$tarPath" -C .
         cat > .env <<'EOF'
         API_ID=$apiId
         API_HASH=$apiHash
@@ -268,9 +270,10 @@ class MainActivity : AppCompatActivity() {
         AUTO_ACTIVITY_ON_SCAN=true
         ALERT_PUSH=true
         EOF
-        bash install.sh
-        rm -f "$tarPath"
-        exec healdragg api --host 127.0.0.1 --port 8080
+        if [ ! -x "${'$'}HOME/healdragg/.venv/bin/healdragg" ]; then
+          bash install.sh
+        fi
+        exec "${'$'}HOME/healdragg/.venv/bin/healdragg" api --host 127.0.0.1 --port 8080
     """.trimIndent()
 
     private fun readEngine(): ByteArray {
