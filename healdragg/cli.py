@@ -70,6 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  healdragg demo\n"
             "  healdragg session add main\n"
             "  healdragg bootstrap --join --join-limit 10\n"
+            "  healdragg cover @durov --join-limit 15\n"
             "  healdragg target add @durov\n"
             "  healdragg groups 7126917488 --interactive\n"
             "  healdragg bot\n"
@@ -121,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--max-groups", type=int, default=None)
     p_scan.add_argument("--deep", action="store_true", help="глубже искать в участниках")
     p_scan.add_argument("--no-search", action="store_true", help="без глобального поиска")
+
+    p_cov = sub.add_parser(
+        "cover", help="с нуля: собрать базу, вступить в публичные чаты и проверить цель"
+    )
+    p_cov.add_argument("query")
+    p_cov.add_argument("--no-join", action="store_true", help="не вступать в новые чаты")
+    p_cov.add_argument("--join-limit", type=int, default=None, help="вступлений за сутки")
+    p_cov.add_argument("--queries", nargs="*", help="слова для поиска чатов")
+    p_cov.add_argument("--page", type=int, default=1)
 
     p_g = sub.add_parser("groups", help="список чатов цели")
     p_g.add_argument("query")
@@ -692,6 +702,104 @@ async def _scan(args: argparse.Namespace, settings: Settings) -> int:
         store.close()
 
 
+def cmd_cover(args: argparse.Namespace, settings: Settings) -> int:
+    return asyncio.run(_cover(args, settings))
+
+
+async def _cover(args: argparse.Namespace, settings: Settings) -> int:
+    """Одна команда для пустой базы: собрать → (вступить) → проверить → показать."""
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from .scan import bootstrap, resolve_and_store_target, scan_target
+    from .tg import SessionPool
+
+    store = _store(settings)
+    pool = SessionPool(settings, store)
+    progress = Progress(
+        SpinnerColumn(style="accent"),
+        TextColumn("[bold]{task.description}"),
+        BarColumn(bar_width=28, style="grey30", complete_style="accent"),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+    try:
+        try:
+            target = store.find_target(args.query)
+        except Exception:  # noqa: BLE001
+            target = None
+        if not target:
+            try:
+                target = await resolve_and_store_target(pool, store, args.query)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[bad]✗ не удалось найти цель:[/] {exc}")
+                return 1
+        console.print(
+            f"[accent]🎯 цель:[/] {target['tg_user_id']} "
+            f"({target.get('username') and '@' + target['username'] or 'без username'})"
+        )
+
+        with progress:
+            task = progress.add_task("собираю базу…", total=0)
+
+            async def on_progress(state: dict[str, Any]) -> None:
+                progress.update(
+                    task,
+                    description=str(state.get("phase") or "работаю"),
+                    total=int(state.get("total") or 0) or None,
+                    completed=int(state.get("done") or 0),
+                )
+
+            boot = await bootstrap(
+                pool,
+                store,
+                settings,
+                queries=args.queries,
+                join=not args.no_join,
+                join_limit=args.join_limit,
+                fetch_meta=False,
+                reporter=on_progress,
+            )
+            progress.update(task, description="проверяю участие", total=None, completed=0)
+            result = await scan_target(pool, store, settings, target, reporter=on_progress)
+
+        stats = store.target_stats(int(target["id"]))
+        console.print(
+            Panel(
+                Text(
+                    to_plain(
+                        f"🚀 собрано чатов: <b>{boot.get('groups', 0)}</b>"
+                        f" · вступлений: {boot.get('joined', 0)}\n"
+                        f"🔎 проверено: {result.get('checked', 0)}"
+                        f" · найдено у цели: <b>{stats.get('total', 0)}</b>"
+                    )
+                ),
+                box=box.ROUNDED,
+                border_style="#50fa7b",
+            )
+        )
+        _print_target(target, stats, settings)
+        total = int(stats.get("total") or 0)
+        if total:
+            page = Page.build(total, args.page, settings.page_size)
+            rows = store.list_target_groups(int(target["id"]), page=page.page, size=page.size)
+            console.print(_groups_view(rows, int(target["tg_user_id"]), page, settings))
+        else:
+            console.print(
+                "[warn]Цель не найдена ни в одном покрытом чате.[/]\n"
+                "[muted]Попробуй: больше сессий, --queries со словами по теме цели, "
+                "или добавь сессию самой цели.[/]"
+            )
+        return 0
+    except KeyboardInterrupt:
+        err.print("[warn]прервано[/]")
+        return 130
+    finally:
+        await pool.close()
+        store.close()
+
+
 def cmd_groups(args: argparse.Namespace, settings: Settings) -> int:
     store = _store(settings)
     target = store.find_target(args.query)
@@ -1017,6 +1125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "bootstrap": lambda: cmd_bootstrap(args, settings),
         "target": lambda: cmd_target(args, settings),
         "scan": lambda: cmd_scan(args, settings),
+        "cover": lambda: cmd_cover(args, settings),
         "groups": lambda: cmd_groups(args, settings),
         "catalog": lambda: cmd_catalog(args, settings),
         "stats": lambda: cmd_stats(settings),
@@ -1037,6 +1146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "  [bold]bootstrap[/]   собрать каталог публичных чатов",
             "  [bold]target[/]      цели",
             "  [bold]scan[/]        проверить участие цели",
+            "  [bold]cover[/]       собрать базу + проверить цель одной командой",
             "  [bold]groups[/]      список чатов (с листалкой)",
             "  [bold]catalog[/]     каталог групп",
             "  [bold]stats[/]       статистика",

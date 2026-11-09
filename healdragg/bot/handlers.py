@@ -36,6 +36,7 @@ from .keyboards import (
     pager,
     scan_done,
     target_menu,
+    targets_list,
 )
 
 log = logging.getLogger("healdragg.bot")
@@ -149,6 +150,11 @@ async def cmd_stats(message: Message, deps: Deps) -> None:
     await message.answer(render_stats(deps.store.stats(), tz=deps.settings.tz), reply_markup=home(has_sessions=deps.has_sessions, has_groups=True))
 
 
+@router.message(Command("targets"))
+async def cmd_targets(message: Message, deps: Deps) -> None:
+    await _send_targets(message, deps)
+
+
 @router.message(Command("menu"))
 async def cmd_menu(message: Message, deps: Deps) -> None:
     targets = deps.store.list_targets(limit=1)
@@ -190,6 +196,26 @@ async def cmd_stop(message: Message, deps: Deps) -> None:
     await message.answer(f"⛔ Остановлено задач: {cancelled}" if cancelled else "Нечего останавливать.")
 
 
+@router.message(Command("scan"))
+async def cmd_scan(message: Message, deps: Deps, command: CommandObject | None = None) -> None:
+    arg = (command.args if command else "") or ""
+    target = deps.store.find_target(arg) if arg else None
+    if target is None:
+        targets = deps.store.list_targets(limit=1)
+        target = targets[0] if targets else None
+    if not target:
+        await message.answer("Сначала пришли id или @username цели.")
+        return
+    if not deps.has_sessions:
+        await message.answer("⚠️ Нет сессий: <code>healdragg session add main</code>")
+        return
+    key = f"scan:{target['tg_user_id']}"
+    if deps.running(key):
+        await message.answer("Уже сканирую эту цель.")
+        return
+    await _start_target_scan(message.chat.id, target, deps)
+
+
 @router.message(Command("target"))
 async def cmd_target(message: Message, deps: Deps, command: CommandObject | None = None) -> None:
     arg = (command.args if command else "") or ""
@@ -219,6 +245,62 @@ async def on_text(message: Message, deps: Deps) -> None:
 
 
 # ── цель ───────────────────────────────────────────────────────────────────
+async def _send_targets(message: Message, deps: Deps) -> None:
+    targets = deps.store.list_targets(limit=12)
+    if not targets:
+        await message.answer(
+            "🎯 <b>Цели</b>\n\nПока пусто. Пришли id или @username — добавлю.",
+        )
+        return
+    lines = [f"🎯 <b>Цели</b> · {len(targets)}"]
+    for target in targets:
+        stats = deps.store.target_stats(int(target["id"]))
+        name = " ".join(
+            p for p in (target.get("first_name"), target.get("last_name")) if p
+        ) or (f"@{target['username']}" if target.get("username") else "без имени")
+        lines.append(
+            f"├ <code>{target['tg_user_id']}</code> · {esc(name)} · "
+            f"<b>{stats.get('total', 0)}</b> чатов"
+        )
+    await message.answer(
+        "\n".join(lines),
+        reply_markup=targets_list(targets),
+    )
+
+
+@router.callback_query(F.data == "targets")
+async def cb_targets(callback: CallbackQuery, deps: Deps) -> None:
+    targets = deps.store.list_targets(limit=12)
+    if not targets:
+        await safe_edit(
+            callback.bot,
+            callback.message.chat.id,
+            callback.message.message_id,
+            "🎯 <b>Цели</b>\n\nПока пусто. Пришли id или @username — добавлю.",
+            home(has_sessions=deps.has_sessions, has_groups=bool(deps.store.count_groups())),
+        )
+        await callback.answer()
+        return
+    lines = [f"🎯 <b>Цели</b> · {len(targets)}"]
+    for target in targets:
+        stats = deps.store.target_stats(int(target["id"]))
+        name = " ".join(
+            p for p in (target.get("first_name"), target.get("last_name")) if p
+        ) or (f"@{target['username']}" if target.get("username") else "без имени")
+        lines.append(
+            f"├ <code>{target['tg_user_id']}</code> · {esc(name)} · "
+            f"<b>{stats.get('total', 0)}</b> чатов"
+        )
+    await safe_edit(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        "\n".join(lines),
+        targets_list(targets),
+    )
+    await callback.answer()
+
+
 async def _handle_target_input(message: Message, raw: str, deps: Deps) -> None:
     status = await message.answer("🔎 Ищу аккаунт…")
 
@@ -282,6 +364,16 @@ async def _handle_target_input(message: Message, raw: str, deps: Deps) -> None:
         reply_markup=target_menu(int(target["tg_user_id"]), has_data=bool(stats.get("total"))),
     )
     deps.store.log_event("info", f"цель добавлена: {target['tg_user_id']}", "bot")
+
+    # чтобы «👁 Группы» не встречало пустотой — сразу проверяем по каталогу
+    key = f"scan:{target['tg_user_id']}"
+    if (
+        deps.settings.auto_scan
+        and not stats.get("total")
+        and deps.store.count_groups() > 0
+        and not deps.running(key)
+    ):
+        await _start_target_scan(message.chat.id, target, deps)
 
 
 # ── кнопки: меню ───────────────────────────────────────────────────────────
@@ -605,7 +697,14 @@ async def _start_bootstrap(chat_id: int, deps: Deps) -> None:
             )
 
         try:
-            result = await bootstrap(deps.pool, deps.store, deps.settings, reporter=on_progress)
+            result = await bootstrap(
+                deps.pool,
+                deps.store,
+                deps.settings,
+                join=deps.settings.bootstrap_join,
+                join_limit=deps.settings.join_limit,
+                reporter=on_progress,
+            )
             stats = deps.store.stats()
             report = render_scan_report(
                 kind="bootstrap",

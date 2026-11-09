@@ -356,7 +356,14 @@ def create_app(settings: Settings) -> FastAPI:
 
         async def runner() -> None:
             try:
-                await bootstrap(state.pool, state.store, settings, join=join, reporter=on_progress)
+                await bootstrap(
+                    state.pool,
+                    state.store,
+                    settings,
+                    join=join or settings.bootstrap_join,
+                    join_limit=settings.join_limit,
+                    reporter=on_progress,
+                )
                 job.state = {**job.state, "phase": "готово"}
             except asyncio.CancelledError:
                 job.state = {**job.state, "phase": "отменено"}

@@ -421,7 +421,14 @@ async def run_tui(settings: Settings, store: Store | None = None, *, once: bool 
         async def runner() -> None:
             try:
                 if kind == "bootstrap":
-                    await bootstrap(pool, store, settings, reporter=on_progress)
+                    await bootstrap(
+                        pool,
+                        store,
+                        settings,
+                        join=settings.bootstrap_join,
+                        join_limit=settings.join_limit,
+                        reporter=on_progress,
+                    )
                 elif kind == "target":
                     targets = store.list_targets(limit=10)
                     if targets:

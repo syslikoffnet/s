@@ -399,11 +399,20 @@ def target_input_peer(target: dict[str, Any]) -> Any:
 
 
 def channel_peer(group: dict[str, Any], access_hash: Any = None) -> Any:
+    """Peer для каналов и супергрупп (channels.* API)."""
     tg_id = int(group["tg_id"])
+    return types.InputPeerChannel(
+        channel_id=tg_id,
+        access_hash=int(access_hash or group.get("access_hash") or 0),
+    )
+
+
+def history_peer(group: dict[str, Any], access_hash: Any = None) -> Any:
+    """Peer для messages.getHistory: обычные группы — InputPeerChat."""
     kind = (group.get("kind") or "supergroup").lower()
-    if kind == "channel" and not group.get("is_megagroup"):
-        return types.InputPeerChannel(channel_id=tg_id, access_hash=int(access_hash or group.get("access_hash") or 0))
-    return types.InputPeerChannel(channel_id=tg_id, access_hash=int(access_hash or group.get("access_hash") or 0))
+    if kind == "group" and not group.get("is_megagroup"):
+        return types.InputPeerChat(chat_id=int(group["tg_id"]))
+    return channel_peer(group, access_hash)
 
 
 # ── данные о чате ──────────────────────────────────────────────────────────
@@ -458,6 +467,25 @@ async def find_participant(
     Возвращает ``(статус, access_hash цели)`` или ``(None, None)``, если цели
     в чате нет. ``status`` — ``member`` / ``admin`` / ``creator`` / ``left``.
     """
+    kind = (group.get("kind") or "supergroup").lower()
+    if kind == "group" and not group.get("is_megagroup"):
+        # обычные (basic) группы: channels.getParticipant не работает,
+        # зато messages.getFullChat отдаёт список user_id участников
+        try:
+            full = await limiter.call(
+                lambda: client(
+                    functions.messages.GetFullChatRequest(chat_id=int(group["tg_id"]))
+                )
+            )
+            participants = getattr(getattr(full, "full_chat", None), "participants", None)
+            target_id = int(target["tg_user_id"])
+            for member in getattr(participants, "participants", None) or []:
+                if int(getattr(member, "user_id", 0)) == target_id:
+                    return participant_status(member), None
+            return None, None
+        except RPCError:
+            return None, None
+
     peer = channel_peer(group, session_access_hash)
     target_peer = target_input_peer(target)
     try:

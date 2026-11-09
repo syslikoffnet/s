@@ -89,3 +89,110 @@ async def test_reporter_writes_progress(store: Store) -> None:
     await reporter.event("что-то пошло не так", "error")
     assert reporter.errors == 1
     assert store.recent_events(1)[0]["level"] == "error"
+
+
+class JoinAccount:
+    def __init__(self) -> None:
+        from healdragg.tg import RateLimiter
+
+        self.limiter = RateLimiter(0, 0)
+        self.client = object()
+        self.name = "main"
+
+
+class JoinPool:
+    async def connect(self, name: str) -> JoinAccount:
+        return JoinAccount()
+
+
+async def test_join_respects_daily_limit(store: Store, monkeypatch) -> None:
+    store.add_session("main", "/tmp/m.session", tg_user_id=1, status="active")
+    for i in range(3):
+        store.upsert_group(700 + i, title=f"g{i}", username=f"g{i}")
+
+    async def fake_join(client, group, limiter):
+        return True
+
+    monkeypatch.setattr(scan_mod, "join_public_group", fake_join)
+
+    store.incr_daily("join:main", 2)
+    result = await scan_mod.join_discovered(JoinPool(), store, "main", limit=2)
+    assert result["joined"] == 0
+    assert result["skipped"] == 1
+
+    # другой день — бюджет снова доступен
+    import time as _time
+
+    tomorrow = _time.strftime("%Y-%m-%d", _time.localtime(_time.time() + 86400))
+    assert store.daily_count("join:main", day=tomorrow) == 0
+    result = await scan_mod.join_discovered(JoinPool(), store, "main", limit=2)
+    # сегодняшний лимит всё ещё исчерпан
+    assert result["joined"] == 0
+
+
+async def test_join_increments_counter(store: Store, monkeypatch) -> None:
+    store.add_session("main", "/tmp/m2.session", tg_user_id=2, status="active")
+    for i in range(2):
+        store.upsert_group(800 + i, title=f"j{i}", username=f"j{i}")
+
+    async def fake_join(client, group, limiter):
+        return True
+
+    monkeypatch.setattr(scan_mod, "join_public_group", fake_join)
+    result = await scan_mod.join_discovered(JoinPool(), store, "main", limit=5)
+    assert result["joined"] == 2
+    assert store.daily_count("join:main") == 2
+
+
+async def test_own_scan_marks_left(store: Store, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from telethon.tl.types import Channel
+
+    from healdragg.tg import RateLimiter
+
+    target = store.upsert_target(55, username="t")
+    store.add_session("own", "/tmp/o2.session", tg_user_id=55, status="active")
+    store.upsert_group(901, title="keep", username="k")
+    gone = store.upsert_group(902, title="gone", username="g")
+    store.upsert_target_group(int(target["id"]), gone, status="member", source="own_session")
+
+    channel = Channel(
+        id=901,
+        title="keep",
+        photo=None,
+        date=None,
+        username="k",
+        megagroup=True,
+        access_hash=123,
+        participants_count=10,
+    )
+    dialog = SimpleNamespace(
+        entity=channel,
+        message=SimpleNamespace(date=__import__("datetime").datetime(2026, 11, 1, 12)),
+    )
+
+    class FakeClient:
+        async def iter_dialogs(self, limit=None, wait_time=None):
+            yield dialog
+
+    class OwnAccount:
+        user_id = 55
+        limiter = RateLimiter(0, 0)
+        client = FakeClient()
+
+    class OwnPool:
+        async def connect(self, name: str) -> OwnAccount:
+            return OwnAccount()
+
+    async def fake_meta(client, entity, limiter):
+        return 12, 1_760_000_000
+
+    monkeypatch.setattr(scan_mod, "fetch_history_meta", fake_meta)
+    stats = await scan_mod.scan_own_dialogs(OwnPool(), store, target, "own")
+    assert stats["found"] == 1
+    assert stats["left"] == 1
+    assert store.count_target_groups(int(target["id"]), "left") == 1
+    rows = {r["title"]: r["status"] for r in store.all_target_groups(int(target["id"]))}
+    assert rows["keep"] == "member"
+    assert rows["gone"] == "left"

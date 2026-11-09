@@ -90,6 +90,8 @@ class Settings:
     join_limit: int = 20
     meta_ttl_hours: float = 12.0
     search_queries: list[str] = field(default_factory=list)
+    auto_scan: bool = True
+    bootstrap_join: bool = False
 
     page_size: int = 15
     title_limit: int = 15
@@ -141,6 +143,8 @@ class Settings:
             join_limit=_int("JOIN_LIMIT", 20) or 0,
             meta_ttl_hours=_float("META_TTL_HOURS", 12.0),
             search_queries=[q.strip() for q in _str("SEARCH_QUERIES").split(",") if q.strip()],
+            auto_scan=_bool("AUTO_SCAN_ON_ADD", True),
+            bootstrap_join=_bool("JOIN_ON_BOOTSTRAP", False),
             page_size=_int("PAGE_SIZE", 15) or 15,
             title_limit=_int("TITLE_LIMIT", 15) or 15,
             tz=_str("TZ", "Europe/Moscow") or "Europe/Moscow",

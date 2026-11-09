@@ -27,21 +27,26 @@ from telethon.errors import FloodWaitError, RPCError
 from telethon.tl.types import Channel, Chat
 
 from .config import Settings
-from .db import Store
+from .db import GROUP_FIELDS, Store
 from .tg import (
     Account,
     RateLimiter,
     SessionPool,
-    channel_peer,
     chat_to_group,
     fetch_history_meta,
     find_participant,
+    history_peer,
     join_public_group,
     resolve_target,
 )
 from .util import now_ts
 
 log = logging.getLogger("healdragg.scan")
+
+
+def group_kwargs(info: dict[str, Any]) -> dict[str, Any]:
+    """Оставляет только колонки ``groups`` — защита от лишних ключей."""
+    return {key: value for key, value in info.items() if key in GROUP_FIELDS}
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
@@ -142,7 +147,7 @@ async def sync_dialogs(
                 info["last_message_at"] = int(dialog.message.date.timestamp())
             info["discovered_from"] = "dialogs"
             info["discovered_by"] = session_name
-            group_pk = store.upsert_group(**info)
+            group_pk = store.upsert_group(**group_kwargs(info))
             store.link_session_group(
                 session_pk,
                 group_pk,
@@ -233,7 +238,7 @@ async def search_public(
                 continue
             info["discovered_from"] = "search"
             info["discovered_by"] = session_name
-            group_pk = store.upsert_group(**info)
+            group_pk = store.upsert_group(**group_kwargs(info))
             if session_pk:
                 store.link_session_group(session_pk, group_pk, is_member=False)
             stats["groups"] += 1
@@ -259,8 +264,9 @@ async def join_discovered(
 ) -> dict[str, int]:
     """Вступает в найденные, но ещё не покрытые публичные чаты.
 
-    Аккуратно: лимит за прогон, пауза между вступлениями, только публичные
-    чаты по username. Нужно для проверки участия цели там, где мы не состоим.
+    Аккуратно: дневной лимит на сессию, пауза между вступлениями, только
+    публичные чаты по username. Нужно для проверки участия цели там, где мы
+    не состоим.
     """
     account = await pool.connect(session_name)
     limiter = account.limiter or RateLimiter()
@@ -280,14 +286,22 @@ async def join_discovered(
         """,
         (session_pk, max(0, int(limit))),
     )
-    stats = {"checked": len(candidates), "joined": 0, "errors": 0}
+    stats = {"checked": len(candidates), "joined": 0, "errors": 0, "skipped": 0}
+    daily_key = f"join:{session_name}"
     for group in candidates:
+        if limit and store.daily_count(daily_key) >= int(limit):
+            stats["skipped"] += 1
+            store.log_event(
+                "warn", f"{session_name}: дневной лимит вступлений ({limit}) исчерпан", "scan"
+            )
+            break
         try:
             ok = await join_public_group(account.client, group, limiter)
         except FloodWaitError:
             raise
         if ok:
             stats["joined"] += 1
+            store.incr_daily(daily_key)
             store.link_session_group(
                 session_pk, int(group["id"]), is_member=True, access_hash=group.get("access_hash")
             )
@@ -398,6 +412,7 @@ async def scan_own_dialogs(
     target_pk = int(target["id"])
     session_row = store.get_session(session_name)
     session_pk = int(session_row["id"]) if session_row else 0
+    seen_group_pks: list[int] = []
     dialogs: list[Any] = []
     async for dialog in account.client.iter_dialogs(limit=None, wait_time=1.0):
         if isinstance(dialog.entity, (Channel, Chat)):
@@ -416,7 +431,7 @@ async def scan_own_dialogs(
             info["last_message_at"] = int(dialog.message.date.timestamp())
         info["discovered_from"] = "own_session"
         info["discovered_by"] = session_name
-        group_pk = store.upsert_group(**info)
+        group_pk = store.upsert_group(**group_kwargs(info))
         if session_pk:
             store.link_session_group(
                 session_pk, group_pk, is_member=True, access_hash=info.get("access_hash")
@@ -424,6 +439,7 @@ async def scan_own_dialogs(
         store.upsert_target_group(
             target_pk, group_pk, status=status, source="own_session", session=session_name
         )
+        seen_group_pks.append(group_pk)
         stats["found"] += 1
         stats["checked"] += 1
 
@@ -445,6 +461,9 @@ async def scan_own_dialogs(
                 total=total,
                 found=stats["found"],
             )
+
+    # чего больше нет в диалогах — помечаем «вышел» (как в оригинальном списке)
+    stats["left"] = store.mark_target_groups_left(target_pk, seen_group_pks, source="own_session")
 
     if reporter:
         await reporter.update(force=True, phase="диалоги цели", done=stats["checked"], total=total, found=stats["found"])
@@ -539,7 +558,7 @@ async def probe_target(
             if not _meta_fresh(group, store, settings.meta_ttl_hours):
                 try:
                     count, last = await fetch_history_meta(
-                        account.client, channel_peer(group, session_hash), limiter
+                        account.client, history_peer(group, session_hash), limiter
                     )
                     store.set_group_meta(int(group["tg_id"]), messages_total=count, last_message_at=last)
                     stats["meta"] += 1
@@ -624,7 +643,7 @@ async def global_search_target(
                 continue
             info["discovered_from"] = "global_search"
             info["discovered_by"] = session_name
-            group_pk = store.upsert_group(**info)
+            group_pk = store.upsert_group(**group_kwargs(info))
             if session_pk:
                 store.link_session_group(
                     session_pk, group_pk, is_member=True, access_hash=info.get("access_hash")

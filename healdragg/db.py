@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -292,6 +293,25 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
             )
+
+    # ── счётчики (дневные лимиты) ───────────────────────────────────────────
+    @staticmethod
+    def _day_key(key: str, day: str | None = None) -> str:
+        stamp = day or time.strftime("%Y-%m-%d")
+        return f"counter:{key}:{stamp}"
+
+    def daily_count(self, key: str, day: str | None = None) -> int:
+        raw = self.get_meta(self._day_key(key, day), "0") or "0"
+        try:
+            return int(raw)
+        except ValueError:
+            return 0
+
+    def incr_daily(self, key: str, amount: int = 1, day: str | None = None) -> int:
+        meta_key = self._day_key(key, day)
+        value = self.daily_count(key, day) + amount
+        self.set_meta(meta_key, str(value))
+        return value
 
     # ── сессии ──────────────────────────────────────────────────────────────
     def add_session(
@@ -721,6 +741,44 @@ class Store:
                 "UPDATE target_groups SET status = ?, updated_at = ? WHERE target_id = ? AND group_id = ?",
                 (status, now_ts(), target_pk, group_pk),
             )
+
+    def mark_target_groups_left(
+        self,
+        target_pk: int,
+        keep_group_ids: Iterable[int],
+        *,
+        source: str | None = None,
+    ) -> int:
+        """Помечает связи «цель × чат» как ``left``, если чата больше нет в списке.
+
+        Используется при скане «своей» сессии: если раньше чат был, а теперь его
+        нет в диалогах — значит аккаунт вышел (или чат удалён).
+        """
+        keep = {int(i) for i in keep_group_ids}
+        rows = self.query(
+            "SELECT group_id, status, source FROM target_groups WHERE target_id = ?",
+            (target_pk,),
+        )
+        missing = [
+            int(r["group_id"])
+            for r in rows
+            if int(r["group_id"]) not in keep
+            and r["status"] != "left"
+            and (source is None or r["source"] == source)
+        ]
+        if not missing:
+            return 0
+        ts = now_ts()
+        with self.tx() as conn:
+            for start in range(0, len(missing), 500):
+                part = missing[start : start + 500]
+                placeholders = ",".join("?" for _ in part)
+                conn.execute(
+                    f"UPDATE target_groups SET status = 'left', updated_at = ? "
+                    f"WHERE target_id = ? AND group_id IN ({placeholders})",
+                    [ts, target_pk, *part],
+                )
+        return len(missing)
 
     def count_target_groups(self, target_pk: int, status: str | None = None) -> int:
         if status:

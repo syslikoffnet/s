@@ -67,3 +67,23 @@ def test_many_rows_fit_telegram() -> None:
     ]
     text = render_account_chats(rows, target_id=1, page=Page.build(115, 1, 15))
     assert len(fit_telegram(text)) < 4096
+
+
+def test_targets_list_keyboard() -> None:
+    rows = [
+        {"tg_user_id": 1, "username": "alpha", "first_name": "A"},
+        {"tg_user_id": 2, "username": None, "first_name": "B"},
+    ]
+    markup = keyboards.targets_list(rows, active_id=2)
+    buttons = flatten(markup)
+    datas = [data for row in buttons for _, data in row]
+    assert "p:1" in datas and "p:2" in datas
+    texts = [text for row in buttons for text, _ in row]
+    assert any(text.startswith("· ") for text in texts)
+    assert "🏠 Меню" in texts
+
+
+def test_home_has_targets_shortcut() -> None:
+    markup = keyboards.home(has_sessions=True, has_groups=True, target_id=5)
+    texts = [text for row in flatten(markup) for text, _ in row]
+    assert "🎯 Цели" in texts

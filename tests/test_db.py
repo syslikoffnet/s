@@ -134,3 +134,33 @@ def test_stats_and_integrity(store: Store) -> None:
     assert store.integrity_check() == "ok"
     store.optimize()
     assert store.size_bytes() > 0
+
+
+def test_daily_counters(store: Store) -> None:
+    assert store.daily_count("join:main", day="2026-11-09") == 0
+    assert store.incr_daily("join:main", day="2026-11-09") == 1
+    assert store.incr_daily("join:main", 4, day="2026-11-09") == 5
+    assert store.daily_count("join:main", day="2026-11-09") == 5
+    assert store.daily_count("join:main", day="2026-11-10") == 0
+
+
+def test_mark_missing_groups_as_left(store: Store) -> None:
+    target = store.upsert_target(321)
+    tp = int(target["id"])
+    keep = store.upsert_group(1, title="остался", username="keep")
+    gone = store.upsert_group(2, title="удалён", username="gone")
+    probed = store.upsert_group(3, title="из каталога", username="probe")
+    store.upsert_target_group(tp, keep, status="member", source="own_session")
+    store.upsert_target_group(tp, gone, status="member", source="own_session")
+    store.upsert_target_group(tp, probed, status="member", source="probe")
+
+    changed = store.mark_target_groups_left(tp, [keep], source="own_session")
+    assert changed == 1
+    assert store.count_target_groups(tp, "left") == 1
+    statuses = {r["title"]: r["status"] for r in store.all_target_groups(tp)}
+    assert statuses["остался"] == "member"
+    assert statuses["удалён"] == "left"
+    # источник probe не тронут
+    assert statuses["из каталога"] == "member"
+    # повторный вызов ничего не меняет
+    assert store.mark_target_groups_left(tp, [keep], source="own_session") == 0

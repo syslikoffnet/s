@@ -25,11 +25,30 @@ def home(
     if target_id:
         rows.append([_btn(GROUPS_BUTTON, f"g:{target_id}:1")])
         rows.append([_btn("🔄 Обновить", f"r:{target_id}"), _btn("📊 Профиль", f"p:{target_id}")])
-    rows.append([_btn("🔍 Как искать", "find"), _btn("📚 База групп", "catalog:1")])
+        rows.append([_btn("🎯 Цели", "targets"), _btn("📚 База групп", "catalog:1")])
+    else:
+        rows.append([_btn("🔍 Как искать", "find"), _btn("📚 База групп", "catalog:1")])
     if not has_groups:
         rows.append([_btn("🚀 Собрать базу", "boot" if has_sessions else "nosessions")])
-    else:
-        rows.append([_btn("📈 Статистика", "stats"), _btn("❓ Помощь", "help")])
+    rows.append([_btn("📈 Статистика", "stats"), _btn("❓ Помощь", "help")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def targets_list(targets: Sequence[dict], *, active_id: int | None = None) -> InlineKeyboardMarkup:
+    """Список целей: по две кнопки в ряд."""
+    buttons: list[InlineKeyboardButton] = []
+    for target in targets[:12]:
+        tg_id = int(target["tg_user_id"])
+        name = (
+            f"@{target['username']}" if target.get("username")
+            else target.get("first_name") or str(tg_id)
+        )
+        label = f"{'· ' if tg_id == active_id else ''}{name}"
+        buttons.append(_btn(label[:28], f"p:{tg_id}"))
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)] or [
+        [_btn("Пока пусто", "noop")]
+    ]
+    rows.append([_btn("🏠 Меню", "home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
