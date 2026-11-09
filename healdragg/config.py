@@ -95,6 +95,10 @@ class Settings:
     activity_days: int = 30
     activity_per_chat: int = 40
     activity_max_chats: int = 80
+    alert_push: bool = True
+    alert_interval: int = 20
+    autopilot_minutes: int = 0
+    auto_activity_on_scan: bool = False
 
     page_size: int = 15
     title_limit: int = 15
@@ -151,6 +155,10 @@ class Settings:
             activity_days=_int("ACTIVITY_DAYS", 30) or 30,
             activity_per_chat=_int("ACTIVITY_PER_CHAT", 40) or 40,
             activity_max_chats=_int("ACTIVITY_MAX_CHATS", 80) or 80,
+            alert_push=_bool("ALERT_PUSH", True),
+            alert_interval=_int("ALERT_INTERVAL", 20) or 20,
+            autopilot_minutes=_int("AUTOPILOT_MINUTES", 0) or 0,
+            auto_activity_on_scan=_bool("AUTO_ACTIVITY_ON_SCAN", False),
             page_size=_int("PAGE_SIZE", 15) or 15,
             title_limit=_int("TITLE_LIMIT", 15) or 15,
             tz=_str("TZ", "Europe/Moscow") or "Europe/Moscow",

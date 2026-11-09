@@ -27,7 +27,7 @@ from typing import Any
 
 from .util import group_link, now_ts
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -157,6 +157,21 @@ CREATE TABLE IF NOT EXISTS edges (
     PRIMARY KEY (target_id, peer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_edges_weight ON edges(target_id, weight DESC);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        INTEGER NOT NULL,
+    target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+    kind      TEXT NOT NULL,
+    title     TEXT NOT NULL,
+    body      TEXT,
+    dedup     TEXT UNIQUE,
+    read      INTEGER NOT NULL DEFAULT 0,
+    sent_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts     ON alerts(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_unread ON alerts(read, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_alerts_unsent ON alerts(sent_at, ts);
 
 CREATE TABLE IF NOT EXISTS scans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -778,6 +793,74 @@ class Store:
     def touch_target_scan(self, tg_user_id: int) -> None:
         with self.tx() as conn:
             conn.execute("UPDATE targets SET last_scan_at = ? WHERE tg_user_id = ?", (now_ts(), tg_user_id))
+
+    # ── алерты ─────────────────────────────────────────────────────────────
+    def add_alert(
+        self,
+        kind: str,
+        title: str,
+        *,
+        body: str | None = None,
+        target_pk: int | None = None,
+        dedup: str | None = None,
+        ts: int | None = None,
+    ) -> int | None:
+        """Создаёт алерт; возвращает id или None, если такой уже был."""
+        with self.tx() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO alerts(ts, target_id, kind, title, body, dedup, read)
+                VALUES(?,?,?,?,?,?,0)
+                """,
+                (ts or now_ts(), target_pk, kind, title, body, dedup),
+            )
+            if not cur.rowcount:
+                return None
+            return int(cur.lastrowid or 0)
+
+    def list_alerts(self, *, limit: int = 50, unread_only: bool = False) -> list[dict[str, Any]]:
+        sql = """
+            SELECT a.*, t.tg_user_id, t.username
+              FROM alerts a LEFT JOIN targets t ON t.id = a.target_id
+        """
+        if unread_only:
+            sql += " WHERE a.read = 0"
+        sql += " ORDER BY a.ts DESC, a.id DESC LIMIT ?"
+        return self.query(sql, (int(limit),))
+
+    def count_alerts(self, *, unread_only: bool = True) -> int:
+        if unread_only:
+            return int(self.scalar("SELECT COUNT(*) FROM alerts WHERE read = 0", default=0))
+        return int(self.scalar("SELECT COUNT(*) FROM alerts", default=0))
+
+    def mark_alerts_read(self, ids: Iterable[int] | None = None) -> int:
+        with self.tx() as conn:
+            if ids is None:
+                cur = conn.execute("UPDATE alerts SET read = 1 WHERE read = 0")
+            else:
+                chunk = [int(i) for i in ids]
+                if not chunk:
+                    return 0
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"UPDATE alerts SET read = 1 WHERE id IN ({placeholders})", chunk
+                )
+            return int(cur.rowcount or 0)
+
+    def pending_alerts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        return self.query(
+            """
+            SELECT a.*, t.tg_user_id, t.username
+              FROM alerts a LEFT JOIN targets t ON t.id = a.target_id
+             WHERE a.sent_at IS NULL
+             ORDER BY a.ts, a.id LIMIT ?
+            """,
+            (int(limit),),
+        )
+
+    def mark_alert_sent(self, alert_id: int) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE alerts SET sent_at = ? WHERE id = ?", (now_ts(), int(alert_id)))
 
     # ── активность цели: сообщения, собеседники, связи ─────────────────────
     def upsert_peer(

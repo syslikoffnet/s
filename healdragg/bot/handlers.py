@@ -19,6 +19,7 @@ from aiogram.types import (
     Message,
 )
 
+from ..alerts import render_digest
 from ..scan import bootstrap, resolve_and_store_target, scan_target
 from ..textfmt import (
     EMPTY_DB,
@@ -37,6 +38,7 @@ from ..textfmt import (
 from ..util import Page
 from .deps import Deps
 from .keyboards import (
+    alerts_menu,
     cancel_job,
     catalog_pager,
     home,
@@ -385,6 +387,45 @@ async def _handle_target_input(message: Message, raw: str, deps: Deps) -> None:
 
 
 # ── кнопки: меню ───────────────────────────────────────────────────────────
+def _alerts_view(deps: Deps, limit: int = 10) -> tuple[str, Any]:
+    alerts = deps.store.list_alerts(limit=limit)
+    text = render_digest(alerts, tz=deps.settings.tz)
+    return text, alerts_menu(has_unread=deps.store.count_alerts() > 0)
+
+
+@router.message(Command("alerts"))
+async def cmd_alerts(message: Message, deps: Deps) -> None:
+    text, keyboard = _alerts_view(deps)
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "alerts")
+async def cb_alerts(callback: CallbackQuery, deps: Deps) -> None:
+    text, keyboard = _alerts_view(deps)
+    await safe_edit(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "alerts_read")
+async def cb_alerts_read(callback: CallbackQuery, deps: Deps) -> None:
+    changed = deps.store.mark_alerts_read()
+    text, keyboard = _alerts_view(deps)
+    await safe_edit(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer(f"прочитано: {changed}")
+
+
 @router.callback_query(F.data == "home")
 async def cb_home(callback: CallbackQuery, deps: Deps) -> None:
     stats = deps.store.stats()

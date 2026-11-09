@@ -9,6 +9,16 @@
     <string name="token_hint">из .env или из вывода healdragg api</string>
     <string name="connect">Подключиться</string>
     <string name="connect_local">🖥 Локально (Termux)</string>
+    <string name="termux_title">🖥 Движок на телефоне (Termux)</string>
+    <string name="termux_intro">Один раз вставь команды в Termux — он поставит движок, пропишет ключи и запустит панель. Дальше APK подключается к 127.0.0.1:8080 и работает без ПК.</string>
+    <string name="termux_api_id">API_ID (my.telegram.org)</string>
+    <string name="termux_api_hash">API_HASH</string>
+    <string name="termux_bot_token">BOT_TOKEN (необязательно)</string>
+    <string name="termux_copy">📋 Скопировать команды</string>
+    <string name="termux_save">💾 Сохранить скрипт</string>
+    <string name="termux_open">▶️ Открыть Termux</string>
+    <string name="termux_copied">Команды скопированы — вставь в Termux</string>
+    <string name="termux_saved">Скрипт сохранён: %1$s</string>
     <string name="local_hint">Движок healdragg api можно запустить прямо на телефоне в Termux:
 bash termux/termuxctl.sh start
 Тогда адрес — http://127.0.0.1:8080, а данные работают офлайн из кэша.</string>

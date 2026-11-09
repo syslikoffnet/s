@@ -45,6 +45,10 @@ class TargetIn(BaseModel):
     query: str = Field(min_length=1, max_length=128)
 
 
+class AlertsReadIn(BaseModel):
+    ids: list[int] | None = None
+
+
 class ScanIn(BaseModel):
     deep: bool = False
     max_groups: int | None = None
@@ -178,8 +182,24 @@ def create_app(settings: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        yield
-        await state.close()
+        autopilot_task: asyncio.Task | None = None
+        if settings.autopilot_minutes > 0:
+            from .autopilot import loop as autopilot_loop
+
+            autopilot_task = asyncio.create_task(
+                autopilot_loop(state.pool, state.store, settings), name="autopilot"
+            )
+            log.info("автопилот: каждые %s мин", settings.autopilot_minutes)
+        try:
+            yield
+        finally:
+            if autopilot_task:
+                autopilot_task.cancel()
+                try:
+                    await autopilot_task
+                except asyncio.CancelledError:
+                    pass
+            await state.close()
 
     app = FastAPI(
         title="Healdragg",
@@ -271,6 +291,18 @@ def create_app(settings: Settings) -> FastAPI:
         if not target:
             raise HTTPException(404, "Цель не найдена")
         return _groups_payload(state.store, target, page=page, size=size, order=order)
+
+    @app.get("/api/alerts", dependencies=[Depends(guard)])
+    async def alerts(limit: int = Query(50, ge=1, le=200), unread: bool = False) -> dict[str, Any]:
+        return {
+            "rows": state.store.list_alerts(limit=limit, unread_only=unread),
+            "unread": state.store.count_alerts(),
+        }
+
+    @app.post("/api/alerts/read", dependencies=[Depends(guard)])
+    async def alerts_read(payload: AlertsReadIn | None = None) -> dict[str, Any]:
+        changed = state.store.mark_alerts_read((payload or AlertsReadIn()).ids)
+        return {"ok": True, "changed": changed, "unread": state.store.count_alerts()}
 
     @app.get("/api/targets/{tg_id}/graph", dependencies=[Depends(guard)])
     async def target_graph(tg_id: int, max_peers: int = Query(200, ge=10, le=500)) -> dict[str, Any]:

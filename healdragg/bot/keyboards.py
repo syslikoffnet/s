@@ -30,7 +30,15 @@ def home(
         rows.append([_btn("🔍 Как искать", "find"), _btn("📚 База групп", "catalog:1")])
     if not has_groups:
         rows.append([_btn("🚀 Собрать базу", "boot" if has_sessions else "nosessions")])
-    rows.append([_btn("📈 Статистика", "stats"), _btn("❓ Помощь", "help")])
+    rows.append([_btn("📈 Статистика", "stats"), _btn("🔔 Алерты", "alerts"), _btn("❓ Помощь", "help")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def alerts_menu(*, has_unread: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_unread:
+        rows.append([_btn("✅ Прочитать все", "alerts_read")])
+    rows.append([_btn("🔄 Обновить", "alerts"), _btn("🏠 Меню", "home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -140,6 +140,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_act.add_argument("--max-chats", type=int, default=80)
     p_act.add_argument("--top", type=int, default=12)
 
+    p_alerts = sub.add_parser("alerts", help="что нового у целей")
+    p_alerts.add_argument("--limit", type=int, default=20)
+    p_alerts.add_argument("--read", action="store_true", help="пометить прочитанными")
+
+    p_watch = sub.add_parser("watch", help="автопилот: сканы и активность по кругу")
+    p_watch.add_argument("--minutes", type=int, default=None, help="интервал, мин")
+    p_watch.add_argument("--once", action="store_true", help="один обход и выход")
+    p_watch.add_argument("--activity", action="store_true", help="собирать активность")
+    p_watch.add_argument("--alerts", action="store_true", help="печатать новые алерты")
+
     p_graph = sub.add_parser("graph", help="граф связей цели (HTML или JSON)")
     p_graph.add_argument("query")
     p_graph.add_argument("--html", help="сохранить автономную HTML-страницу")
@@ -982,6 +992,94 @@ def _feed_view(rows: Sequence[dict[str, Any]], settings: Settings) -> Panel:
     )
 
 
+def cmd_alerts(args: argparse.Namespace, settings: Settings) -> int:
+    from .alerts import render_digest
+
+    store = _store(settings)
+    try:
+        alerts = store.list_alerts(limit=args.limit)
+        unread = store.count_alerts()
+        console.print(
+            Panel(
+                Text.from_markup(to_plain(render_digest(alerts, tz=settings.tz))),
+                title=f"[accent]🔔 алерты[/] · непрочитанных {unread}",
+                title_align="left",
+                box=box.ROUNDED,
+                border_style="#f1fa8c" if unread else "#6272a4",
+                padding=(0, 1),
+            )
+        )
+        if args.read and unread:
+            changed = store.mark_alerts_read()
+            console.print(f"[ok]✓ прочитано: {changed}[/]")
+        return 0
+    finally:
+        store.close()
+
+
+def cmd_watch(args: argparse.Namespace, settings: Settings) -> int:
+    import dataclasses
+
+    from .alerts import render_digest
+    from .autopilot import tick
+    from .tg import SessionPool
+
+    overrides: dict[str, Any] = {}
+    if args.minutes is not None:
+        overrides["autopilot_minutes"] = args.minutes
+    if args.activity:
+        overrides["auto_activity_on_scan"] = True
+    if overrides:
+        settings = dataclasses.replace(settings, **overrides)
+    minutes = max(1, int(settings.autopilot_minutes or 15))
+
+    async def run() -> int:
+        store = _store(settings)
+        pool = SessionPool(settings, store)
+        console.print(
+            Panel(
+                Text.from_markup(
+                    f"режим: [accent]{'один обход' if args.once else f'каждые {minutes} мин'}[/]\n"
+                    f"целей: {len(store.list_targets(50))} · "
+                    f"сессий: {len(store.session_names())}\n"
+                    "[muted]Ctrl+C — стоп[/]"
+                ),
+                title="[accent]🛰 автопилот[/]",
+                title_align="left",
+                border_style="#50fa7b",
+                box=box.ROUNDED,
+                padding=(0, 1),
+            )
+        )
+        try:
+            while True:
+                started = time.time()
+                stats = await tick(pool, store, settings)
+                console.print(
+                    Text.from_markup(
+                        f"[muted]{time.strftime('%H:%M:%S')}[/] · "
+                        f"целей {stats['targets']} · сканов {stats['scanned']} · "
+                        f"сообщений {stats['messages']} · "
+                        f"[accent]алертов {stats['alerts']}[/] · "
+                        f"ошибок {stats['errors']} · {time.time() - started:.1f} с"
+                    )
+                )
+                if args.alerts:
+                    fresh = store.list_alerts(limit=max(1, stats["alerts"]))
+                    if fresh and stats["alerts"]:
+                        console.print(Text.from_markup(to_plain(render_digest(fresh, tz=settings.tz))))
+                if args.once:
+                    return 0
+                await asyncio.sleep(minutes * 60)
+        except KeyboardInterrupt:
+            return 130
+        finally:
+            await pool.close()
+            store.close()
+
+    return asyncio.run(run())
+
+
 def cmd_graph(args: argparse.Namespace, settings: Settings) -> int:
     from .graph import build_graph, render_html
 
@@ -1359,6 +1457,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "cover": lambda: cmd_cover(args, settings),
         "activity": lambda: cmd_activity(args, settings),
         "graph": lambda: cmd_graph(args, settings),
+        "alerts": lambda: cmd_alerts(args, settings),
+        "watch": lambda: cmd_watch(args, settings),
         "groups": lambda: cmd_groups(args, settings),
         "catalog": lambda: cmd_catalog(args, settings),
         "stats": lambda: cmd_stats(settings),
@@ -1382,6 +1482,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "  [bold]cover[/]       собрать базу + проверить цель одной командой",
             "  [bold]activity[/]    что цель пишет и с кем общается",
             "  [bold]graph[/]       паутина связей (HTML для браузера)",
+            "  [bold]alerts[/]      что нового у целей",
+            "  [bold]watch[/]       автопилот: сканы и активность по кругу",
             "  [bold]groups[/]      список чатов (с листалкой)",
             "  [bold]catalog[/]     каталог групп",
             "  [bold]stats[/]       статистика",

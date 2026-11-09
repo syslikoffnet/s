@@ -22,6 +22,7 @@ from telethon import types
 from telethon.errors import FloodWaitError, RPCError
 from telethon.tl.types import User
 
+from .alerts import run_detection
 from .config import Settings
 from .db import Store
 from .scan import Reporter
@@ -195,6 +196,8 @@ async def collect_activity(
 
         pruned = store.prune_activity(target_pk, days=max(int(days), 30) * 3)
         stats["pruned"] = pruned
+        created = run_detection(store, target, messages=True)
+        stats["alerts"] = len(created)
         stats["elapsed"] = round(time.time() - started, 1)
         store.finish_scan(scan_id, status="done", stats=stats)
         await rep.update(force=True, phase="готово", found=stats["messages"])

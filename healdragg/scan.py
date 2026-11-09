@@ -26,6 +26,7 @@ from telethon import functions, types
 from telethon.errors import FloodWaitError, RPCError
 from telethon.tl.types import Channel, Chat
 
+from .alerts import run_detection
 from .config import Settings
 from .db import GROUP_FIELDS, Store
 from .tg import (
@@ -741,6 +742,8 @@ async def scan_target(
                     log.debug("global search: %s", exc)
 
         store.touch_target_scan(int(target["tg_user_id"]))
+        created = run_detection(store, target, since=int(started))
+        totals["alerts"] = len(created)
         totals["elapsed"] = round(time.time() - started, 1)
         final = store.target_stats(int(target["id"]))
         totals["total_in_base"] = final.get("total", 0)

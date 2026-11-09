@@ -128,3 +128,16 @@ def test_graph_and_activity_endpoints(client: TestClient) -> None:
     script = client.get("/graph.js")
     assert script.status_code == 200
     assert "HealdraggGraph" in script.text
+
+
+def test_alerts_endpoints(client: TestClient) -> None:
+    from healdragg.alerts import run_detection
+
+    store = client.app.state.hd.store  # type: ignore[attr-defined]
+    target = store.get_target(DEMO_TARGET)
+    run_detection(store, target, messages=True)
+
+    data = client.get("/api/alerts?limit=10", headers=HEADERS).json()
+    assert "rows" in data and "unread" in data
+    read = client.post("/api/alerts/read", json={}, headers=HEADERS).json()
+    assert read["ok"] is True

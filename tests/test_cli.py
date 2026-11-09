@@ -49,6 +49,8 @@ def test_all_commands_registered() -> None:
         "cover": ["7126917488"],
         "activity": ["7126917488"],
         "graph": ["7126917488"],
+        "alerts": [],
+        "watch": ["--once"],
         "groups": ["7126917488"],
         "catalog": [],
         "stats": [],

@@ -1,10 +1,15 @@
 package net.syslikoff.healdragg
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -22,6 +27,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import java.io.File
 
 /**
  * Healdragg для Android — компактный клиент веб-панели.
@@ -37,6 +43,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var setup: ScrollView
     private lateinit var urlInput: EditText
     private lateinit var tokenInput: EditText
+    private lateinit var termuxApiId: EditText
+    private lateinit var termuxApiHash: EditText
+    private lateinit var termuxBotToken: EditText
     private lateinit var settingsBtn: View
 
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
@@ -53,6 +62,9 @@ class MainActivity : AppCompatActivity() {
         setup = findViewById(R.id.setup)
         urlInput = findViewById(R.id.urlInput)
         tokenInput = findViewById(R.id.tokenInput)
+        termuxApiId = findViewById(R.id.termuxApiId)
+        termuxApiHash = findViewById(R.id.termuxApiHash)
+        termuxBotToken = findViewById(R.id.termuxBotToken)
         settingsBtn = findViewById(R.id.settingsBtn)
         settingsBtn.setOnClickListener { showSetup() }
 
@@ -82,6 +94,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUi() {
+        findViewById<Button>(R.id.termuxCopyBtn).setOnClickListener { copyTermuxScript() }
+        findViewById<Button>(R.id.termuxSaveBtn).setOnClickListener { saveTermuxScript() }
+        findViewById<Button>(R.id.termuxOpenBtn).setOnClickListener { openTermux() }
         findViewById<Button>(R.id.localBtn).setOnClickListener {
             urlInput.setText(LOCAL_URL)
             Toast.makeText(this, R.string.local_hint, Toast.LENGTH_LONG).show()
@@ -97,6 +112,90 @@ class MainActivity : AppCompatActivity() {
                 .putString(KEY_TOKEN, tokenInput.text.toString().trim())
                 .apply()
             openPanel()
+        }
+    }
+
+    /** Скрипт, который ставит движок и запускает панель прямо на телефоне. */
+    private fun termuxScript(): String {
+        val apiId = termuxApiId.text.toString().trim().ifBlank { "0" }
+        val apiHash = termuxApiHash.text.toString().trim().ifBlank { "PUT_API_HASH_HERE" }
+        val botToken = termuxBotToken.text.toString().trim()
+        val env = StringBuilder()
+        env.appendLine("cat > .env <<'EOF'")
+        env.appendLine("API_ID=$apiId")
+        env.appendLine("API_HASH=$apiHash")
+        if (botToken.isNotEmpty()) env.appendLine("BOT_TOKEN=$botToken")
+        env.appendLine("AUTOPILOT_MINUTES=15")
+        env.appendLine("AUTO_ACTIVITY_ON_SCAN=true")
+        env.appendLine("ALERT_PUSH=true")
+        env.appendLine("EOF")
+        return """
+            set -e
+            pkg update -y
+            pkg install -y git python
+            if [ ! -d "${'$'}HOME/healdragg" ]; then
+              git clone --depth 1 https://github.com/syslikoffnet/s.git "${'$'}HOME/healdragg"
+            fi
+            cd "${'$'}HOME/healdragg"
+            ${env.toString().trimEnd()}
+            bash install.sh
+            healdragg api --host 0.0.0.0 --port 8080
+        """.trimIndent()
+    }
+
+    private fun copyTermuxScript() {
+        try {
+            val clipboard = getSystemService(ClipboardManager::class.java)
+            clipboard?.setPrimaryClip(ClipData.newPlainText("healdragg setup", termuxScript()))
+            Toast.makeText(this, R.string.termux_copied, Toast.LENGTH_LONG).show()
+        } catch (exc: Exception) {
+            Toast.makeText(this, "Не удалось скопировать: ${exc.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun saveTermuxScript() {
+        val text = termuxScript()
+        val name = "healdragg-termux.sh"
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/x-shellscript")
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(text.toByteArray())
+                    }
+                    Toast.makeText(
+                        this,
+                        getString(R.string.termux_saved, "Downloads/$name"),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    return
+                }
+            }
+            val file = File(getExternalFilesDir(null), name)
+            file.writeText(text)
+            Toast.makeText(
+                this,
+                getString(R.string.termux_saved, file.absolutePath),
+                Toast.LENGTH_LONG,
+            ).show()
+        } catch (exc: Exception) {
+            Toast.makeText(this, "Не удалось сохранить: ${exc.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun openTermux() {
+        val intent = Intent().apply {
+            setClassName("com.termux", "com.termux.app.TermuxActivity")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            startActivity(intent)
+        } catch (exc: Exception) {
+            openExternal("https://f-droid.org/packages/com.termux/")
         }
     }
 

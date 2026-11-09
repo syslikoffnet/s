@@ -11,6 +11,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand, ErrorEvent
 
+from ..alerts import format_alert
 from ..config import Settings
 from ..db import Store
 from ..tg import SessionPool
@@ -29,6 +30,7 @@ COMMANDS = [
     BotCommand(command="network", description="с кем общается цель"),
     BotCommand(command="feed", description="что пишет цель"),
     BotCommand(command="activity", description="собрать сообщения и связи"),
+    BotCommand(command="alerts", description="что нового у цели"),
     BotCommand(command="stats", description="состояние базы"),
     BotCommand(command="find", description="поиск по каталогу групп"),
     BotCommand(command="id", description="мой Telegram ID"),
@@ -41,6 +43,47 @@ DESCRIPTION = (
     "Пришли id или @username — покажу список чатов с датами, размером и статусом."
 )
 SHORT_DESCRIPTION = "Публичные чаты аккаунта: список, даты, админ/приватный/вышел."
+
+
+def alert_recipients(settings: Settings, store: Store) -> set[int]:
+    recipients = set(settings.bot_allowed_users)
+    owner = store.get_meta("owner_user_id")
+    if owner and owner.lstrip("-").isdigit():
+        recipients.add(int(owner))
+    return recipients
+
+
+async def push_alerts(bot: Bot, settings: Settings, store: Store, *, limit: int = 20) -> int:
+    """Развозит неотправленные алерты всем, кому разрешено."""
+    pending = store.pending_alerts(limit=limit)
+    if not pending:
+        return 0
+    recipients = alert_recipients(settings, store)
+    if not recipients:
+        return 0
+    sent = 0
+    for alert in pending:
+        text = format_alert(alert, tz=settings.tz)
+        for user_id in recipients:
+            try:
+                await bot.send_message(user_id, text, disable_web_page_preview=True)
+                sent += 1
+            except Exception as exc:  # noqa: BLE001
+                log.debug("alert push %s: %s", user_id, exc)
+        store.mark_alert_sent(int(alert["id"]))
+    return sent
+
+
+async def alert_loop(bot: Bot, settings: Settings, store: Store) -> None:
+    interval = max(5, int(settings.alert_interval))
+    while True:
+        try:
+            await push_alerts(bot, settings, store)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("alert loop failed")
+        await asyncio.sleep(interval)
 
 
 def build_bot(settings: Settings) -> Bot:
@@ -100,9 +143,19 @@ async def run_bot(settings: Settings, *, store: Store | None = None) -> None:
     if not settings.bot_allowed_users and not settings.bot_allow_all:
         log.warning("BOT_ALLOWED_USERS пуст — владельцем станет первый, кто напишет /start")
 
+    alert_task: asyncio.Task | None = None
+    if settings.alert_push:
+        alert_task = asyncio.create_task(alert_loop(bot, settings, store), name="alerts")
+
     try:
         await dp.start_polling(bot, deps=deps, allowed_updates=["message", "callback_query"])
     finally:
+        if alert_task:
+            alert_task.cancel()
+            try:
+                await alert_task
+            except asyncio.CancelledError:
+                pass
         await pool.close()
         try:
             await bot.session.close()

@@ -110,3 +110,16 @@ def test_links_page_keyboard_empty() -> None:
     markup = keyboards.links_page([], 42, Page.build(0, 1, 15))
     texts = [b.text for row in markup.inline_keyboard for b in row]
     assert "Ссылок пока нет" in texts
+
+
+def test_home_has_alerts_button() -> None:
+    markup = keyboards.home(has_sessions=True, has_groups=True, target_id=5)
+    texts = [text for row in flatten(markup) for text, _ in row]
+    assert "🔔 Алерты" in texts
+
+
+def test_alerts_menu() -> None:
+    markup = keyboards.alerts_menu(has_unread=True)
+    datas = [data for row in flatten(markup) for _, data in row]
+    assert "alerts_read" in datas
+    assert "alerts" in datas and "home" in datas
