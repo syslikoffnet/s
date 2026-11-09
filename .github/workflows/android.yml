@@ -63,3 +63,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.apk
+
+      # Release-событие срабатывает только с workflow из default-ветки, поэтому
+      # APK из обычной сборки докладываем в уже существующий релиз вручную.
+      - name: Обновить ассеты релиза
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v1.0.0"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" artifacts/healdragg-debug.apk artifacts/healdragg-release.apk --clobber
+            echo "APK приложены к $TAG"
+          else
+            echo "Релиз $TAG ещё не создан — пропускаю"
+          fi

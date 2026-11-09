@@ -5,6 +5,7 @@
 <p align="center">
   <a href="https://github.com/syslikoffnet/s/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/syslikoffnet/s/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/syslikoffnet/s/actions/workflows/android.yml"><img alt="Android APK" src="https://github.com/syslikoffnet/s/actions/workflows/android.yml/badge.svg"></a>
+  <a href="https://github.com/syslikoffnet/s/releases/latest"><img alt="Download APK" src="https://img.shields.io/badge/download-APK-3DDC84?logo=android&logoColor=white"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="Termux" src="https://img.shields.io/badge/Termux-ready-000000?logo=android&logoColor=3DDC84">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-bd93f9">
@@ -233,11 +234,14 @@ healdragg api --host 0.0.0.0 --port 8080 --show-token
 
 ## Android APK
 
-APK собирается автоматически в **GitHub Actions** → workflow **Android APK**:
+APK собирается автоматически в **GitHub Actions** → workflow **Android APK** и лежит в
+[**Releases**](https://github.com/syslikoffnet/s/releases/latest):
 
-1. Открой вкладку **Actions** → **Android APK** → последний запуск.
-2. Скачай артефакт `healdragg-apk` (в нём `healdragg-debug.apk` и `healdragg-release.apk`).
-3. Поставь на телефон (разреши установку из неизвестных источников).
+1. Скачай `healdragg-debug.apk` (или `healdragg-release.apk`).
+2. Поставь на телефон (разреши установку из неизвестных источников).
+3. Введи адрес панели и `API_TOKEN`.
+
+Артефакты сборки также доступны во вкладке **Actions** → **Android APK**.
 
 Локально:
 
