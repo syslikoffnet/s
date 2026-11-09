@@ -92,6 +92,9 @@ class Settings:
     search_queries: list[str] = field(default_factory=list)
     auto_scan: bool = True
     bootstrap_join: bool = False
+    activity_days: int = 30
+    activity_per_chat: int = 40
+    activity_max_chats: int = 80
 
     page_size: int = 15
     title_limit: int = 15
@@ -145,6 +148,9 @@ class Settings:
             search_queries=[q.strip() for q in _str("SEARCH_QUERIES").split(",") if q.strip()],
             auto_scan=_bool("AUTO_SCAN_ON_ADD", True),
             bootstrap_join=_bool("JOIN_ON_BOOTSTRAP", False),
+            activity_days=_int("ACTIVITY_DAYS", 30) or 30,
+            activity_per_chat=_int("ACTIVITY_PER_CHAT", 40) or 40,
+            activity_max_chats=_int("ACTIVITY_MAX_CHATS", 80) or 80,
             page_size=_int("PAGE_SIZE", 15) or 15,
             title_limit=_int("TITLE_LIMIT", 15) or 15,
             tz=_str("TZ", "Europe/Moscow") or "Europe/Moscow",

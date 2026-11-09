@@ -21,8 +21,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .activity import collect_activity
 from .config import Settings
 from .db import Store
+from .graph import build_graph
 from .scan import bootstrap, resolve_and_store_target, scan_target
 from .textfmt import (
     render_account_chats,
@@ -270,6 +272,72 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, "Цель не найдена")
         return _groups_payload(state.store, target, page=page, size=size, order=order)
 
+    @app.get("/api/targets/{tg_id}/graph", dependencies=[Depends(guard)])
+    async def target_graph(tg_id: int, max_peers: int = Query(200, ge=10, le=500)) -> dict[str, Any]:
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        return build_graph(state.store, int(target["id"]), max_peers=max_peers)
+
+    @app.get("/api/targets/{tg_id}/activity", dependencies=[Depends(guard)])
+    async def target_activity(tg_id: int, limit: int = Query(60, ge=1, le=300)) -> dict[str, Any]:
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        target_pk = int(target["id"])
+        return {
+            "stats": state.store.activity_stats(target_pk),
+            "rows": state.store.activity_feed(target_pk, limit=limit),
+            "edges": state.store.target_edges(target_pk, limit=50),
+        }
+
+    @app.post("/api/targets/{tg_id}/activity/collect", dependencies=[Depends(guard)])
+    async def collect_target_activity(
+        tg_id: int,
+        days: int = Query(30, ge=1, le=365),
+        per_chat: int = Query(40, ge=1, le=200),
+        max_chats: int = Query(80, ge=1, le=500),
+    ) -> dict[str, Any]:
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
+        key = f"act:{tg_id}"
+        if state.running(key):
+            raise HTTPException(409, "Сбор активности уже идёт")
+        job = Job(key=key, kind="activity", target_id=tg_id)
+        job.state = {"phase": "старт", "done": 0, "total": 0, "found": 0}
+        state.jobs[key] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = progress
+
+        async def runner() -> None:
+            try:
+                await collect_activity(
+                    state.pool,
+                    state.store,
+                    settings,
+                    target,
+                    days=days,
+                    per_chat=per_chat,
+                    max_chats=max_chats,
+                    reporter=on_progress,
+                )
+                job.state = {**job.state, "phase": "готово"}
+            except asyncio.CancelledError:
+                job.state = {**job.state, "phase": "отменено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("api activity failed")
+                job.error = str(exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name=key)
+        return job.as_dict()
+
     @app.post("/api/targets/{tg_id}/scan", dependencies=[Depends(guard)])
     async def start_scan(tg_id: int, payload: ScanIn | None = None) -> dict[str, Any]:
         target = state.store.get_target(tg_id)
@@ -404,6 +472,10 @@ def create_app(settings: Settings) -> FastAPI:
                 "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}],
             }
         )
+
+    @app.get("/graph.js", include_in_schema=False)
+    async def graph_js() -> FileResponse:
+        return FileResponse(WEB_DIR / "graph.js", media_type="application/javascript")
 
     @app.get("/icon.svg", include_in_schema=False)
     async def icon() -> Any:

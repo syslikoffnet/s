@@ -47,6 +47,8 @@ def test_all_commands_registered() -> None:
         "target": ["list"],
         "scan": ["7126917488"],
         "cover": ["7126917488"],
+        "activity": ["7126917488"],
+        "graph": ["7126917488"],
         "groups": ["7126917488"],
         "catalog": [],
         "stats": [],

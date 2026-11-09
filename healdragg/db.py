@@ -27,7 +27,7 @@ from typing import Any
 
 from .util import group_link, now_ts
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -118,6 +118,45 @@ CREATE TABLE IF NOT EXISTS target_groups (
 CREATE INDEX IF NOT EXISTS idx_tg_target ON target_groups(target_id);
 CREATE INDEX IF NOT EXISTS idx_tg_group  ON target_groups(group_id);
 CREATE INDEX IF NOT EXISTS idx_tg_status ON target_groups(target_id, status);
+
+CREATE TABLE IF NOT EXISTS peers (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id      INTEGER NOT NULL UNIQUE,
+    username   TEXT,
+    first_name TEXT,
+    last_name  TEXT,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_peers_username ON peers(username);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id     INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    group_id      INTEGER NOT NULL REFERENCES groups(id)  ON DELETE CASCADE,
+    tg_msg_id     INTEGER NOT NULL,
+    date          INTEGER NOT NULL,
+    text          TEXT NOT NULL DEFAULT '',
+    reply_to_msg  INTEGER,
+    reply_to_peer INTEGER,
+    mentions      TEXT,
+    media         TEXT,
+    views         INTEGER,
+    collected_at  INTEGER NOT NULL,
+    UNIQUE(target_id, group_id, tg_msg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_messages_target ON messages(target_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_group  ON messages(group_id);
+
+CREATE TABLE IF NOT EXISTS edges (
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    peer_id   INTEGER NOT NULL REFERENCES peers(id)   ON DELETE CASCADE,
+    weight    INTEGER NOT NULL DEFAULT 0,
+    replies   INTEGER NOT NULL DEFAULT 0,
+    mentions  INTEGER NOT NULL DEFAULT 0,
+    last_seen INTEGER,
+    PRIMARY KEY (target_id, peer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_edges_weight ON edges(target_id, weight DESC);
 
 CREATE TABLE IF NOT EXISTS scans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -739,6 +778,165 @@ class Store:
     def touch_target_scan(self, tg_user_id: int) -> None:
         with self.tx() as conn:
             conn.execute("UPDATE targets SET last_scan_at = ? WHERE tg_user_id = ?", (now_ts(), tg_user_id))
+
+    # ── активность цели: сообщения, собеседники, связи ─────────────────────
+    def upsert_peer(
+        self,
+        tg_id: int,
+        *,
+        username: str | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
+    ) -> int:
+        ts = now_ts()
+        with self.tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO peers(tg_id, username, first_name, last_name, updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(tg_id) DO UPDATE SET
+                    username   = coalesce(excluded.username, peers.username),
+                    first_name = coalesce(excluded.first_name, peers.first_name),
+                    last_name  = coalesce(excluded.last_name, peers.last_name),
+                    updated_at = excluded.updated_at
+                """,
+                (int(tg_id), username, first_name, last_name, ts),
+            )
+            row = conn.execute("SELECT id FROM peers WHERE tg_id = ?", (int(tg_id),)).fetchone()
+        return int(row["id"])
+
+    def add_message(
+        self,
+        target_pk: int,
+        group_pk: int,
+        tg_msg_id: int,
+        *,
+        date: int,
+        text: str = "",
+        reply_to_msg: int | None = None,
+        reply_to_peer: int | None = None,
+        mentions: str | None = None,
+        media: str | None = None,
+        views: int | None = None,
+    ) -> bool:
+        with self.tx() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO messages(
+                    target_id, group_id, tg_msg_id, date, text, reply_to_msg,
+                    reply_to_peer, mentions, media, views, collected_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    target_pk,
+                    group_pk,
+                    int(tg_msg_id),
+                    int(date),
+                    (text or "")[:4000],
+                    reply_to_msg,
+                    reply_to_peer,
+                    mentions,
+                    media,
+                    views,
+                    now_ts(),
+                ),
+            )
+            return cur.rowcount > 0
+
+    def bump_edge(
+        self,
+        target_pk: int,
+        peer_pk: int,
+        *,
+        replies: int = 0,
+        mentions: int = 0,
+        ts: int | None = None,
+    ) -> None:
+        add = int(replies) + int(mentions)
+        with self.tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO edges(target_id, peer_id, weight, replies, mentions, last_seen)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(target_id, peer_id) DO UPDATE SET
+                    weight    = edges.weight + excluded.weight,
+                    replies   = edges.replies + excluded.replies,
+                    mentions  = edges.mentions + excluded.mentions,
+                    last_seen = max(coalesce(edges.last_seen, 0), coalesce(excluded.last_seen, 0))
+                """,
+                (target_pk, peer_pk, add, replies, mentions, ts or now_ts()),
+            )
+
+    def activity_stats(self, target_pk: int) -> dict[str, Any]:
+        row = self.query_one(
+            """
+            SELECT COUNT(*) AS messages,
+                   COUNT(DISTINCT group_id) AS chats,
+                   SUM(CASE WHEN reply_to_peer IS NOT NULL THEN 1 ELSE 0 END) AS replies,
+                   SUM(CASE WHEN coalesce(mentions, '') <> '' THEN 1 ELSE 0 END) AS mentioned,
+                   MIN(date) AS first_date,
+                   MAX(date) AS last_date
+              FROM messages WHERE target_id = ?
+            """,
+            (target_pk,),
+        ) or {}
+        links = self.query_one(
+            "SELECT COUNT(*) AS peers, coalesce(SUM(weight), 0) AS weight "
+            "FROM edges WHERE target_id = ?",
+            (target_pk,),
+        ) or {}
+        return {
+            "messages": int(row.get("messages") or 0),
+            "chats": int(row.get("chats") or 0),
+            "replies": int(row.get("replies") or 0),
+            "mentioned": int(row.get("mentioned") or 0),
+            "peers": int(links.get("peers") or 0),
+            "weight": int(links.get("weight") or 0),
+            "first_date": row.get("first_date"),
+            "last_date": row.get("last_date"),
+        }
+
+    def activity_feed(self, target_pk: int, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self.query(
+            """
+            SELECT m.*, g.title, g.username, g.link, g.kind, g.tg_id AS group_tg_id
+              FROM messages m JOIN groups g ON g.id = m.group_id
+             WHERE m.target_id = ?
+             ORDER BY m.date DESC, m.tg_msg_id DESC
+             LIMIT ?
+            """,
+            (target_pk, int(limit)),
+        )
+
+    def target_edges(self, target_pk: int, *, limit: int = 200) -> list[dict[str, Any]]:
+        return self.query(
+            """
+            SELECT e.*, p.tg_id, p.username, p.first_name, p.last_name
+              FROM edges e JOIN peers p ON p.id = e.peer_id
+             WHERE e.target_id = ?
+             ORDER BY e.weight DESC, coalesce(e.last_seen, 0) DESC
+             LIMIT ?
+            """,
+            (target_pk, int(limit)),
+        )
+
+    def chat_activity(self, target_pk: int) -> dict[int, int]:
+        rows = self.query(
+            "SELECT group_id, COUNT(*) AS n FROM messages WHERE target_id = ? GROUP BY group_id",
+            (target_pk,),
+        )
+        return {int(r["group_id"]): int(r["n"]) for r in rows}
+
+    def prune_activity(self, target_pk: int | None = None, *, days: int = 90) -> int:
+        cutoff = now_ts() - max(1, int(days)) * 86400
+        sql = "DELETE FROM messages WHERE date < ?"
+        params: list[Any] = [cutoff]
+        if target_pk is not None:
+            sql += " AND target_id = ?"
+            params.append(target_pk)
+        with self.tx() as conn:
+            cur = conn.execute(sql, params)
+            return int(cur.rowcount or 0)
 
     # ── цель ↔ группы ──────────────────────────────────────────────────────
     def upsert_target_group(

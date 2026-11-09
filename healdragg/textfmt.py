@@ -194,6 +194,81 @@ def grouped_int(value: int | float | None) -> str:
     return f"{int(value):,}".replace(",", " ")
 
 
+def render_network(
+    edges: Sequence[dict[str, Any]],
+    stats: dict[str, Any],
+    *,
+    tz: str = "Europe/Moscow",
+    limit: int = 10,
+) -> str:
+    """Топ собеседников цели + счётчики — для бота и консоли."""
+    lines = [
+        "🕸 <b>Сеть связей</b>",
+        "",
+        f"💬 сообщений: <b>{stats.get('messages', 0)}</b> · "
+        f"👥 собеседников: <b>{stats.get('peers', 0)}</b> · "
+        f"↩ ответов: <b>{stats.get('replies', 0)}</b>",
+        "",
+    ]
+    if not edges:
+        lines.append("Пока пусто — собери активность: /activity или `healdragg activity <id>`.")
+        return "\n".join(lines)
+    lines.append("Топ собеседников:")
+    for index, edge in enumerate(edges[:limit], start=1):
+        name = " ".join(p for p in (edge.get("first_name"), edge.get("last_name")) if p).strip()
+        if not name:
+            name = f"@{edge['username']}" if edge.get("username") else f"ID {edge['tg_id']}"
+        bits = [f"{index}. <b>{html.escape(name)}</b>"]
+        if edge.get("weight"):
+            bits.append(f"· {edge['weight']}")
+        if edge.get("replies"):
+            bits.append(f"↩{edge['replies']}")
+        if edge.get("mentions"):
+            bits.append(f"@ {edge['mentions']}")
+        if edge.get("last_seen"):
+            bits.append(f"· {fmt_relative(edge['last_seen'], tz)}")
+        lines.append(" ".join(bits))
+    lines.append("")
+    lines.append("<i>Паутина: панель → 🕸 Сеть или `healdragg graph <id> --html graph.html`</i>")
+    return "\n".join(lines)
+
+
+def render_feed(
+    rows: Sequence[dict[str, Any]],
+    *,
+    tz: str = "Europe/Moscow",
+    limit: int = 8,
+    title: str = "📜 Что пишет",
+) -> str:
+    """Последние сообщения цели — компактно, с ссылками на чаты."""
+    if not rows:
+        return (
+            f"{title}\n\nПока пусто — собери активность: /activity "
+            "или `healdragg activity <id>`."
+        )
+    lines = [f"{title}", ""]
+    for row in rows[:limit]:
+        when = fmt_relative(row.get("date"), tz)
+        chat = row.get("title") or "чат"
+        link = row.get("link")
+        chat_html = (
+            f'<a href="{html.escape(link)}">{html.escape(truncate(chat, 24))}</a>'
+            if link
+            else html.escape(truncate(chat, 24))
+        )
+        text = (row.get("text") or "").strip().replace("\n", " ")
+        if text:
+            text = html.escape(truncate(text, 180))
+        else:
+            text = "<i>без текста</i>"
+        media = f" · {html.escape(row['media'])}" if row.get("media") else ""
+        reply = " · ↩" if row.get("reply_to_peer") else ""
+        lines.append(f"▪ {when} · {chat_html}{media}{reply}\n{text}")
+        lines.append("")
+    lines.append("<i>Панель → 📜 Лента</i>")
+    return "\n".join(lines)
+
+
 def render_stats(stats: dict[str, Any], *, tz: str = "Europe/Moscow", title: str = "📚 База Healdragg") -> str:
     lines = [
         f"<b>{title}</b>",
@@ -293,6 +368,9 @@ HELP = """\
 /targets — все цели
 /scan — перепроверить последнюю цель
 /links — ссылки на чаты цели
+/activity — собрать сообщения и связи
+/network — топ собеседников
+/feed — что пишет цель
 /menu — карточка последней цели
 
 <i>Только публичные данные. Не используй для слежки за людьми без согласия.</i>"""

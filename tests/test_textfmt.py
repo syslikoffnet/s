@@ -122,3 +122,40 @@ def test_catalog_and_stats() -> None:
     assert "1 234" in stats
     assert "1.0 МБ" in stats
     assert progress_bar(5, 10, width=10) == "▓▓▓▓▓░░░░░"
+
+
+def test_render_network_and_feed() -> None:
+    from healdragg.textfmt import render_feed, render_network
+
+    edges = [
+        {
+            "tg_id": 777,
+            "first_name": "Катя",
+            "username": "katya",
+            "weight": 5,
+            "replies": 4,
+            "mentions": 1,
+            "last_seen": 1_760_000_000,
+        }
+    ]
+    stats = {"messages": 12, "peers": 1, "replies": 4}
+    text = render_network(edges, stats)
+    assert "Сеть связей" in text
+    assert "Катя" in text
+    assert "12" in text
+
+    rows = [
+        {
+            "title": "Чат <b>",
+            "link": "https://t.me/chat",
+            "text": "привет <script>",
+            "date": 1_760_000_000,
+            "media": "photo",
+            "reply_to_peer": 777,
+        }
+    ]
+    feed = render_feed(rows)
+    assert "Что пишет" in feed
+    assert "&lt;script&gt;" in feed
+    assert "https://t.me/chat" in feed
+    assert "photo" in feed

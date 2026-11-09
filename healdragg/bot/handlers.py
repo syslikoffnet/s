@@ -26,6 +26,8 @@ from ..textfmt import (
     fit_telegram,
     render_account_chats,
     render_catalog,
+    render_feed,
+    render_network,
     render_profile,
     render_scan_progress,
     render_scan_report,
@@ -570,6 +572,84 @@ async def cmd_links(message: Message, deps: Deps, command: CommandObject) -> Non
         return
     text, keyboard = _links_payload(deps, target, 1)
     await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+def _target_from_command(deps: Deps, command: CommandObject | None) -> dict[str, Any] | None:
+    raw = ((command.args if command else "") or "").strip()
+    target = deps.store.find_target(raw) if raw else None
+    if not target:
+        targets = deps.store.list_targets(limit=1)
+        target = targets[0] if targets else None
+    return target
+
+
+@router.message(Command("network", "graph"))
+async def cmd_network(message: Message, deps: Deps, command: CommandObject) -> None:
+    target = _target_from_command(deps, command)
+    if not target:
+        await message.answer("Пришли id цели — покажу, с кем она общается.")
+        return
+    target_pk = int(target["id"])
+    edges = deps.store.target_edges(target_pk, limit=10)
+    stats = deps.store.activity_stats(target_pk)
+    await message.answer(
+        render_network(edges, stats, tz=deps.settings.tz),
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(Command("feed"))
+async def cmd_feed(message: Message, deps: Deps, command: CommandObject) -> None:
+    target = _target_from_command(deps, command)
+    if not target:
+        await message.answer("Пришли id цели — покажу, что она пишет.")
+        return
+    rows = deps.store.activity_feed(int(target["id"]), limit=8)
+    await message.answer(
+        render_feed(rows, tz=deps.settings.tz),
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(Command("activity"))
+async def cmd_activity(message: Message, deps: Deps, command: CommandObject) -> None:
+    target = _target_from_command(deps, command)
+    if not target:
+        await message.answer("Пришли id цели — соберу её сообщения и связи.")
+        return
+    tg_id = int(target["tg_user_id"])
+    if deps.store.count_target_groups(int(target["id"])) == 0:
+        await message.answer("Сначала нужен список чатов: /target " + str(tg_id))
+        return
+    await message.answer(
+        "📡 Собираю последние сообщения и связи. Это может занять пару минут — "
+        "пришлю итог, когда закончу."
+    )
+
+    async def run() -> None:
+        from ..activity import collect_activity
+
+        try:
+            await collect_activity(
+                deps.pool,
+                deps.store,
+                deps.settings,
+                target,
+                days=deps.settings.activity_days,
+                per_chat=deps.settings.activity_per_chat,
+                max_chats=deps.settings.activity_max_chats,
+            )
+            stats = deps.store.activity_stats(int(target["id"]))
+            edges = deps.store.target_edges(int(target["id"]), limit=10)
+            await message.answer(
+                render_network(edges, stats, tz=deps.settings.tz),
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("activity failed")
+            await message.answer(f"⚠️ Не удалось собрать активность: {exc}")
+
+    asyncio.create_task(run())
 
 
 @router.callback_query(F.data.startswith("p:"))

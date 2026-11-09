@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  healdragg session add main\n"
             "  healdragg bootstrap --join --join-limit 10\n"
             "  healdragg cover @durov --join-limit 15\n"
+            "  healdragg graph @durov --html graph.html --open\n"
             "  healdragg target add @durov\n"
             "  healdragg groups 7126917488 --interactive\n"
             "  healdragg bot\n"
@@ -131,6 +132,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_cov.add_argument("--join-limit", type=int, default=None, help="вступлений за сутки")
     p_cov.add_argument("--queries", nargs="*", help="слова для поиска чатов")
     p_cov.add_argument("--page", type=int, default=1)
+
+    p_act = sub.add_parser("activity", help="что пишет цель и с кем общается")
+    p_act.add_argument("query")
+    p_act.add_argument("--days", type=int, default=30)
+    p_act.add_argument("--per-chat", type=int, default=40)
+    p_act.add_argument("--max-chats", type=int, default=80)
+    p_act.add_argument("--top", type=int, default=12)
+
+    p_graph = sub.add_parser("graph", help="граф связей цели (HTML или JSON)")
+    p_graph.add_argument("query")
+    p_graph.add_argument("--html", help="сохранить автономную HTML-страницу")
+    p_graph.add_argument("--json", action="store_true", help="вывести JSON")
+    p_graph.add_argument("--peers", type=int, default=200)
+    p_graph.add_argument("--open", action="store_true", help="открыть HTML в браузере")
 
     p_g = sub.add_parser("groups", help="список чатов цели")
     p_g.add_argument("query")
@@ -824,6 +839,189 @@ async def _cover(args: argparse.Namespace, settings: Settings) -> int:
         store.close()
 
 
+def cmd_activity(args: argparse.Namespace, settings: Settings) -> int:
+    return asyncio.run(_activity(args, settings))
+
+
+async def _activity(args: argparse.Namespace, settings: Settings) -> int:
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+
+    from .activity import collect_activity
+    from .tg import SessionPool
+
+    store = _store(settings)
+    pool = SessionPool(settings, store)
+    try:
+        target = await _need_target(settings, store, args.query)
+        if not target:
+            return 1
+        progress = Progress(
+            SpinnerColumn(style="accent"),
+            TextColumn("[bold]{task.description}"),
+            BarColumn(bar_width=26, style="grey30", complete_style="accent"),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        )
+        with progress:
+            task = progress.add_task("читаю сообщения…", total=0)
+
+            async def on_progress(state: dict[str, Any]) -> None:
+                progress.update(
+                    task,
+                    description=str(state.get("phase") or "работаю"),
+                    total=int(state.get("total") or 0) or None,
+                    completed=int(state.get("done") or 0),
+                )
+
+            stats = await collect_activity(
+                pool,
+                store,
+                settings,
+                target,
+                days=args.days,
+                per_chat=args.per_chat,
+                max_chats=args.max_chats,
+                reporter=on_progress,
+            )
+        console.print(_print_banner_only())
+        _print_target(target, store.target_stats(int(target["id"])), settings)
+        console.print(_activity_summary(stats))
+        peers = store.target_edges(int(target["id"]), limit=args.top)
+        if peers:
+            console.print(_peers_table(peers, settings))
+        feed = store.activity_feed(int(target["id"]), limit=8)
+        if feed:
+            console.print(_feed_view(feed, settings))
+        return 0
+    except KeyboardInterrupt:
+        err.print("[warn]прервано[/]")
+        return 130
+    except RuntimeError as exc:
+        err.print(f"[bad]✗ {exc}[/]")
+        return 1
+    finally:
+        await pool.close()
+        store.close()
+
+
+def _activity_summary(stats: dict[str, Any]) -> Panel:
+    body = Text()
+    body.append("сообщений ", style="muted")
+    body.append(str(stats.get("messages", 0)), style="bold")
+    body.append("   собеседников ", style="muted")
+    body.append(str(stats.get("peers", 0)), style="bold")
+    body.append("\nответов ", style="muted")
+    body.append(str(stats.get("replies", 0)), style="bold")
+    body.append("   упоминаний ", style="muted")
+    body.append(str(stats.get("mentions", 0)), style="bold")
+    body.append("   чатов ", style="muted")
+    body.append(str(stats.get("chats", 0)), style="bold")
+    return Panel(
+        body,
+        title="[accent]🕸 активность[/]",
+        title_align="left",
+        box=box.ROUNDED,
+        border_style="#50fa7b",
+        padding=(0, 1),
+    )
+
+
+def _peers_table(edges: Sequence[dict[str, Any]], settings: Settings) -> Table:
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        show_edge=False,
+        pad_edge=False,
+        expand=True,
+        title="[accent]🤝 с кем общается[/]",
+        title_justify="left",
+    )
+    table.add_column("#", justify="right", width=3, style="muted")
+    table.add_column("собеседник", overflow="ellipsis", no_wrap=True)
+    table.add_column("сила", justify="right", width=6, style="accent")
+    table.add_column("ответы", justify="right", width=7)
+    table.add_column("упом.", justify="right", width=6)
+    table.add_column("последний", width=14, style="muted")
+    for index, edge in enumerate(edges, start=1):
+        name = " ".join(p for p in (edge.get("first_name"), edge.get("last_name")) if p).strip()
+        if not name:
+            name = f"@{edge['username']}" if edge.get("username") else f"ID {edge['tg_id']}"
+        table.add_row(
+            str(index),
+            name,
+            str(edge.get("weight") or 0),
+            str(edge.get("replies") or 0),
+            str(edge.get("mentions") or 0),
+            fmt_relative(edge.get("last_seen"), settings.tz),
+        )
+    return table
+
+
+def _feed_view(rows: Sequence[dict[str, Any]], settings: Settings) -> Panel:
+    lines = Text()
+    for index, row in enumerate(rows):
+        if index:
+            lines.append("\n")
+        lines.append(f"▪ {fmt_relative(row.get('date'), settings.tz)}", style="muted")
+        lines.append(f"  {truncate(row.get('title') or 'чат', 28)}", style="accent")
+        if row.get("media"):
+            lines.append(f" · {row['media']}", style="muted")
+        if row.get("reply_to_peer"):
+            lines.append(" · ответ", style="muted")
+        text = (row.get("text") or "").strip()
+        if text:
+            lines.append("\n  " + truncate(text.replace("\n", " "), 96), style="default")
+    return Panel(
+        lines,
+        title="[accent]📜 что пишет[/]",
+        title_align="left",
+        box=box.ROUNDED,
+        border_style="#6272a4",
+        padding=(0, 1),
+    )
+
+
+def cmd_graph(args: argparse.Namespace, settings: Settings) -> int:
+    from .graph import build_graph, render_html
+
+    store = _store(settings)
+    try:
+        target = store.find_target(args.query)
+        if not target:
+            console.print(f"[bad]цель «{args.query}» не найдена[/] · healdragg target add {args.query}")
+            return 1
+        graph = build_graph(store, int(target["id"]), max_peers=args.peers)
+        if args.json:
+            print(json.dumps(graph, ensure_ascii=False, indent=2, default=str))
+            return 0
+        if args.html:
+            path = Path(args.html).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(render_html(graph), encoding="utf-8")
+            console.print(f"[ok]✓ граф сохранён:[/] {path} ({human_size(path.stat().st_size)})")
+            if args.open:
+                import webbrowser
+
+                webbrowser.open(path.resolve().as_uri())
+            return 0
+        console.print(_print_banner_only())
+        _print_target(target, store.target_stats(int(target["id"])), settings)
+        console.print(_activity_summary(graph["stats"]))
+        peers = store.target_edges(int(target["id"]), limit=12)
+        if peers:
+            console.print(_peers_table(peers, settings))
+        console.print(
+            Text.from_markup(
+                "\n[muted]интерактивная паутина:[/] "
+                "[accent]healdragg graph " + str(target["tg_user_id"]) + " --html graph.html --open[/]"
+            )
+        )
+        return 0
+    finally:
+        store.close()
+
+
 def cmd_groups(args: argparse.Namespace, settings: Settings) -> int:
     store = _store(settings)
     target = store.find_target(args.query)
@@ -1159,6 +1357,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "target": lambda: cmd_target(args, settings),
         "scan": lambda: cmd_scan(args, settings),
         "cover": lambda: cmd_cover(args, settings),
+        "activity": lambda: cmd_activity(args, settings),
+        "graph": lambda: cmd_graph(args, settings),
         "groups": lambda: cmd_groups(args, settings),
         "catalog": lambda: cmd_catalog(args, settings),
         "stats": lambda: cmd_stats(settings),
@@ -1180,6 +1380,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "  [bold]target[/]      цели",
             "  [bold]scan[/]        проверить участие цели",
             "  [bold]cover[/]       собрать базу + проверить цель одной командой",
+            "  [bold]activity[/]    что цель пишет и с кем общается",
+            "  [bold]graph[/]       паутина связей (HTML для браузера)",
             "  [bold]groups[/]      список чатов (с листалкой)",
             "  [bold]catalog[/]     каталог групп",
             "  [bold]stats[/]       статистика",

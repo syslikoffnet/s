@@ -82,6 +82,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUi() {
+        findViewById<Button>(R.id.localBtn).setOnClickListener {
+            urlInput.setText(LOCAL_URL)
+            Toast.makeText(this, R.string.local_hint, Toast.LENGTH_LONG).show()
+        }
         findViewById<Button>(R.id.connectBtn).setOnClickListener {
             val base = normalize(urlInput.text.toString())
             if (base.isBlank()) {
@@ -109,7 +113,9 @@ class MainActivity : AppCompatActivity() {
             builtInZoomControls = false
             displayZoomControls = false
             setSupportZoom(false)
-            cacheMode = WebSettings.LOAD_DEFAULT
+            // офлайн-режим: если движок недоступен, WebView отдаёт кэш,
+            // а JS-панель показывает последний снимок из localStorage
+            cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             mediaPlaybackRequiresUserGesture = true
         }
@@ -211,5 +217,6 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS = "healdragg"
         private const val KEY_URL = "base_url"
         private const val KEY_TOKEN = "api_token"
+        private const val LOCAL_URL = "http://127.0.0.1:8080/"
     }
 }

@@ -153,6 +153,17 @@
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
+                <Button
+                    android:id="@+id/localBtn"
+                    android:layout_width="match_parent"
+                    android:layout_height="46dp"
+                    android:layout_marginTop="10dp"
+                    android:background="@drawable/card_bg"
+                    android:text="@string/connect_local"
+                    android:textAllCaps="false"
+                    android:textColor="@color/accent"
+                    android:textSize="13sp" />
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

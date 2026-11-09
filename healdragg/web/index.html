@@ -116,6 +116,45 @@
     .brand{font-size:18px}
     .wrap{padding:14px 12px calc(24px + env(safe-area-inset-bottom))}
   }
+
+  /* ── паутина / лента ─────────────────────────────────────────────────── */
+  .overlay{position:fixed;inset:0;z-index:60;background:#07090f;display:block}
+  .overlay.hidden{display:none}
+  .overlay canvas#graphCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  .ov-top{position:absolute;top:12px;left:12px;right:12px;z-index:65;display:flex;gap:10px;
+    align-items:center;flex-wrap:wrap;padding:10px 14px;border:1px solid #1d2b44;border-radius:14px;
+    background:rgba(9,13,22,.86);backdrop-filter:blur(9px)}
+  .ov-title{font-size:14px;letter-spacing:.05em;text-transform:uppercase;color:#00f5d4;font-weight:700}
+  .ov-title span{color:#8fa6c8;text-transform:none;letter-spacing:0;font-weight:400;margin-left:6px}
+  .ov-top .actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  .ov-legend{position:absolute;bottom:14px;left:14px;z-index:65;display:flex;gap:14px;
+    padding:8px 12px;border:1px solid #1d2b44;border-radius:12px;background:rgba(9,13,22,.86);
+    font-size:12px;color:#9db7d8}
+  .ov-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+  .ov-counters{position:absolute;bottom:58px;left:14px;z-index:65;font-size:11px;color:#5c7392}
+  #stats{position:absolute;bottom:14px;right:14px;z-index:65;font-size:12px;color:#8fa6c8;
+    padding:8px 12px;border:1px solid #1d2b44;border-radius:12px;background:rgba(9,13,22,.86)}
+  #panel{position:absolute;top:76px;right:14px;width:320px;max-height:calc(100% - 150px);
+    overflow:auto;padding:16px;border:1px solid #1d2b44;border-radius:16px;
+    background:rgba(10,15,26,.94);backdrop-filter:blur(10px);display:none;z-index:66}
+  #panel.open{display:block}
+  #panel h2{margin:0 0 8px;font-size:16px;padding-right:20px}
+  #panel .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
+    border:1px solid #27405f;color:#9db7d8;margin:0 6px 8px 0}
+  #panel dl{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;font-size:12px}
+  #panel dt{color:#7c93b3}
+  #panel dd{margin:0}
+  #panel a{color:#00f5d4}
+  #panel .close{position:absolute;top:10px;right:12px;cursor:pointer;color:#7c93b3}
+  .feedWrap{position:absolute;inset:12px;display:flex;flex-direction:column;gap:10px}
+  .feedList{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:2px 4px 20px}
+  .feedItem{padding:10px 12px;border:1px solid #16233a;border-radius:12px;background:#0a0f1a}
+  .feedHead{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:12px;color:#7c93b3}
+  .feedHead a{color:#00f5d4;text-decoration:none}
+  .feedHead a:hover{text-decoration:underline}
+  .feedHead .tag{margin-left:auto;border:1px solid #27405f;border-radius:999px;padding:1px 8px;
+    font-size:10px;color:#9db7d8}
+  .feedText{margin-top:5px;font-size:13px;line-height:1.45;color:#dbe7fa;white-space:pre-wrap;word-break:break-word}
 </style>
 </head>
 <body>
@@ -169,6 +208,8 @@
       <div class="actions">
         <button class="btn cyan" id="groupsBtn">👁 Группы</button>
         <button class="btn ghost small" id="scanBtn">🔄 Обновить</button>
+        <button class="btn cyan small" id="graphBtn">🕸 Сеть</button>
+        <button class="btn ghost small" id="feedBtn">📜 Лента</button>
         <button class="btn ghost small" id="rawBtn">📄 Текст</button>
         <button class="btn ghost small" id="bootBtn">🚀 Собрать базу</button>
       </div>
@@ -200,11 +241,41 @@
     </section>
 
     <footer class="foot">
-      Healdragg · публичные данные · сообщения не сохраняются<br />
+      Healdragg · публичные данные · сообщения цели — локально и только по команде<br />
       <span id="ver"></span>
     </footer>
   </main>
 </div>
+<section id="graphOverlay" class="overlay hidden">
+  <canvas id="graphCanvas"></canvas>
+  <div class="ov-top">
+    <div class="ov-title">🕸 сеть связей <span id="graphSub"></span></div>
+    <div class="actions">
+      <button class="btn cyan small" id="collectBtn">📡 Собрать активность</button>
+      <button class="btn ghost small" id="graphClose">✕ Закрыть</button>
+    </div>
+  </div>
+  <div class="ov-legend">
+    <span><i style="background:#ff2e63"></i>цель</span>
+    <span><i style="background:#00f5d4"></i>чат</span>
+    <span><i style="background:#7b61ff"></i>приватный</span>
+    <span><i style="background:#fee440"></i>собеседник</span>
+  </div>
+  <div id="panel"><span class="close">✕</span><h2></h2><div class="body"></div></div>
+  <div class="ov-counters" id="counters"></div>
+  <div id="stats"></div>
+</section>
+
+<section id="feedOverlay" class="overlay hidden">
+  <div class="feedWrap">
+    <div class="ov-top" style="position:static">
+      <div class="ov-title" id="feedTitle">📜 что пишет</div>
+      <div class="actions"><button class="btn ghost small" id="feedClose">✕ Закрыть</button></div>
+    </div>
+    <div class="feedList" id="feedList"></div>
+  </div>
+</section>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -255,17 +326,52 @@
     return m;
   }
 
+  const CACHE_PREFIX = 'hd_cache:';
+
+  function setOffline(on) {
+    const pill = $('status');
+    if (!pill) return;
+    pill.innerHTML = on
+      ? '<span class="dot" style="background:#ffb86c"></span>офлайн · кэш'
+      : '<span class="dot"></span>live';
+  }
+
+  function cacheGet(path) {
+    try {
+      const raw = localStorage.getItem(CACHE_PREFIX + path);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  function cachePut(path, data) {
+    try {
+      localStorage.setItem(CACHE_PREFIX + path, JSON.stringify(data));
+    } catch (e) { /* переполнение localStorage — не критично */ }
+  }
+
   async function api(path, opts = {}) {
+    const method = (opts.method || 'GET').toUpperCase();
     const headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
     if (state.token) headers['X-Api-Token'] = state.token;
-    const res = await fetch(path, Object.assign({}, opts, {headers}));
+    let res;
+    try {
+      res = await fetch(path, Object.assign({}, opts, {headers}));
+    } catch (e) {
+      if (method === 'GET') {
+        const cached = cacheGet(path);
+        if (cached !== null) { setOffline(true); return cached; }
+      }
+      throw new Error('нет связи с движком');
+    }
     if (res.status === 401) { showLogin(); throw new Error('Требуется токен'); }
     if (!res.ok) {
       let detail = res.statusText;
       try { const j = await res.json(); detail = j.detail || detail; } catch (e) {}
       throw new Error(detail);
     }
-    return res.json();
+    const data = await res.json();
+    if (method === 'GET') { setOffline(false); cachePut(path, data); }
+    return data;
   }
 
   function showLogin() {
@@ -462,6 +568,80 @@
     } catch (e) { toast(e.message); }
   }
 
+  // ── паутина и лента ─────────────────────────────────────────────────────
+  let graphView = null;
+
+  function closeGraph() {
+    if (graphView) { graphView.destroy(); graphView = null; }
+    $('graphOverlay').classList.add('hidden');
+    const panel = $('panel');
+    if (panel) panel.classList.remove('open');
+  }
+
+  async function openGraph() {
+    if (!state.target) return toast('Сначала выбери цель');
+    const tg = state.target.tg_user_id;
+    $('graphSub').textContent = state.target.username ? '@' + state.target.username : String(tg);
+    $('graphOverlay').classList.remove('hidden');
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    try {
+      const data = await api('/api/targets/' + tg + '/graph');
+      if (graphView) graphView.destroy();
+      graphView = new HealdraggGraph($('graphCanvas'), data);
+      graphView.mount();
+      if (!data.stats || !data.stats.messages) {
+        toast('Пока нет сообщений — нажми «Собрать активность»', 3200);
+      }
+    } catch (e) {
+      toast(e.message);
+      closeGraph();
+    }
+  }
+
+  async function collectActivity() {
+    if (!state.target) return toast('Сначала выбери цель');
+    const tg = state.target.tg_user_id;
+    try {
+      const job = await api('/api/targets/' + tg + '/activity/collect', {method: 'POST'});
+      toast('Собираю активность…', 2600);
+      const timer = setInterval(async () => {
+        try {
+          const jobs = await api('/api/jobs');
+          const current = jobs.find(j => j.key === (job.key || ('act:' + tg)));
+          if (!current) return;
+          const st = current.state || {};
+          const sub = $('graphSub');
+          if (sub) sub.textContent = (st.phase || 'сбор') + ' · ' + (st.done || 0) + (st.total ? '/' + st.total : '');
+          if (current.finished) {
+            clearInterval(timer);
+            toast(current.error ? 'Ошибка: ' + current.error : 'Активность собрана', 3000);
+            setTimeout(() => openGraph(), 600);
+          }
+        } catch (e) { /* ignore */ }
+      }, 2000);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function openFeed() {
+    if (!state.target) return toast('Сначала выбери цель');
+    try {
+      const data = await api('/api/targets/' + state.target.tg_user_id + '/activity?limit=150');
+      const rows = data.rows || [];
+      $('feedTitle').textContent = '📜 что пишет · ' +
+        (state.target.username ? '@' + state.target.username : state.target.tg_user_id);
+      $('feedList').innerHTML = rows.length ? rows.map(r => {
+        const head = '<span>' + esc(fmtDt(r.date)) + '</span>' +
+          (r.link ? '<a href="' + esc(r.link) + '" target="_blank" rel="noopener">' + esc(r.title || 'чат') + '</a>'
+                  : '<span>' + esc(r.title || 'чат') + '</span>') +
+          (r.media ? '<span class="tag">' + esc(r.media) + '</span>' : '') +
+          (r.reply_to_peer ? '<span class="tag">↩ ответ</span>' : '');
+        return '<div class="feedItem"><div class="feedHead">' + head + '</div>' +
+          (r.text ? '<div class="feedText">' + esc(r.text) + '</div>' : '') + '</div>';
+      }).join('') : '<div class="empty">Пока пусто — нажми «📡 Собрать активность» в паутине.</div>';
+      $('feedOverlay').classList.remove('hidden');
+    } catch (e) { toast(e.message); }
+  }
+
   // ── обработчики ──────────────────────────────────────────────────────────
   $('loginBtn').addEventListener('click', () => {
     const t = $('tokenInput').value.trim();
@@ -487,6 +667,17 @@
     startJob('/api/targets/' + state.target.tg_user_id + '/scan', 'scan:' + state.target.tg_user_id);
   });
   $('bootBtn').addEventListener('click', () => startJob('/api/bootstrap', 'boot'));
+  $('graphBtn').addEventListener('click', openGraph);
+  $('feedBtn').addEventListener('click', openFeed);
+  $('collectBtn').addEventListener('click', collectActivity);
+  $('graphClose').addEventListener('click', closeGraph);
+  $('feedClose').addEventListener('click', () => $('feedOverlay').classList.add('hidden'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeGraph();
+      $('feedOverlay').classList.add('hidden');
+    }
+  });
 
   async function boot() {
     const params = new URLSearchParams(location.search);

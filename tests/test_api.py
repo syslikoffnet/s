@@ -112,3 +112,19 @@ def test_session_pool_without_credentials(tmp_path: Path) -> None:
     pool = SessionPool(settings, store)
     assert pool.connected() == []
     store.close()
+
+
+def test_graph_and_activity_endpoints(client: TestClient) -> None:
+    graph = client.get(f"/api/targets/{DEMO_TARGET}/graph", headers=HEADERS)
+    assert graph.status_code == 200
+    payload = graph.json()
+    assert payload["target"]["tg_id"] == DEMO_TARGET
+    assert any(node["type"] == "chat" for node in payload["nodes"])
+
+    activity = client.get(f"/api/targets/{DEMO_TARGET}/activity", headers=HEADERS).json()
+    assert activity["stats"]["messages"] > 0
+    assert activity["rows"] and activity["rows"][0]["text"]
+
+    script = client.get("/graph.js")
+    assert script.status_code == 200
+    assert "HealdraggGraph" in script.text

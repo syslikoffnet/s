@@ -60,6 +60,19 @@ DEMO_TAILS = [
 
 DEMO_SUFFIXES = ("", " Flow", " | RU", " chat", " 2.0", " | чат", " ☕", " 💙", " 🥷", " | FLOW")
 
+DEMO_PEERS: list[tuple[str, str | None, str]] = [
+    ("Катя", "katya_m", "ну ты где там? 👀"),
+    ("Макс", "max_flood", "го в доту вечером"),
+    ("Дима", None, "скинь инфу по той теме"),
+    ("Аня", "anya_art", "я набросала пару идей, глянешь?"),
+    ("Слава", "slava_dev", "пофиксил, вроде работает"),
+    ("Рита", "rita_chat", "созвон в 8?"),
+    ("Тимур", "timur_gg", "ору, это было сильно"),
+    ("Лиза", None, "спасибо, выручил"),
+    ("Гоша", "gosha_fx", "курс опять скачет"),
+    ("Настя", "nastya_ph", "фотки залила в чат"),
+]
+
 
 def seed_demo(store: Store, *, target_id: int = DEMO_TARGET, total: int = 115) -> dict[str, Any]:
     """Наливает демо-базу. Идемпотентно: повторный вызов не плодит дубли."""
@@ -93,6 +106,7 @@ def seed_demo(store: Store, *, target_id: int = DEMO_TARGET, total: int = 115) -
         title = rnd.choice(DEMO_TAILS) + rnd.choice(DEMO_SUFFIXES)
         rows.append((month, day, rnd.random() < 0.28, "member", title, rnd.randint(3, 9000)))
 
+    group_pks: list[int] = []
     for order, (month, day, private, status, title, messages) in enumerate(rows):
         year = today.year if order == 0 else today.year - 1
         date = datetime(year, month, day, rnd.randint(0, 23), rnd.randint(0, 59), tzinfo=get_tz(tz))
@@ -121,6 +135,43 @@ def seed_demo(store: Store, *, target_id: int = DEMO_TARGET, total: int = 115) -
             source="own_session",
             session="demo",
         )
+        group_pks.append(group_pk)
+
+    # активность: последние сообщения цели и связи с собеседниками
+    if group_pks and store.activity_stats(target_pk)["messages"] == 0:
+        peers: list[int] = []
+        for offset, (first, username, _line) in enumerate(DEMO_PEERS):
+            peers.append(
+                store.upsert_peer(
+                    8000000000 + offset,
+                    username=username,
+                    first_name=first,
+                )
+            )
+        for index in range(90):
+            peer_pk = peers[index % len(peers)] if index % 3 else None
+            date = ts_now - rnd.randint(0, 21 * 86400)
+            text = DEMO_PEERS[index % len(DEMO_PEERS)][2]
+            if index % 4 == 0:
+                text = f"@{DEMO_PEERS[(index + 3) % len(DEMO_PEERS)][0].lower()} {text}"
+            store.add_message(
+                target_pk,
+                group_pks[index % len(group_pks)],
+                700000 + index,
+                date=date,
+                text=text,
+                reply_to_peer=(8000000000 + (index % len(peers))) if peer_pk else None,
+                media="photo" if index % 9 == 0 else None,
+                views=rnd.randint(20, 4000) if index % 5 == 0 else None,
+            )
+            if peer_pk:
+                store.bump_edge(
+                    target_pk,
+                    peer_pk,
+                    replies=1 if index % 2 else 0,
+                    mentions=1 if index % 4 == 0 else 0,
+                    ts=date,
+                )
 
     store.set_meta("demo_seeded", "1")
     store.log_event("info", f"демо-база: {len(rows)} чатов", "demo")
@@ -142,5 +193,6 @@ def clear_demo(store: Store) -> None:
         conn.execute("DELETE FROM sessions WHERE name = 'demo'")
         conn.execute("DELETE FROM targets WHERE notes = 'демо-данные'")
         conn.execute("DELETE FROM groups WHERE discovered_from = 'demo'")
+        conn.execute("DELETE FROM peers WHERE tg_id BETWEEN 8000000000 AND 8999999999")
         conn.execute("DELETE FROM events WHERE source = 'demo'")
     store.set_meta("demo_seeded", "0")
