@@ -108,6 +108,38 @@ def pager(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def links_page(
+    rows: Sequence[dict],
+    target_id: int,
+    page: Page,
+) -> InlineKeyboardMarkup:
+    """Кнопки-ссылки: каждая ведёт прямо в чат (t.me/… или t.me/c/…)."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    start = (page.page - 1) * page.size
+    for offset, row in enumerate(rows, start=1):
+        link = (row.get("link") or "").strip()
+        if not link:
+            continue
+        title = (row.get("title") or "чат").strip()
+        label = f"{start + offset}. {title}"
+        if len(label) > 60:
+            label = label[:59] + "…"
+        buttons.append([InlineKeyboardButton(text=label, url=link)])
+    if not buttons:
+        buttons.append([_btn("Ссылок пока нет", "noop")])
+
+    nav: list[InlineKeyboardButton] = []
+    if page.has_prev:
+        nav.append(_btn(f"{page.page - 1} ⬅", f"lnk:{target_id}:{page.page - 1}"))
+    nav.append(_btn(f"· {page.page}/{page.pages} ·", "noop"))
+    if page.has_next:
+        nav.append(_btn(f"➡ {page.page + 1}", f"lnk:{target_id}:{page.page + 1}"))
+    if len(nav) > 1:
+        buttons.append(nav)
+    buttons.append([_btn(GROUPS_BUTTON, f"g:{target_id}:{page.page}"), _btn("🏠 Меню", "home")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def catalog_pager(page: Page, *, extra: Sequence[Sequence[InlineKeyboardButton]] = ()) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     nav: list[InlineKeyboardButton] = []

@@ -140,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_g.add_argument("--plain", action="store_true", help="без омоглифов")
     p_g.add_argument("--json", action="store_true", help="машинный вывод")
     p_g.add_argument("--html", action="store_true", help="текст для Telegram")
+    p_g.add_argument("--links", action="store_true", help="показать ссылки на чаты")
 
     p_c = sub.add_parser("catalog", help="каталог групп")
     p_c.add_argument("--page", type=int, default=1)
@@ -262,6 +263,29 @@ def _groups_view(
 
 
 # ── команды ────────────────────────────────────────────────────────────────
+def _links_view(rows: Sequence[dict[str, Any]], page: Page) -> Table:
+    """Таблица «№ · чат · ссылка» — для `healdragg groups --links`."""
+    table = Table(
+        box=box.SIMPLE_HEAD,
+        show_edge=False,
+        pad_edge=False,
+        expand=True,
+        title=f"[accent]🔗 Ссылки на чаты[/] · cтρаница {page.page} из {page.pages}",
+        title_justify="left",
+    )
+    table.add_column("#", justify="right", style="muted", width=4, no_wrap=True)
+    table.add_column("Чат", overflow="ellipsis", no_wrap=True)
+    table.add_column("Ссылка", style="accent", overflow="fold")
+    start = (page.page - 1) * page.size
+    for offset, row in enumerate(rows, start=1):
+        table.add_row(
+            str(start + offset),
+            row.get("title") or "—",
+            row.get("link") or "[muted]нет публичной ссылки[/]",
+        )
+    return table
+
+
 def cmd_init(settings: Settings) -> int:
     settings.ensure_dirs()
     env_path = settings.env_file or (Path.cwd() / ".env")
@@ -820,6 +844,15 @@ def cmd_groups(args: argparse.Namespace, settings: Settings) -> int:
             "groups": store.list_target_groups(int(target["id"]), page=args.page, size=size),
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        store.close()
+        return 0
+
+    if args.links:
+        page = Page.build(total, args.page, size)
+        rows = store.list_target_groups(int(target["id"]), page=page.page, size=size)
+        console.print(_print_banner_only())
+        _print_target(target, stats, settings)
+        console.print(_links_view(rows, page))
         store.close()
         return 0
 

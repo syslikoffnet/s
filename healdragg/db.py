@@ -25,9 +25,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from .util import now_ts
+from .util import group_link, now_ts
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS groups (
     access_hash     INTEGER,
     title           TEXT NOT NULL DEFAULT '',
     username        TEXT,
+    link            TEXT,
     kind            TEXT NOT NULL DEFAULT 'group',
     is_public       INTEGER NOT NULL DEFAULT 0,
     is_megagroup    INTEGER NOT NULL DEFAULT 0,
@@ -166,6 +167,7 @@ GROUP_FIELDS = (
     "access_hash",
     "title",
     "username",
+    "link",
     "kind",
     "is_public",
     "is_megagroup",
@@ -180,7 +182,7 @@ GROUP_FIELDS = (
 TARGET_GROUP_SELECT = """
 SELECT tg.target_id, tg.group_id, tg.status, tg.source, tg.session,
        tg.found_at, tg.updated_at,
-       g.tg_id, g.title, g.username, g.kind, g.is_public, g.members_count,
+       g.tg_id, g.title, g.username, g.link, g.kind, g.is_public, g.members_count,
        g.messages_total, g.last_message_at
   FROM target_groups tg
   JOIN groups g ON g.id = tg.group_id
@@ -226,11 +228,30 @@ class Store:
                 self._fts = True
             except sqlite3.DatabaseError:
                 self._fts = False
+            self._migrate_columns()
             version = self.get_meta("schema_version")
             if version is None:
                 self.set_meta("schema_version", str(SCHEMA_VERSION))
                 self.set_meta("created_at", str(now_ts()))
             self._conn.commit()
+
+    def _migrate_columns(self) -> None:
+        """Догоняющие ALTER TABLE для баз, созданных старыми версиями."""
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(groups)")}
+        if "link" not in cols:
+            self._conn.execute("ALTER TABLE groups ADD COLUMN link TEXT")
+        # ссылки для уже собранных чатов: публичные — по username,
+        # приватные супергруппы/каналы — рабочая t.me/c/… для участников
+        self._conn.execute(
+            "UPDATE groups SET link = 'https://t.me/' || username "
+            "WHERE link IS NULL AND username IS NOT NULL AND username <> ''"
+        )
+        self._conn.execute(
+            "UPDATE groups SET link = 'https://t.me/c/' || "
+            "(CASE WHEN tg_id < 0 THEN -tg_id - 1000000000000 ELSE tg_id END) || '/1' "
+            "WHERE link IS NULL AND kind IN ('channel', 'supergroup') AND tg_id <> 0"
+        )
+        self._conn.commit()
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -385,6 +406,7 @@ class Store:
         title: str = "",
         access_hash: int | None = None,
         username: str | None = None,
+        link: str | None = None,
         kind: str = "group",
         is_public: bool | None = None,
         is_megagroup: bool = False,
@@ -397,18 +419,25 @@ class Store:
     ) -> int:
         if is_public is None:
             is_public = bool(username)
+        if link is None:
+            link = group_link(tg_id, username, kind)
         ts = now_ts()
         with self.tx() as conn:
             conn.execute(
                 """
-                INSERT INTO groups(tg_id, access_hash, title, username, kind, is_public, is_megagroup,
+                INSERT INTO groups(tg_id, access_hash, title, username, link, kind, is_public, is_megagroup,
                                    members_count, messages_total, last_message_at, meta_checked_at,
                                    discovered_from, discovered_by, created_at, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(tg_id) DO UPDATE SET
                     access_hash     = coalesce(excluded.access_hash, groups.access_hash),
                     title           = CASE WHEN excluded.title <> '' THEN excluded.title ELSE groups.title END,
                     username        = coalesce(excluded.username, groups.username),
+                    link            = CASE
+                        WHEN excluded.username IS NOT NULL THEN 'https://t.me/' || excluded.username
+                        WHEN groups.username IS NOT NULL THEN coalesce(groups.link, excluded.link)
+                        ELSE coalesce(excluded.link, groups.link)
+                    END,
                     kind            = excluded.kind,
                     is_public       = CASE WHEN excluded.username IS NOT NULL THEN 1 ELSE groups.is_public END,
                     is_megagroup    = excluded.is_megagroup OR groups.is_megagroup,
@@ -425,6 +454,7 @@ class Store:
                     access_hash,
                     title or "",
                     username,
+                    link,
                     kind,
                     int(bool(is_public)),
                     int(bool(is_megagroup)),
@@ -1010,6 +1040,7 @@ class Store:
                     "tg_id": r["tg_id"],
                     "title": r["title"],
                     "username": r["username"],
+                    "link": r.get("link"),
                     "kind": r["kind"],
                     "is_public": r["is_public"],
                     "members_count": r["members_count"],
@@ -1037,6 +1068,7 @@ class Store:
                 int(group["tg_id"]),
                 title=group.get("title") or "",
                 username=group.get("username"),
+                link=group.get("link"),
                 kind=group.get("kind") or "group",
                 is_public=bool(group.get("is_public")),
                 members_count=group.get("members_count"),

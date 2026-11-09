@@ -164,3 +164,67 @@ def test_mark_missing_groups_as_left(store: Store) -> None:
     assert statuses["из каталога"] == "member"
     # повторный вызов ничего не меняет
     assert store.mark_target_groups_left(tp, [keep], source="own_session") == 0
+
+
+def test_group_links_are_stored(store: Store) -> None:
+    public = store.upsert_group(1001, title="Публичный", username="pubchat", kind="supergroup")
+    private = store.upsert_group(-1001234567890, title="Приватный", kind="channel")
+    basic = store.upsert_group(555, title="Basic", kind="group")
+
+    assert store.get_group_by_pk(public)["link"] == "https://t.me/pubchat"
+    assert store.get_group_by_pk(private)["link"] == "https://t.me/c/1234567890/1"
+    assert store.get_group_by_pk(basic)["link"] is None
+
+
+def test_target_groups_include_links(store: Store) -> None:
+    target = store.upsert_target(42, username="someone")
+    gid = store.upsert_group(1002, title="Чат", username="chat_username", kind="supergroup")
+    store.upsert_target_group(int(target["id"]), gid, status="member")
+    rows = store.list_target_groups(int(target["id"]))
+    assert rows[0]["link"] == "https://t.me/chat_username"
+
+
+def test_migration_backfills_links(tmp_path) -> None:
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id INTEGER NOT NULL UNIQUE,
+            access_hash INTEGER,
+            title TEXT NOT NULL DEFAULT '',
+            username TEXT,
+            kind TEXT NOT NULL DEFAULT 'group',
+            is_public INTEGER NOT NULL DEFAULT 0,
+            is_megagroup INTEGER NOT NULL DEFAULT 0,
+            members_count INTEGER,
+            messages_total INTEGER,
+            last_message_at INTEGER,
+            meta_checked_at INTEGER,
+            discovered_from TEXT DEFAULT 'manual',
+            discovered_by TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO groups(tg_id, title, username, kind, created_at, updated_at) "
+        "VALUES(-1001234567890, 'Приватный', NULL, 'channel', 1, 1)"
+    )
+    conn.execute(
+        "INSERT INTO groups(tg_id, title, username, kind, created_at, updated_at) "
+        "VALUES(-1009876543210, 'Публичный', 'pubchat', 'supergroup', 1, 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = Store(path)
+    try:
+        assert migrated.get_group(-1001234567890)["link"] == "https://t.me/c/1234567890/1"
+        assert migrated.get_group(-1009876543210)["link"] == "https://t.me/pubchat"
+    finally:
+        migrated.close()

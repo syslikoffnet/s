@@ -3,12 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from telethon.tl import types
+from telethon.tl.types import Channel
 
 from healdragg.tg import (
     RateLimiter,
     channel_peer,
     chat_to_group,
     find_participant,
+    group_link,
     history_peer,
     normalize_identifier,
     participant_status,
@@ -99,3 +101,42 @@ def test_chat_to_group_basic_chat() -> None:
     assert info["kind"] == "group"
     assert info["is_megagroup"] is False
     assert info["members_count"] == 5
+
+
+def test_group_link_variants() -> None:
+    assert group_link(123, "durov", "channel") == "https://t.me/durov"
+    assert group_link(-1001234567890, None, "supergroup") == "https://t.me/c/1234567890/1"
+    assert group_link(-1001234567890, None, "channel") == "https://t.me/c/1234567890/1"
+    assert group_link(123456789, None, "group") is None
+
+
+def test_channel_to_group_keeps_link() -> None:
+    entity = Channel(
+        id=1234567890,
+        title="Канал человека",
+        photo=None,
+        date=None,
+        megagroup=False,
+        access_hash=777,
+        username=None,
+    )
+    info = chat_to_group(entity)
+    assert info is not None
+    assert info["kind"] == "channel"
+    assert info["link"] == "https://t.me/c/1234567890/1"
+
+
+def test_public_channel_link_from_username() -> None:
+    entity = Channel(
+        id=1234567890,
+        title="Публичный",
+        photo=None,
+        date=None,
+        megagroup=False,
+        access_hash=777,
+        username="public_channel",
+    )
+    info = chat_to_group(entity)
+    assert info is not None
+    assert info["link"] == "https://t.me/public_channel"
+    assert info["is_public"] is True

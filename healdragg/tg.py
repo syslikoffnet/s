@@ -30,6 +30,7 @@ from telethon.tl.types import Channel, Chat, ChatForbidden, User
 
 from .config import Settings
 from .db import Store
+from .util import group_link
 
 log = logging.getLogger("healdragg.tg")
 
@@ -264,31 +265,47 @@ def user_to_dict(user: Any) -> dict[str, Any]:
     }
 
 
+def entity_username(entity: Any) -> str | None:
+    """username или первый активный из collectible-username'ов."""
+    username = getattr(entity, "username", None)
+    if username:
+        return str(username)
+    for item in getattr(entity, "usernames", None) or []:
+        name = getattr(item, "username", None)
+        if name and getattr(item, "active", True):
+            return str(name)
+    return None
+
+
 def chat_to_group(entity: Any) -> dict[str, Any] | None:
     """Приводит Channel/Chat к плоскому словарю для БД."""
     if entity is None or isinstance(entity, (ChatForbidden,)):
         return None
     if isinstance(entity, Chat):
+        username = entity_username(entity)
         return {
             "tg_id": int(entity.id),
             "access_hash": None,
             "title": entity.title or "",
-            "username": getattr(entity, "username", None),
+            "username": username,
+            "link": group_link(int(entity.id), username, "group"),
             "kind": "group",
-            "is_public": bool(getattr(entity, "username", None)),
+            "is_public": bool(username),
             "is_megagroup": False,
             "members_count": getattr(entity, "participants_count", None),
             "creator": bool(getattr(entity, "creator", False)),
             "admin": bool(getattr(entity, "creator", False) or getattr(entity, "admin_rights", None)),
         }
     if isinstance(entity, Channel):
-        username = getattr(entity, "username", None)
+        username = entity_username(entity)
+        kind = "supergroup" if entity.megagroup else "channel"
         return {
             "tg_id": int(entity.id),
             "access_hash": getattr(entity, "access_hash", None),
             "title": entity.title or "",
             "username": username,
-            "kind": "supergroup" if entity.megagroup else "channel",
+            "link": group_link(int(entity.id), username, kind),
+            "kind": kind,
             "is_public": bool(username),
             "is_megagroup": bool(entity.megagroup),
             "members_count": getattr(entity, "participants_count", None),
@@ -299,13 +316,15 @@ def chat_to_group(entity: Any) -> dict[str, Any] | None:
         return None
     # иногда Telethon отдаёт «голые» объекты из поиска
     if hasattr(entity, "title") and hasattr(entity, "id"):
-        username = getattr(entity, "username", None)
+        username = entity_username(entity)
+        kind = "supergroup" if getattr(entity, "megagroup", False) else "group"
         return {
             "tg_id": int(entity.id),
             "access_hash": getattr(entity, "access_hash", None),
             "title": entity.title or "",
             "username": username,
-            "kind": "supergroup" if getattr(entity, "megagroup", False) else "group",
+            "link": group_link(int(entity.id), username, kind),
+            "kind": kind,
             "is_public": bool(username),
             "is_megagroup": bool(getattr(entity, "megagroup", False)),
             "members_count": getattr(entity, "participants_count", None),

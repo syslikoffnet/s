@@ -78,6 +78,7 @@ def preview_bot(store: Store) -> None:
         Text(message, style="#f2f2f7"),
         Text(""),
         buttons("👁 Группы"),
+        buttons("🔗 Ссылки"),
         buttons("🔄 Обновить", "📊 Профиль", "🏠 Меню"),
         buttons("· 1/8 ·", "➡ 2"),
     )

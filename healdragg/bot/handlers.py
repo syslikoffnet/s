@@ -12,7 +12,12 @@ from typing import Any
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from ..scan import bootstrap, resolve_and_store_target, scan_target
 from ..textfmt import (
@@ -33,6 +38,7 @@ from .keyboards import (
     cancel_job,
     catalog_pager,
     home,
+    links_page,
     pager,
     scan_done,
     target_menu,
@@ -500,9 +506,70 @@ async def cb_groups(callback: CallbackQuery, deps: Deps) -> None:
         callback.message.chat.id,
         callback.message.message_id,
         text,
-        pager(tg_id, page),
+        pager(
+            tg_id,
+            page,
+            extra=[[InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"lnk:{tg_id}:{page.page}")]],
+        ),
     )
     await callback.answer(f"страница {page.page} из {page.pages}")
+
+
+def _links_text(total: int, page: Page) -> str:
+    return (
+        "🔗 <b>Ссылки на чаты</b>\n"
+        f"cтρаница {page.page} из {page.pages} · всего <b>{total}</b>\n\n"
+        "Нажми на чат — откроется ссылка.\n"
+        "<i>Публичные: t.me/username · приватные: t.me/c/… "
+        "(работают у участников).</i>"
+    )
+
+
+def _links_payload(deps: Deps, target: dict[str, Any], page_num: int) -> tuple[str, InlineKeyboardMarkup]:
+    total = deps.store.count_target_groups(int(target["id"]))
+    page = Page.build(total, page_num, deps.settings.page_size)
+    rows = deps.store.list_target_groups(int(target["id"]), page=page.page, size=page.size)
+    return _links_text(total, page), links_page(rows, int(target["tg_user_id"]), page)
+
+
+@router.callback_query(F.data.startswith("lnk:"))
+async def cb_links(callback: CallbackQuery, deps: Deps) -> None:
+    parts = (callback.data or "").split(":")
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await callback.answer("Кнопка устарела", show_alert=True)
+        return
+    tg_id = int(parts[1])
+    page_num = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+    target = deps.store.get_target(tg_id)
+    if not target:
+        await callback.answer("Цель не найдена — пришли id заново", show_alert=True)
+        return
+    text, keyboard = _links_payload(deps, target, page_num)
+    await safe_edit(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        text,
+        keyboard,
+    )
+    await callback.answer()
+
+
+@router.message(Command("links"))
+async def cmd_links(message: Message, deps: Deps, command: CommandObject) -> None:
+    raw = (command.args or "").strip()
+    target = deps.store.find_target(raw) if raw else None
+    if not target:
+        targets = deps.store.list_targets(limit=1)
+        target = targets[0] if targets else None
+    if not target:
+        await message.answer(
+            "Пришли id или @username цели — и я покажу ссылки на её чаты.",
+            reply_markup=home(has_sessions=deps.has_sessions, has_groups=bool(deps.store.count_groups())),
+        )
+        return
+    text, keyboard = _links_payload(deps, target, 1)
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith("p:"))

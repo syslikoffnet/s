@@ -155,6 +155,8 @@ def _groups_payload(
                 "title": r.get("title"),
                 "tg_id": r.get("tg_id"),
                 "username": r.get("username"),
+                "link": r.get("link"),
+                "kind": r.get("kind"),
                 "is_public": bool(r.get("is_public")),
                 "status": r.get("status"),
                 "members_count": r.get("members_count"),

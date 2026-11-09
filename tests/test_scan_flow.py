@@ -7,7 +7,7 @@ import pytest
 from healdragg import scan as scan_mod
 from healdragg.config import Settings
 from healdragg.db import Store
-from healdragg.scan import Reporter, bootstrap, scan_target
+from healdragg.scan import Reporter, bootstrap, global_search_target, scan_target
 
 
 class FakePool:
@@ -196,3 +196,55 @@ async def test_own_scan_marks_left(store: Store, monkeypatch) -> None:
     rows = {r["title"]: r["status"] for r in store.all_target_groups(int(target["id"]))}
     assert rows["keep"] == "member"
     assert rows["gone"] == "left"
+
+
+class _SearchResult:
+    def __init__(self, chats):
+        self.chats = chats
+
+
+class _ChannelAccount:
+    """Фейковый клиент: глобальный поиск возвращает канал человека."""
+
+    def __init__(self, chats):
+        from healdragg.tg import RateLimiter
+
+        self.limiter = RateLimiter(0, 0)
+        self.client = self
+        self._chats = chats
+
+    async def __call__(self, request):
+        return _SearchResult(self._chats)
+
+
+class _ChannelPool:
+    def __init__(self, chats):
+        self._chats = chats
+
+    async def connect(self, name):
+        return _ChannelAccount(self._chats)
+
+
+async def test_global_search_checks_person_channel(store: Store) -> None:
+    from telethon.tl.types import Channel
+
+    target = store.upsert_target(45, username="channel_owner")
+    store.add_session("main", "/tmp/m.session", tg_user_id=1, status="active")
+    channel = Channel(
+        id=1234567890,
+        title="Канал человека",
+        photo=None,
+        date=None,
+        megagroup=False,
+        access_hash=321,
+        username=None,
+    )
+
+    result = await global_search_target(_ChannelPool([channel]), store, target)
+    assert result["channels"] == 1
+    assert result["found"] == 1
+
+    rows = store.all_target_groups(int(target["id"]))
+    assert len(rows) == 1
+    assert rows[0]["status"] == "admin"
+    assert rows[0]["link"] == "https://t.me/c/1234567890/1"

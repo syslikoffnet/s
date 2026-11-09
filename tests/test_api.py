@@ -55,6 +55,8 @@ def test_targets_and_groups(client: TestClient) -> None:
     assert len(data["rows"]) == 15
     assert "Чаты аккаунта" in data["text"]
     assert "Всего 40" in data["text"]
+    assert all("link" in row for row in data["rows"])
+    assert any(row["link"] for row in data["rows"])
 
     page3 = client.get(f"/api/targets/{DEMO_TARGET}/groups?page=3&size=15", headers=HEADERS).json()
     assert len(page3["rows"]) == 10

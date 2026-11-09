@@ -564,7 +564,9 @@ async def probe_target(
                     stats["meta"] += 1
                 except Exception:  # noqa: BLE001
                     pass
-        elif int(group["tg_id"]) in existing:
+        elif int(group["tg_id"]) in existing and group.get("kind") != "channel":
+            # в broadcast-канале подписчики не считаются участниками:
+            # getParticipant для них отвечает UserNotParticipant, это не «вышел»
             store.mark_target_group(target_pk, int(group["id"]), "left")
 
         stats["checked"] += 1
@@ -599,7 +601,7 @@ async def global_search_target(
     names = list(sessions or store.session_names())
     target_pk = int(target["id"])
     target_peer = None
-    stats = {"checked": 0, "found": 0, "errors": 0}
+    stats = {"checked": 0, "found": 0, "channels": 0, "errors": 0}
     from .tg import target_input_peer
 
     target_peer = target_input_peer(target)
@@ -648,11 +650,31 @@ async def global_search_target(
                 store.link_session_group(
                     session_pk, group_pk, is_member=True, access_hash=info.get("access_hash")
                 )
+            # писать в broadcast-канал может только админ — значит, канал его
+            is_channel = info.get("kind") == "channel"
             store.upsert_target_group(
-                target_pk, group_pk, status="member", source="global_search", session=session_name
+                target_pk,
+                group_pk,
+                status="admin" if is_channel else "member",
+                source="global_search",
+                session=session_name,
             )
             stats["found"] += 1
+            stats["channels"] += int(is_channel)
             stats["checked"] += 1
+            group_row = store.get_group(info["tg_id"])
+            if group_row and not _meta_fresh(group_row, store):
+                try:
+                    count, last = await fetch_history_meta(
+                        account.client,
+                        history_peer(group_row, info.get("access_hash")),
+                        limiter,
+                    )
+                    store.set_group_meta(
+                        int(info["tg_id"]), messages_total=count, last_message_at=last
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         if reporter:
             await reporter.update(force=True, phase="глобальный поиск", done=stats["checked"], found=stats["found"])
     return stats

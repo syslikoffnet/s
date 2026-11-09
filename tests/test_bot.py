@@ -87,3 +87,26 @@ def test_home_has_targets_shortcut() -> None:
     markup = keyboards.home(has_sessions=True, has_groups=True, target_id=5)
     texts = [text for row in flatten(markup) for text, _ in row]
     assert "🎯 Цели" in texts
+
+
+def test_links_page_keyboard() -> None:
+    rows = [
+        {"title": "Публичный чат", "link": "https://t.me/pubchat"},
+        {"title": "Приватный канал", "link": "https://t.me/c/1234567890/1"},
+        {"title": "Basic-группа", "link": None},
+    ]
+    markup = keyboards.links_page(rows, 42, Page.build(45, 2, 15))
+    buttons = [[(b.text, b.url, b.callback_data) for b in row] for row in markup.inline_keyboard]
+    urls = [url for row in buttons for _, url, _ in row if url]
+    assert urls == ["https://t.me/pubchat", "https://t.me/c/1234567890/1"]
+    texts = [text for row in buttons for text, _, _ in row]
+    assert any(text.startswith("16.") for text in texts)
+    datas = [data for row in buttons for _, _, data in row if data]
+    assert "lnk:42:1" in datas
+    assert "g:42:2" in datas
+
+
+def test_links_page_keyboard_empty() -> None:
+    markup = keyboards.links_page([], 42, Page.build(0, 1, 15))
+    texts = [b.text for row in markup.inline_keyboard for b in row]
+    assert "Ссылок пока нет" in texts

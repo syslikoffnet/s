@@ -25,6 +25,7 @@ COMMANDS = [
     BotCommand(command="target", description="показать чаты по id / @username"),
     BotCommand(command="targets", description="список целей"),
     BotCommand(command="scan", description="проверить цель ещё раз"),
+    BotCommand(command="links", description="ссылки на чаты цели"),
     BotCommand(command="stats", description="состояние базы"),
     BotCommand(command="find", description="поиск по каталогу групп"),
     BotCommand(command="id", description="мой Telegram ID"),

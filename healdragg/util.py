@@ -128,6 +128,19 @@ def human_duration(seconds: float) -> str:
     return f"{seconds // 3600} ч {seconds % 3600 // 60:02d} мин"
 
 
+def group_link(tg_id: int, username: str | None = None, kind: str = "group") -> str | None:
+    """Ссылка на чат: публичная по username, иначе t.me/c/… для участников."""
+    if username:
+        return f"https://t.me/{username}"
+    if kind not in {"channel", "supergroup"}:
+        return None
+    raw = int(tg_id)
+    internal = -raw - 1000000000000 if raw < 0 else raw
+    if internal <= 0:
+        return None
+    return f"https://t.me/c/{internal}/1"
+
+
 def truncate(text: str, limit: int, suffix: str = "..") -> str:
     """Обрезка по «видимой» длине с учётом широких эмодзи."""
     if limit <= 0:
