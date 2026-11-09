@@ -205,7 +205,8 @@
     background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.045)}
   .linkRow .lt{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .linkRow .lu{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
-    color:var(--accent-2);opacity:.9;white-space:nowrap}
+    color:var(--accent-2);opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .linkRow .cp{flex:none;padding:7px 10px;font-size:12px;font-weight:600;color:var(--muted)}
 
   /* ── паутина / лента / алерты ─────────────────────────────────────────── */
   .overlay{position:fixed;inset:0;z-index:60;background:#05070d;display:block}
@@ -452,6 +453,7 @@
     catalogPage: 1,
     raw: false,
     jobTimer: null,
+    lastUnread: null,
   };
 
   const MONTHS = ['янв.','февр.','мар.','апр.','мая','июн.','июл.','авг.','сент.','окт.','нояб.','дек.'];
@@ -817,6 +819,11 @@
     try {
       const data = await api('/api/alerts?limit=1');
       const unread = data.unread || 0;
+      if (state.lastUnread !== null && unread > state.lastUnread) {
+        toast('🔔 Новых алертов: ' + (unread - state.lastUnread), 4200);
+      }
+      state.lastUnread = unread;
+      document.title = unread ? '(' + unread + ') Healdragg' : 'Healdragg';
       $('bellCount').textContent = unread;
       const tabBell = $('tabBell');
       if (tabBell) {
@@ -855,6 +862,24 @@
     } catch (e) { toast(e.message); }
   }
 
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      toast('Скопировано');
+    } catch (e) { toast('Не удалось скопировать'); }
+  }
+
   // ── ссылки ──────────────────────────────────────────────────────────────
   async function openLinks() {
     if (!state.target) return toast('Сначала выбери цель');
@@ -867,8 +892,14 @@
         const link = row.link
           ? '<a href="' + esc(row.link) + '" target="_blank" rel="noopener">' + esc(row.link) + '</a>'
           : '<span style="color:var(--dim)">нет публичной ссылки</span>';
-        return '<div class="linkRow"><div class="lt">' + label + '</div><div class="lu">' + link + '</div></div>';
+        const copy = row.link
+          ? '<button class="qbtn cp" data-link="' + esc(row.link) + '" title="Скопировать ссылку">⧉</button>'
+          : '';
+        return '<div class="linkRow"><div class="lt">' + label + '</div><div class="lu">' + link + '</div>' + copy + '</div>';
       }).join('') || '<div class="empty">Пока нет чатов.</div>';
+      document.querySelectorAll('#linksList .cp').forEach(btn => {
+        btn.addEventListener('click', () => copyText(btn.dataset.link));
+      });
       $('linksOverlay').classList.remove('hidden');
     } catch (e) { toast(e.message); }
   }

@@ -84,7 +84,10 @@ class MainActivity : AppCompatActivity() {
                         toast(R.string.engine_ready)
                         openPanel()
                     }
-                    awaitingEngine && pollAttempts < 300 -> handler.postDelayed(this, 2_000)
+                    awaitingEngine && pollAttempts < 300 -> {
+                        if (pollAttempts == 60) engineStatus.text = getString(R.string.engine_slow)
+                        handler.postDelayed(this, 2_000)
+                    }
                 }
             }
         }
@@ -156,7 +159,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupUi() {
         findViewById<Button>(R.id.termuxCopyBtn).setOnClickListener { startEngine() }
         findViewById<Button>(R.id.termuxSaveBtn).setOnClickListener { saveTermuxScript() }
-        findViewById<Button>(R.id.termuxOpenBtn).setOnClickListener { startEngine() }
+        findViewById<Button>(R.id.termuxOpenBtn).setOnClickListener { openTermux() }
         findViewById<Button>(R.id.localBtn).setOnClickListener {
             urlInput.setText(LOCAL_URL)
             tokenInput.setText(prefs.getString(KEY_TOKEN, ""))
@@ -218,12 +221,20 @@ class MainActivity : AppCompatActivity() {
             .putString(KEY_BOT_TOKEN, botToken)
             .apply()
 
+        engineStatus.text = getString(R.string.engine_starting)
         toast(R.string.engine_preparing)
         Thread {
             try {
                 val tarPath = writeDownloads(ENGINE_NAME, "application/gzip", readEngine())
                     ?: throw IOException("нет доступа к Downloads")
-                val script = termuxScript(tarPath, apiId, apiHash, botToken, engineToken)
+                val script = termuxScript(
+                    tarPath,
+                    BuildConfig.ENGINE_ID,
+                    apiId,
+                    apiHash,
+                    botToken,
+                    engineToken,
+                )
                 val scriptPath = writeDownloads(SCRIPT_NAME, "text/x-shellscript", script.toByteArray())
                     ?: throw IOException("нет доступа к Downloads")
                 runOnUiThread {
@@ -240,41 +251,65 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** Скрипт для Termux: локальный архив, никаких git clone и GitHub. */
+    /** Скрипт для Termux: локальный архив, один раз установить и держать движок в фоне. */
     private fun termuxScript(
         tarPath: String,
+        engineId: String,
         apiId: String,
         apiHash: String,
         botToken: String,
         engineToken: String,
     ): String = """
         set -e
+        trap 'termux-toast "Healdragg: установка не удалась — открой Termux" 2>/dev/null || true' ERR
         termux-setup-storage >/dev/null 2>&1 || true
-        echo "🩺 Healdragg: распаковываю движок"
-        mkdir -p "${'$'}HOME/healdragg"
-        cd "${'$'}HOME/healdragg"
-        if [ -f "$tarPath" ]; then
-          tar -xzf "$tarPath" -C .
-          rm -f "$tarPath"
-        elif [ ! -x "${'$'}HOME/healdragg/.venv/bin/healdragg" ]; then
-          echo "✗ Нет доступа к $tarPath — разреши Termux доступ к файлам и запусти ещё раз"
-          exit 1
+        ENGINE_ID="@@ENGINE_ID@@"
+        DIR="${'$'}HOME/healdragg"
+        mkdir -p "${'$'}DIR"
+        cd "${'$'}DIR"
+        if [ -f "@@TAR@@" ]; then
+          echo "🩺 Распаковываю движок из APK"
+          tar -xzf "@@TAR@@" -C .
+          rm -f "@@TAR@@"
+        fi
+        if [ ! -x "${'$'}DIR/.venv/bin/healdragg" ] || [ "${'$'}(cat "${'$'}DIR/.engine-id" 2>/dev/null)" != "${'$'}ENGINE_ID" ]; then
+          echo "🩺 Ставлю движок — это один раз и несколько минут"
+          bash install.sh
+          echo "${'$'}ENGINE_ID" > "${'$'}DIR/.engine-id"
         fi
         cat > .env <<'EOF'
-        API_ID=$apiId
-        API_HASH=$apiHash
-        BOT_TOKEN=$botToken
-        API_TOKEN=$engineToken
+        API_ID=@@API_ID@@
+        API_HASH=@@API_HASH@@
+        BOT_TOKEN=@@BOT_TOKEN@@
+        API_TOKEN=@@TOKEN@@
         API_HOST=127.0.0.1
         AUTOPILOT_MINUTES=15
         AUTO_ACTIVITY_ON_SCAN=true
         ALERT_PUSH=true
         EOF
-        if [ ! -x "${'$'}HOME/healdragg/.venv/bin/healdragg" ]; then
-          bash install.sh
+        if [ -f "${'$'}DIR/data/api.pid" ] && kill -0 "${'$'}(cat "${'$'}DIR/data/api.pid")" 2>/dev/null; then
+          kill "${'$'}(cat "${'$'}DIR/data/api.pid")" 2>/dev/null || true
+          sleep 1
         fi
-        exec "${'$'}HOME/healdragg/.venv/bin/healdragg" api --host 127.0.0.1 --port 8080
+        termux-wake-lock >/dev/null 2>&1 || true
+        mkdir -p "${'$'}DIR/data/logs"
+        nohup "${'$'}DIR/.venv/bin/healdragg" api --host 127.0.0.1 --port 8080 \
+          >>"${'$'}DIR/data/logs/api.log" 2>&1 &
+        echo ${'$'}! > "${'$'}DIR/data/api.pid"
+        if [ -d "${'$'}HOME/.termux/boot" ]; then
+          printf '#!/data/data/com.termux/files/usr/bin/sh\ntermux-wake-lock\nexec "%s" api --host 127.0.0.1 --port 8080\n' \
+            "${'$'}DIR/.venv/bin/healdragg" > "${'$'}HOME/.termux/boot/healdragg.sh"
+          chmod +x "${'$'}HOME/.termux/boot/healdragg.sh"
+        fi
+        echo "🟢 Панель запущена: http://127.0.0.1:8080"
+        echo "   лог: ${'$'}DIR/data/logs/api.log"
     """.trimIndent()
+        .replace("@@TAR@@", tarPath)
+        .replace("@@ENGINE_ID@@", engineId)
+        .replace("@@API_ID@@", apiId)
+        .replace("@@API_HASH@@", apiHash)
+        .replace("@@BOT_TOKEN@@", botToken)
+        .replace("@@TOKEN@@", engineToken)
 
     private fun readEngine(): ByteArray {
         val raw = assets.open(ENGINE_ASSET).readBytes()
@@ -378,6 +413,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveTermuxScript() {
         if (!termuxReady()) return
         val token = ensureToken()
+        engineStatus.text = getString(R.string.engine_starting)
         toast(R.string.engine_preparing)
         Thread {
             try {
@@ -385,6 +421,7 @@ class MainActivity : AppCompatActivity() {
                     ?: throw IOException("нет доступа к Downloads")
                 val script = termuxScript(
                     tarPath,
+                    BuildConfig.ENGINE_ID,
                     termuxApiId.text.toString().trim(),
                     termuxApiHash.text.toString().trim(),
                     termuxBotToken.text.toString().trim(),

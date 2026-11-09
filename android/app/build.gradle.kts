@@ -17,6 +17,28 @@ val engineAssets = layout.buildDirectory.dir("generated/engineAssets")
 val engineAssetsDir = engineAssets.get().asFile
 val repoRoot = rootProject.projectDir.parentFile
 
+/**
+ * Отпечаток движка: хеш исходников. Попадает в BuildConfig.ENGINE_ID, по нему
+ * Termux-скрипт понимает, что APK принёс новую версию движка, и переустанавливает её.
+ */
+fun engineFingerprint(): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val files = mutableListOf<File>()
+    File(repoRoot, "healdragg").walkTopDown()
+        .filter { it.isFile && "__pycache__" !in it.path && !it.name.endsWith(".pyc") }
+        .forEach { files.add(it) }
+    files.add(File(repoRoot, "pyproject.toml"))
+    files.add(File(repoRoot, "install.sh"))
+    files.sortedBy { it.path }.forEach { file ->
+        digest.update(file.relativeTo(repoRoot).invariantSeparatorsPath.toByteArray())
+        digest.update(0.toByte())
+        digest.update(file.readBytes())
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }.take(16)
+}
+
+val engineStamp = engineFingerprint()
+
 android {
     namespace = "net.syslikoff.healdragg"
     compileSdk = 34
@@ -25,9 +47,10 @@ android {
         applicationId = "net.syslikoff.healdragg"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
         resourceConfigurations += listOf("ru", "en")
+        buildConfigField("String", "ENGINE_ID", "\"$engineStamp\"")
     }
 
     sourceSets.getByName("main").assets.srcDir(engineAssetsDir)
