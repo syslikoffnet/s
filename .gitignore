@@ -1,0 +1,32 @@
+# секреты и сессии
+.env
+*.session
+*.session-journal
+data/*
+!data/.gitkeep
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.keystore
+!android/app/debug.keystore
+
+# прочее
+.DS_Store
+*.log
+docs/*.local.*

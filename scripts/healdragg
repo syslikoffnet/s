@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Локальный запуск без активации venv: ./scripts/healdragg ...
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -x "$ROOT/.venv/bin/healdragg" ]; then
+  exec "$ROOT/.venv/bin/healdragg" "$@"
+fi
+exec python3 -m healdragg.cli "$@"

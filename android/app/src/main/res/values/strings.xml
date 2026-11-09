@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Healdragg</string>
+    <string name="setup_title">🩺 Healdragg</string>
+    <string name="setup_subtitle">Панель каталога публичных чатов Telegram</string>
+    <string name="setup_hint">Укажи адрес сервера, где запущен\nhealdragg api — компьютер в той же Wi-Fi сети\nили ваш сервер.</string>
+    <string name="url_label">Адрес панели</string>
+    <string name="url_hint">http://192.168.1.10:8080</string>
+    <string name="token_label">API_TOKEN</string>
+    <string name="token_hint">из .env или из вывода healdragg api</string>
+    <string name="connect">Подключиться</string>
+    <string name="menu_settings">Сервер</string>
+    <string name="menu_refresh">Обновить</string>
+    <string name="error_url">Введи адрес сервера</string>
+    <string name="error_load">Не удалось открыть панель. Проверь адрес и сеть.</string>
+    <string name="back_again">Нажми ещё раз для выхода</string>
+</resources>

@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#12121a" />
+<meta name="mobile-web-app-capable" content="yes" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" href="/icon.svg" />
+<title>Healdragg · карта публичных чатов</title>
+<style>
+  :root{
+    --bg:#0e0e15; --bg2:#14141f; --card:rgba(30,30,46,.72); --card2:rgba(38,38,58,.6);
+    --line:rgba(147,120,255,.18); --line2:rgba(147,120,255,.35);
+    --text:#f2f2f7; --muted:#8b8ba7; --accent:#bd93f9; --accent2:#8be9fd;
+    --good:#50fa7b; --warn:#f1fa8c; --bad:#ff6e6e; --pink:#ff79c6;
+    --radius:18px; --shadow:0 18px 50px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    min-height:100%;}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(900px 500px at 12% -10%, rgba(189,147,249,.20), transparent 60%),
+      radial-gradient(700px 420px at 108% 4%, rgba(139,233,253,.14), transparent 55%),
+      radial-gradient(700px 500px at 50% 115%, rgba(255,121,198,.10), transparent 60%);
+  }
+  .wrap{position:relative;z-index:1;max-width:880px;margin:0 auto;padding:18px 16px calc(28px + env(safe-area-inset-bottom));}
+  header.top{display:flex;align-items:center;gap:12px;margin:6px 0 18px}
+  .logo{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;font-size:23px;
+    background:linear-gradient(145deg,rgba(189,147,249,.32),rgba(139,233,253,.18));
+    border:1px solid var(--line2);box-shadow:0 10px 26px rgba(189,147,249,.18)}
+  .brand{font-weight:800;font-size:20px;letter-spacing:.3px}
+  .brand span{background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{font-size:12px;color:var(--muted);margin-top:2px}
+  .spacer{flex:1}
+  .pill{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:6px 10px;background:rgba(255,255,255,.02)}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:6px;box-shadow:0 0 10px var(--good)}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px 12px;backdrop-filter:blur(12px)}
+  .stat b{display:block;font-size:17px;line-height:1.2}
+  .stat i{font-style:normal;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;
+    backdrop-filter:blur(14px);box-shadow:var(--shadow);margin-bottom:14px}
+  .card h3{margin:0 0 10px;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:700}
+
+  .search{display:flex;gap:8px}
+  input[type=text],input[type=password]{flex:1;min-width:0;background:rgba(10,10,18,.65);border:1px solid var(--line);
+    color:var(--text);border-radius:12px;padding:12px 14px;font-size:15px;outline:none}
+  input:focus{border-color:var(--line2);box-shadow:0 0 0 3px rgba(189,147,249,.12)}
+  button{cursor:pointer;border:none;font-family:inherit}
+  .btn{background:linear-gradient(135deg,var(--accent),#9d7bf5);color:#160f26;font-weight:800;border-radius:12px;
+    padding:12px 16px;font-size:14px;box-shadow:0 8px 22px rgba(189,147,249,.22);transition:transform .12s ease}
+  .btn:active{transform:scale(.97)}
+  .btn.ghost{background:rgba(255,255,255,.04);color:var(--text);border:1px solid var(--line);box-shadow:none;font-weight:600}
+  .btn.cyan{background:linear-gradient(135deg,var(--accent2),#5fd4f0);color:#06222a}
+  .btn.small{padding:8px 12px;font-size:12px;border-radius:10px}
+  .btn:disabled{opacity:.45;cursor:default}
+
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:999px;padding:8px 12px;font-size:12px;color:var(--muted);cursor:pointer}
+  .chip.active{border-color:var(--line2);color:var(--text);background:rgba(189,147,249,.14)}
+
+  .who{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+  .avatar{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:18px;
+    background:linear-gradient(145deg,rgba(189,147,249,.35),rgba(139,233,253,.2));border:1px solid var(--line2)}
+  .who .name{font-weight:700;font-size:16px}
+  .who .meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .tag{font-size:11px;padding:4px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .tag.warn{color:var(--warn);border-color:rgba(241,250,140,.25)}
+  .tag.acc{color:var(--accent2);border-color:rgba(139,233,253,.25)}
+
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px}
+
+  .chatlist{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+  .chat{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:var(--card2);border:1px solid rgba(255,255,255,.04)}
+  .chat .mark{width:22px;text-align:center;font-size:14px}
+  .chat .info{flex:1;min-width:0}
+  .chat .title{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat .sub2{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat .count{font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
+  .chat .date{font-size:11px;color:var(--accent2);min-width:58px;text-align:right}
+
+  .pager{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:14px}
+  .pager button{background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--text);
+    border-radius:10px;min-width:40px;padding:9px 10px;font-size:13px}
+  .pager button.on{background:rgba(189,147,249,.22);border-color:var(--line2);color:#fff;font-weight:700}
+  .pager button:disabled{opacity:.35}
+
+  pre.raw{white-space:pre-wrap;word-break:break-word;background:rgba(5,5,10,.6);border:1px solid var(--line);
+    border-radius:12px;padding:14px;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;
+    max-height:420px;overflow:auto;margin:0}
+  .hidden{display:none !important}
+
+  .progress{height:8px;border-radius:99px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:10px}
+  .progress i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .4s ease}
+
+  .toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);opacity:0;pointer-events:none;
+    background:rgba(20,20,32,.95);border:1px solid var(--line2);color:var(--text);padding:12px 18px;border-radius:12px;
+    font-size:13px;transition:all .25s ease;z-index:50;max-width:90vw}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  .empty{text-align:center;color:var(--muted);font-size:13px;padding:18px 8px;line-height:1.6}
+  footer.foot{text-align:center;color:var(--muted);font-size:11px;margin-top:18px;line-height:1.8}
+  a{color:var(--accent2);text-decoration:none}
+
+  @media (max-width:420px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .brand{font-size:18px}
+    .wrap{padding:14px 12px calc(24px + env(safe-area-inset-bottom))}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="logo">🩺</div>
+    <div>
+      <div class="brand">Heal<span>dragg</span></div>
+      <div class="sub">карта публичных чатов Telegram</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="pill" id="status"><span class="dot"></span>live</div>
+  </header>
+
+  <section id="login" class="card hidden">
+    <h3>доступ</h3>
+    <p class="empty" style="text-align:left;padding:0 0 10px">Введи токен из <code>healdragg api</code> (или из <code>.env</code>).</p>
+    <div class="search">
+      <input id="tokenInput" type="password" placeholder="API_TOKEN" autocomplete="off" />
+      <button class="btn" id="loginBtn">Войти</button>
+    </div>
+  </section>
+
+  <main id="app" class="hidden">
+    <section class="stats">
+      <div class="stat"><b id="statGroups">0</b><i>групп</i></div>
+      <div class="stat"><b id="statPublic">0</b><i>публичных</i></div>
+      <div class="stat"><b id="statTargets">0</b><i>целей</i></div>
+      <div class="stat"><b id="statSize">0</b><i>размер</i></div>
+    </section>
+
+    <section class="card">
+      <h3>найти аккаунт</h3>
+      <div class="search">
+        <input id="query" type="text" inputmode="text" placeholder="7126917488 или @username" autocomplete="off" />
+        <button class="btn" id="addBtn">Найти</button>
+      </div>
+      <div class="chips" id="targetChips"></div>
+      <div id="targetEmpty" class="empty">Пока нет целей. Пришли id или @username — добавлю.</div>
+    </section>
+
+    <section class="card hidden" id="targetCard">
+      <div class="who">
+        <div class="avatar" id="tAvatar">?</div>
+        <div>
+          <div class="name" id="tName">—</div>
+          <div class="meta" id="tMeta">—</div>
+          <div class="tags" id="tTags"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn cyan" id="groupsBtn">👁 Группы</button>
+        <button class="btn ghost small" id="scanBtn">🔄 Обновить</button>
+        <button class="btn ghost small" id="rawBtn">📄 Текст</button>
+        <button class="btn ghost small" id="bootBtn">🚀 Собрать базу</button>
+      </div>
+      <div id="jobBox" class="hidden">
+        <div class="progress"><i id="jobBar"></i></div>
+        <div class="sub" id="jobText" style="margin-top:6px"></div>
+      </div>
+      <div class="chatlist" id="chatList"></div>
+      <div class="pager" id="pager"></div>
+      <pre class="raw hidden" id="rawText"></pre>
+    </section>
+
+    <section class="card">
+      <h3>каталог групп</h3>
+      <div class="search" style="margin-bottom:10px">
+        <input id="catalogQ" type="text" placeholder="поиск по названию или @username" />
+        <button class="btn ghost" id="catalogBtn">🔍</button>
+      </div>
+      <div class="chatlist" id="catalogList"></div>
+      <div class="pager" id="catalogPager"></div>
+    </section>
+
+    <section class="card">
+      <h3>сессии и база</h3>
+      <div id="sessions" class="chatlist"></div>
+      <div class="actions">
+        <button class="btn ghost small" id="refreshBtn">↻ Обновить данные</button>
+      </div>
+    </section>
+
+    <footer class="foot">
+      Healdragg · публичные данные · сообщения не сохраняются<br />
+      <span id="ver"></span>
+    </footer>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    token: localStorage.getItem('hd_token') || '',
+    target: null,
+    page: 1,
+    size: 15,
+    catalogPage: 1,
+    raw: false,
+    jobTimer: null,
+  };
+
+  const MONTHS = ['янв.','февр.','мар.','апр.','мая','июн.','июл.','авг.','сент.','окт.','нояб.','дек.'];
+
+  function toast(message, ms = 2200) {
+    const el = $('toast');
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('show'), ms);
+  }
+
+  function fmtDay(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return String(d.getDate()).padStart(2, '0') + ' ' + MONTHS[d.getMonth()];
+  }
+  function fmtDt(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return fmtDay(ts) + ' ' + d.getFullYear() + ', ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+  }
+  function num(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    return new Intl.NumberFormat('ru-RU').format(v);
+  }
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+  function marker(row) {
+    if (row.status === 'left') return '✖️';
+    let m = '';
+    if (row.status === 'admin' || row.status === 'creator') m += '👮🏻‍♂️';
+    if (!row.is_public) m += '🔒';
+    return m;
+  }
+
+  async function api(path, opts = {}) {
+    const headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
+    if (state.token) headers['X-Api-Token'] = state.token;
+    const res = await fetch(path, Object.assign({}, opts, {headers}));
+    if (res.status === 401) { showLogin(); throw new Error('Требуется токен'); }
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { const j = await res.json(); detail = j.detail || detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    return res.json();
+  }
+
+  function showLogin() {
+    $('login').classList.remove('hidden');
+    $('app').classList.add('hidden');
+  }
+  function showApp() {
+    $('login').classList.add('hidden');
+    $('app').classList.remove('hidden');
+    $('status').innerHTML = '<span class="dot"></span>live';
+  }
+
+  async function loadStats() {
+    const s = await api('/api/stats');
+    $('statGroups').textContent = num(s.groups);
+    $('statPublic').textContent = num(s.public_groups);
+    $('statTargets').textContent = num(s.targets);
+    $('statSize').textContent = s.db_human || '—';
+    if (s.sessions) $('status').innerHTML = '<span class="dot"></span>' + s.sessions + ' сесс.';
+    $('ver').textContent = 'v' + ((window.__v) || '1.0');
+  }
+
+  async function loadSessions() {
+    const rows = await api('/api/sessions');
+    const box = $('sessions');
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty">Сессий нет. В терминале: <code>healdragg session add main</code></div>';
+      return;
+    }
+    box.innerHTML = rows.map(s => `
+      <div class="chat">
+        <div class="mark">${s.status === 'active' ? '🟢' : '⚪'}</div>
+        <div class="info">
+          <div class="title">${esc(s.name)} ${s.username ? '· @' + esc(s.username) : ''}</div>
+          <div class="sub2">${s.tg_user_id || '—'} · ${num(s.groups_count || 0)} чатов</div>
+        </div>
+        <div class="count">${esc(s.status || '')}</div>
+      </div>`).join('');
+  }
+
+  async function loadTargets() {
+    const rows = await api('/api/targets');
+    const chips = $('targetChips');
+    chips.innerHTML = rows.map(t => `
+      <div class="chip ${state.target && state.target.tg_user_id === t.tg_user_id ? 'active' : ''}" data-tg="${t.tg_user_id}">
+        ${esc(t.username ? '@' + t.username : t.tg_user_id)} · ${t.stats.total}
+      </div>`).join('');
+    chips.querySelectorAll('.chip').forEach(el => el.addEventListener('click', () => selectTarget(el.dataset.tg)));
+    $('targetEmpty').classList.toggle('hidden', rows.length > 0);
+    if (rows.length && !state.target) selectTarget(rows[0].tg_user_id);
+  }
+
+  async function selectTarget(tg) {
+    state.target = await api('/api/targets/' + tg);
+    state.page = 1;
+    renderTarget();
+    await loadGroups();
+    document.querySelectorAll('.chip').forEach(c => c.classList.toggle('active', c.dataset.tg == tg));
+  }
+
+  function renderTarget() {
+    const t = state.target;
+    if (!t) return;
+    $('targetCard').classList.remove('hidden');
+    const name = [t.first_name, t.last_name].filter(Boolean).join(' ') || (t.username ? '@' + t.username : String(t.tg_user_id));
+    $('tName').textContent = name;
+    $('tAvatar').textContent = (name[0] || '?').toUpperCase();
+    $('tMeta').textContent = (t.username ? '@' + t.username + ' · ' : '') + t.tg_user_id + ' · обновлено ' + (t.last_scan || '—');
+    $('tTags').innerHTML = `
+      <span class="tag acc">💬 ${num(t.stats.total)} чатов</span>
+      ${t.stats.admin ? `<span class="tag warn">👮 ${num(t.stats.admin)}</span>` : ''}
+      ${t.stats.private ? `<span class="tag">🔒 ${num(t.stats.private)}</span>` : ''}
+      ${t.stats.left_count ? `<span class="tag">✖️ ${num(t.stats.left_count)}</span>` : ''}`;
+  }
+
+  function renderChats(rows) {
+    return rows.map(r => {
+      const user = r.username ? '@' + r.username : 'приватный';
+      return `<div class="chat">
+        <div class="mark">${marker(r) || '·'}</div>
+        <div class="info">
+          <div class="title">${esc(r.title || 'Без названия')}</div>
+          <div class="sub2">${esc(user)}${r.members_count ? ' · 👥 ' + num(r.members_count) : ''}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="count">${num(r.messages_total)}</div>
+          <div class="date">${fmtDay(r.last_message_at)}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderPager(box, page, pages, onGo) {
+    box.innerHTML = '';
+    if (pages <= 1) return;
+    const mk = (label, target, on = false, disabled = false) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      if (on) b.className = 'on';
+      b.disabled = disabled;
+      b.addEventListener('click', () => onGo(target));
+      box.appendChild(b);
+    };
+    mk('1 ⬅', page - 1, false, page <= 1);
+    const start = Math.max(1, page - 2), end = Math.min(pages, start + 4);
+    for (let i = start; i <= end; i++) mk(String(i), i, i === page);
+    mk('➡ ' + pages, page + 1, false, page >= pages);
+  }
+
+  async function loadGroups() {
+    if (!state.target) return;
+    const data = await api(`/api/targets/${state.target.tg_user_id}/groups?page=${state.page}&size=${state.size}`);
+    const list = $('chatList');
+    if (!data.total) {
+      list.innerHTML = '<div class="empty">Чатов пока нет.<br/>Нажми «🔄 Обновить» — проверю участие по каталогу.<br/>Если база пуста — «🚀 Собрать базу».</div>';
+      $('pager').innerHTML = '';
+      $('rawText').textContent = 'ㅤЧаты аккаунта ' + state.target.tg_user_id + '.\n\n Пока пусто…';
+      return;
+    }
+    list.innerHTML = renderChats(data.rows);
+    $('rawText').textContent = data.text;
+    renderPager($('pager'), data.page, data.pages, (p) => { state.page = p; loadGroups(); });
+  }
+
+  async function loadCatalog(page = 1) {
+    const q = $('catalogQ').value.trim();
+    const data = await api(`/api/catalog?page=${page}&size=12${q ? '&q=' + encodeURIComponent(q) : ''}`);
+    $('catalogList').innerHTML = data.rows.length ? renderChats(data.rows) : '<div class="empty">Ничего не найдено</div>';
+    state.catalogPage = data.page;
+    renderPager($('catalogPager'), data.page, data.pages, (p) => loadCatalog(p));
+  }
+
+  async function addTarget() {
+    const query = $('query').value.trim();
+    if (!query) return;
+    const btn = $('addBtn');
+    btn.disabled = true;
+    btn.textContent = '…';
+    try {
+      const target = await api('/api/targets', {method: 'POST', body: JSON.stringify({query})});
+      state.target = target;
+      state.page = 1;
+      $('query').value = '';
+      renderTarget();
+      await loadTargets();
+      await loadGroups();
+      toast('Цель добавлена');
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Найти';
+    }
+  }
+
+  function pollJob(key) {
+    clearInterval(state.jobTimer);
+    $('jobBox').classList.remove('hidden');
+    state.jobTimer = setInterval(async () => {
+      try {
+        const jobs = await api('/api/jobs');
+        const job = jobs.find(j => j.key === key);
+        if (!job) return;
+        const st = job.state || {};
+        const pct = st.total ? Math.min(100, Math.round(st.done / st.total * 100)) : (job.finished ? 100 : 8);
+        $('jobBar').style.width = pct + '%';
+        $('jobText').textContent = (st.phase || 'работаю') + ' · ' + (st.done || 0) + (st.total ? '/' + st.total : '') + ' · найдено ' + (st.found || 0);
+        if (job.finished) {
+          clearInterval(state.jobTimer);
+          $('jobText').textContent = (job.error ? 'Ошибка: ' + job.error : 'Готово');
+          setTimeout(() => $('jobBox').classList.add('hidden'), 2500);
+          await loadStats();
+          await loadSessions();
+          if (key.startsWith('scan:')) {
+            state.target = await api('/api/targets/' + key.split(':')[1]);
+            renderTarget();
+            await loadGroups();
+          }
+          await loadCatalog(state.catalogPage);
+        }
+      } catch (e) { /* ignore */ }
+    }, 2000);
+  }
+
+  async function startJob(url, key) {
+    try {
+      const job = await api(url, {method: 'POST'});
+      pollJob(job.key || key);
+      toast('Запущено');
+    } catch (e) { toast(e.message); }
+  }
+
+  // ── обработчики ──────────────────────────────────────────────────────────
+  $('loginBtn').addEventListener('click', () => {
+    const t = $('tokenInput').value.trim();
+    if (!t) return;
+    state.token = t;
+    localStorage.setItem('hd_token', t);
+    boot();
+  });
+  $('addBtn').addEventListener('click', addTarget);
+  $('query').addEventListener('keydown', (e) => { if (e.key === 'Enter') addTarget(); });
+  $('catalogBtn').addEventListener('click', () => loadCatalog(1));
+  $('catalogQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadCatalog(1); });
+  $('refreshBtn').addEventListener('click', () => boot());
+  $('groupsBtn').addEventListener('click', () => { state.raw = false; $('rawText').classList.add('hidden'); $('chatList').classList.remove('hidden'); $('pager').classList.remove('hidden'); loadGroups(); });
+  $('rawBtn').addEventListener('click', () => {
+    state.raw = !state.raw;
+    $('rawText').classList.toggle('hidden', !state.raw);
+    $('chatList').classList.toggle('hidden', state.raw);
+    $('pager').classList.toggle('hidden', state.raw);
+  });
+  $('scanBtn').addEventListener('click', () => {
+    if (!state.target) return;
+    startJob('/api/targets/' + state.target.tg_user_id + '/scan', 'scan:' + state.target.tg_user_id);
+  });
+  $('bootBtn').addEventListener('click', () => startJob('/api/bootstrap', 'boot'));
+
+  async function boot() {
+    const params = new URLSearchParams(location.search);
+    const urlToken = params.get('token');
+    if (urlToken) {
+      state.token = urlToken;
+      localStorage.setItem('hd_token', urlToken);
+      history.replaceState({}, '', location.pathname);
+    }
+    if (!localStorage.getItem('hd_token')) {
+      $('login').classList.remove('hidden');
+      $('app').classList.add('hidden');
+      return;
+    }
+    try {
+      const health = await fetch('/api/health').then(r => r.json());
+      window.__v = health.version;
+      showApp();
+      await loadStats();
+      await loadTargets();
+      await loadSessions();
+      await loadCatalog(1);
+      if (state.target) { renderTarget(); await loadGroups(); }
+    } catch (e) {
+      showLogin();
+    }
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
