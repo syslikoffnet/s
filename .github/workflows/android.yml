@@ -5,6 +5,9 @@ on:
     branches: [main, "arena/**"]
     paths:
       - "android/**"
+      - "healdragg/**"
+      - "install.sh"
+      - "pyproject.toml"
       - ".github/workflows/android.yml"
   pull_request:
     paths:

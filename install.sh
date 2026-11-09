@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Healdragg — установка для Termux (Android), Linux и macOS.
-#   curl -fsSL https://raw.githubusercontent.com/syslikoffnet/s/main/install.sh | bash
-# или локально:
+#   внутри папки с движком (в APK движок уже встроен):
 #   bash install.sh
 set -euo pipefail
 

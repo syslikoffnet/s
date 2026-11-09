@@ -1,29 +1,39 @@
 <resources>
     <string name="app_name">Healdragg</string>
     <string name="setup_title">🩺 Healdragg</string>
-    <string name="setup_subtitle">Панель каталога публичных чатов Telegram</string>
-    <string name="setup_hint">Укажи адрес сервера, где запущен\nhealdragg api — компьютер в той же Wi-Fi сети,\nваш сервер или Termux на этом телефоне.\n\nБез сети приложение показывает последний\nзагруженный снимок из кэша.</string>
+    <string name="setup_subtitle">Монитор публичных чатов Telegram\nдвижок и панель уже внутри APK</string>
+
+    <string name="engine_on">🟢 движок работает</string>
+    <string name="engine_off">⚪ движок не запущен</string>
+    <string name="engine_ready">Движок готов — открываю панель</string>
+    <string name="engine_preparing">Готовлю движок…</string>
+    <string name="engine_running">Ставлю движок в Termux. Вернись в приложение — панель откроется сама.</string>
+    <string name="engine_paste">Termux не принял автозапуск: скрипт уже в буфере — вставь и нажми Enter.</string>
+
+    <string name="termux_title">⚡ Всё в APK — запуск в один тап</string>
+    <string name="termux_intro">Движок, веб-панель и ключи уже внутри приложения: GitHub, ПК и ручные команды не нужны. Заполни два поля и нажми кнопку — скрипт сам распакует движок, поставит зависимости и поднимет панель на 127.0.0.1:8080.</string>
+    <string name="termux_api_id">API_ID — my.telegram.org → API development tools</string>
+    <string name="termux_api_hash">API_HASH (32 символа)</string>
+    <string name="termux_bot_token">BOT_TOKEN (необязательно)</string>
+    <string name="termux_copy">⚡ Запустить движок</string>
+    <string name="termux_save">💾 Сохранить скрипт</string>
+    <string name="termux_open">📲 Открыть Termux</string>
+    <string name="termux_need">Сначала вставь API_ID и API_HASH (my.telegram.org → API development tools)</string>
+    <string name="termux_install_first">Нужен Termux (F-Droid) — сейчас открою страницу установки</string>
+    <string name="termux_saved">Скрипт сохранён: %1$s</string>
+    <string name="storage_denied">Без доступа к файлам Termux не увидит движок</string>
+
+    <string name="server_title">🌐 Свой сервер (необязательно)</string>
     <string name="url_label">Адрес панели</string>
     <string name="url_hint">http://192.168.1.10:8080</string>
     <string name="token_label">API_TOKEN</string>
     <string name="token_hint">из .env или из вывода healdragg api</string>
     <string name="connect">Подключиться</string>
-    <string name="connect_local">🖥 Локально (Termux)</string>
-    <string name="termux_title">🖥 Движок на телефоне (Termux)</string>
-    <string name="termux_intro">Один раз вставь команды в Termux — он поставит движок, пропишет ключи и запустит панель. Дальше APK подключается к 127.0.0.1:8080 и работает без ПК.</string>
-    <string name="termux_api_id">API_ID (my.telegram.org)</string>
-    <string name="termux_api_hash">API_HASH</string>
-    <string name="termux_bot_token">BOT_TOKEN (необязательно)</string>
-    <string name="termux_copy">📋 Скопировать команды</string>
-    <string name="termux_save">💾 Сохранить скрипт</string>
-    <string name="termux_open">▶️ Открыть Termux</string>
-    <string name="termux_need">Сначала заполни API_ID и API_HASH (my.telegram.org → API development tools)</string>
-    <string name="termux_copied">Команды скопированы — вставь в Termux</string>
-    <string name="termux_saved">Скрипт сохранён: %1$s</string>
-    <string name="local_hint">Движок healdragg api можно запустить прямо на телефоне в Termux:
-bash termux/termuxctl.sh start
-Тогда адрес — http://127.0.0.1:8080, а данные работают офлайн из кэша.</string>
-    <string name="menu_settings">Сервер</string>
+    <string name="connect_local">Проверить движок на телефоне</string>
+    <string name="setup_hint">Адрес нужен, только если панель уже живёт на компьютере или сервере.\n\nБез сети приложение показывает последний загруженный снимок из кэша.</string>
+
+    <string name="footer">Healdragg · публичные данные · ключи остаются на устройстве</string>
+    <string name="menu_settings">Настройки</string>
     <string name="menu_refresh">Обновить</string>
     <string name="error_url">Введи адрес сервера</string>
     <string name="error_load">Не удалось открыть панель. Проверь адрес и сеть.</string>

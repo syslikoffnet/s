@@ -1,7 +1,21 @@
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+// Движок healdragg целиком (пакет + install.sh + pyproject) пакуется внутрь APK.
+// В APK он лежит зашифрованным (AES-GCM): распакованный apk не показывает исходники.
+val engineAssets = layout.buildDirectory.dir("generated/engineAssets")
+val engineAssetsDir = engineAssets.get().asFile
+val repoRoot = rootProject.projectDir.parentFile
 
 android {
     namespace = "net.syslikoff.healdragg"
@@ -11,17 +25,25 @@ android {
         applicationId = "net.syslikoff.healdragg"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         resourceConfigurations += listOf("ru", "en")
     }
 
+    sourceSets.getByName("main").assets.srcDir(engineAssetsDir)
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: убираем имена классов/методов, мёртвый код и неиспользуемые ресурсы
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // подпись debug-ключом, чтобы APK из CI сразу ставился; для стора — свой keystore
             signingConfig = signingConfigs.getByName("debug")
+        }
+        debug {
+            isMinifyEnabled = false
         }
     }
 
@@ -39,6 +61,44 @@ android {
         resources.excludes += setOf("META-INF/*.kotlin_module")
     }
 }
+
+val bundleEngine = tasks.register("bundleEngine") {
+    val sources = File(repoRoot, "healdragg")
+    val extras = listOf(File(repoRoot, "pyproject.toml"), File(repoRoot, "install.sh"))
+    inputs.dir(sources).withPropertyName("engineSources")
+    inputs.files(extras).withPropertyName("engineExtras")
+    outputs.file(engineAssets.map { it.file("engine.bin") }).withPropertyName("engineArchive")
+
+    doLast {
+        val outDir = engineAssetsDir
+        outDir.mkdirs()
+        val tarGz = File(outDir, "engine.tar.gz")
+        tarGz.delete()
+        val proc = ProcessBuilder(
+            "tar", "-czf", tarGz.absolutePath,
+            "--exclude=__pycache__", "--exclude=*.pyc", "--exclude=.venv",
+            "healdragg", "pyproject.toml", "install.sh",
+        ).directory(repoRoot).start()
+        val err = proc.errorStream.bufferedReader().readText()
+        check(proc.waitFor() == 0 && tarGz.isFile) { "не удалось упаковать движок: $err" }
+
+        // Ключ выводится из строки; в приложении — та же формула.
+        val key = MessageDigest.getInstance("SHA-256")
+            .digest("healdragg-engine-v1".toByteArray())
+        val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+        val sealed = cipher.doFinal(tarGz.readBytes())
+        FileOutputStream(File(outDir, "engine.bin")).use { out ->
+            out.write(nonce)
+            out.write(sealed)
+        }
+        tarGz.delete()
+        println("движок: engine.bin ${File(outDir, "engine.bin").length()} B")
+    }
+}
+
+tasks.named("preBuild").configure { dependsOn(bundleEngine) }
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
