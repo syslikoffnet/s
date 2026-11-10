@@ -119,6 +119,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Hd.Bg)) {
         val wide = maxWidth >= 800.dp
+        val listWidth = (maxWidth * 0.36f).coerceIn(320.dp, 430.dp)
 
         if (wide) {
             Row(Modifier.fillMaxSize().navigationBarsPadding()) {
@@ -169,11 +170,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                 }
                             }
                             else -> Row(Modifier.fillMaxSize()) {
-                                Box(
-                                    Modifier
-                                        .width((maxWidth * 0.36f).coerceIn(320.dp, 430.dp))
-                                        .fillMaxHeight(),
-                                ) {
+                                Box(Modifier.width(listWidth).fillMaxHeight()) {
                                     if (tab == Tab.Targets) {
                                         TargetsScreen(
                                             vm = vm,

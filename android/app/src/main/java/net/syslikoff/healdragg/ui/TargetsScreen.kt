@@ -211,7 +211,13 @@ fun TargetsScreen(
         }
 
         ExtendedFloatingActionButton(
-            onClick = { if (vm.hasSessions) addOpen = true else onOpenAccounts() },
+            onClick = {
+                if (vm.hasSessions) {
+                    addOpen = true
+                } else {
+                    onOpenAccounts()
+                }
+            },
             containerColor = Hd.Accent,
             contentColor = Hd.Black,
             icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -231,6 +237,7 @@ fun TargetsScreen(
                 onToast("Цель добавлена: ${target.displayName}")
             },
             onToast = onToast,
+            onOpenAccounts = onOpenAccounts,
         )
     }
 
@@ -375,6 +382,7 @@ private fun AddTargetDialog(
     onDismiss: () -> Unit,
     onAdded: (Target) -> Unit,
     onToast: (String) -> Unit,
+    onOpenAccounts: () -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
