@@ -1293,6 +1293,9 @@ private fun NftItemCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (item.ownerPresence == "hidden" || item.ownerPresence == "previous_owner") {
+                    Text("Не виден в профиле · владелец уточняется", color = Hd.Warn, style = MaterialTheme.typography.labelSmall)
+                }
                 Spacer(Modifier.height(5.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Chip(

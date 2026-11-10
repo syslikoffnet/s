@@ -569,6 +569,7 @@ data class NftItem(
     val availabilityIssued: Int,
     val availabilityTotal: Int,
     val seenAt: Long,
+    val ownerPresence: String? = null,
 ) {
     val nftLink: String get() = "https://t.me/nft/$slug"
     val ownerHandle: String
@@ -606,6 +607,7 @@ data class NftItem(
             availabilityIssued = o.int("availability_issued"),
             availabilityTotal = o.int("availability_total"),
             seenAt = o.num("seen_at"),
+            ownerPresence = o.str("owner_presence"),
         )
     }
 }

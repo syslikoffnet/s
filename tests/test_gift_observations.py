@@ -130,3 +130,13 @@ async def test_owners_include_regular_and_deferred_profiles(setup):
     assert owners[1]["gifts"] == 1 and owners[1]["nft"] == 0
     assert owners[2]["deferred_count"] == 1000
     assert [row["owner_tg_id"] for row in store.all_gift_owners(q="Человек 2")] == [2]
+
+
+async def test_inventory_does_not_present_hidden_as_confirmed(setup):
+    store, client, _, _ = setup
+    client.pages[(1, "")] = page([gift(1, slug="Bear-1")])
+    await scan(setup, 1)
+    assert store.nft_items()[0]["owner_presence"] == "visible"
+    client.pages[(1, "")] = page([])
+    await scan(setup, 1)
+    assert store.nft_items()[0]["owner_presence"] == "hidden"

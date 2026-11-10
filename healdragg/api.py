@@ -817,7 +817,9 @@ def create_app(settings: Settings) -> Starlette:
         guard(request)
         owner_id = int(request.path_params["owner_id"])
         rows = state.store.query(
-            "SELECT * FROM nft_items WHERE owner_tg_id = ? ORDER BY seen_at DESC LIMIT 1000", (owner_id,)
+            "SELECT nft_items.*, (SELECT presence FROM gifts WHERE gifts.slug = nft_items.slug "
+            "AND gifts.owner_tg_id = nft_items.owner_tg_id ORDER BY id LIMIT 1) AS owner_presence "
+            "FROM nft_items WHERE owner_tg_id = ? ORDER BY seen_at DESC LIMIT 1000", (owner_id,)
         )
         return {"rows": rows}
 

@@ -1303,6 +1303,7 @@ class Store:
                 if int(row["id"]) not in observed_ids:
                     status = "hidden" if row["is_nft"] else "hidden_or_sold"
                     conn.execute("UPDATE gifts SET presence = ? WHERE id = ?", (status, row["id"]))
+            conn.execute("DELETE FROM gift_heavy_profiles WHERE owner_tg_id = ?", (owner,))
 
     def observe_nft_owner(self, slug: str, owner: int, username: str | None, name: str | None) -> None:
         """Хронология наблюдений, не утверждение о времени или способе передачи."""
@@ -1513,7 +1514,9 @@ class Store:
         }.get(sort, "seen_at DESC")
         params.extend([max(1, min(1000, limit)), max(0, offset)])
         return self.query(
-            f"SELECT * FROM nft_items {clause} ORDER BY {order} LIMIT ? OFFSET ?", params
+            f"SELECT nft_items.*, (SELECT presence FROM gifts WHERE gifts.slug = nft_items.slug "
+            f"AND gifts.owner_tg_id = nft_items.owner_tg_id ORDER BY id LIMIT 1) AS owner_presence "
+            f"FROM nft_items {clause} ORDER BY {order} LIMIT ? OFFSET ?", params
         )
 
     def nft_count(
