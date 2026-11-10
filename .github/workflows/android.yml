@@ -106,7 +106,6 @@ jobs:
           if not pyc:
               raise SystemExit("в APK нет .pyc движка")
           PY
-          gh pr comment 1 --body-file /tmp/apk-check.txt || true
 
       - name: Приложить к релизу
         if: github.event_name == 'release'
