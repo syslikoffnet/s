@@ -87,13 +87,13 @@ fun GiftsScreen(
     var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
     selectedOwner?.let { owner ->
         BackHandler { selectedOwner = null }
-        OwnerGiftsScreen(api, owner, onBack = { selectedOwner = null }, onToast = onToast, onOpenProfile = onOpenProfile)
+        OwnerGiftsScreen(vm, owner, onBack = { selectedOwner = null }, onToast = onToast, onOpenProfile = onOpenProfile)
         return
     }
 
     var query by rememberSaveable { mutableStateOf("") }
     var depth by rememberSaveable { mutableStateOf(8) }
-    var maxProfiles by rememberSaveable { mutableStateOf(5000) }
+    var maxProfiles by rememberSaveable { mutableStateOf(50_000) }
     var nftOnly by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -264,7 +264,7 @@ fun GiftsScreen(
         if (busy || job != null) return
         busy = true
         error = null
-        vm.refreshGifts(limit = 500, perProfile = 200) { result ->
+        vm.refreshGifts(limit = 500, perProfile = 1000) { result ->
             busy = false
             result.onSuccess {
                 job = it
@@ -389,7 +389,7 @@ fun GiftsScreen(
                         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        listOf(5, 50, 250, 1_000, 5_000).forEach { value ->
+                        listOf(5, 50, 250, 1_000, 5_000, 50_000).forEach { value ->
                             FilterChip(
                                 selected = maxProfiles == value,
                                 onClick = { maxProfiles = value },
@@ -1429,22 +1429,54 @@ private fun NftOwnerCard(
 
 @Composable
 private fun OwnerGiftsScreen(
-    api: Api?, owner: NftOwner, onBack: () -> Unit, onToast: (String) -> Unit,
+    vm: AppViewModel, owner: NftOwner, onBack: () -> Unit, onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
 ) {
+    val api = vm.api
+    val scope = rememberCoroutineScope()
+    val accounts = vm.sessions.filter { it.active }
+    var selectedSession by rememberSaveable(owner.tgId) { mutableStateOf("") }
     var rows by remember(owner.tgId) { mutableStateOf<List<GiftItem>>(emptyList()) }
+    var total by remember(owner.tgId) { mutableStateOf(0) }
     var inventory by remember(owner.tgId) { mutableStateOf<List<NftItem>>(emptyList()) }
     var profile by remember(owner.tgId) { mutableStateOf<org.json.JSONObject?>(null) }
     var photo by remember(owner.tgId) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(owner.tgId) { mutableStateOf<String?>(null) }
     var loading by remember(owner.tgId) { mutableStateOf(true) }
+    var busy by remember(owner.tgId) { mutableStateOf(false) }
+    var task by remember(owner.tgId) { mutableStateOf<Job?>(null) }
+
+    suspend fun loadFirst() {
+        val client = api ?: return
+        runCatching { client.gifts(owner = owner.tgId, limit = 200) }
+            .onSuccess { page ->
+                total = page.total
+                // Сохраняем уже загруженные страницы при поступлении новых записей.
+                rows = (page.rows + rows.drop(200)).distinctBy { it.id }
+            }
+            .onFailure { error = it.message }
+    }
+
     LaunchedEffect(owner.tgId) {
         if (api == null) { loading = false; return@LaunchedEffect }
-        runCatching { api.gifts(owner = owner.tgId, limit = 1000) }
-            .onSuccess { rows = it.rows }
-            .onFailure { error = it.message }
+        loadFirst()
         runCatching { api.giftOwnerNft(owner.tgId) }.onSuccess { inventory = it }
         loading = false
+        val key = "gifts:heavy:${owner.tgId}"
+        while (true) {
+            val found = runCatching { api.jobs().firstOrNull { it.key == key } }.getOrNull()
+            val wasRunning = task?.finished == false
+            task = found?.takeIf { !it.finished }
+            if (task != null || wasRunning) {
+                loadFirst()
+                runCatching { api.giftOwnerNft(owner.tgId) }.onSuccess { inventory = it }
+            }
+            if (wasRunning && found?.finished == true) {
+                if (found.error != null) error = found.error
+                else onToast(found.phase)
+            }
+            delay(3_000)
+        }
     }
     LaunchedEffect(owner.tgId) {
         if (api == null) return@LaunchedEffect
@@ -1458,6 +1490,19 @@ private fun OwnerGiftsScreen(
             }
         }.onFailure { error = it.message }
     }
+
+    fun start(watch: Boolean) {
+        val client = api ?: return
+        if (selectedSession.isBlank() || busy || task != null) return
+        busy = true
+        scope.launch {
+            runCatching { client.startHeavyGifts(owner.tgId, selectedSession, watch) }
+                .onSuccess { task = it; error = null }
+                .onFailure { error = it.message }
+            busy = false
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -1482,17 +1527,58 @@ private fun OwnerGiftsScreen(
                     }
                 }
                 profile?.str("bio")?.let { Text(it, modifier = Modifier.padding(top = 8.dp), color = Hd.Text) }
-                Text("Найдено ${rows.size} подарков в локальной базе", modifier = Modifier.padding(top = 8.dp), color = Hd.Muted)
-                if (rows.size >= 1000) Text("Показаны первые 1000 записей", color = Hd.Warn)
+                Text("В базе: ${compactNumber(total)} · показано ${compactNumber(rows.size)}", modifier = Modifier.padding(top = 8.dp), color = Hd.Muted)
+            }
+        }
+        item("heavy-controls") {
+            HdCard(contentPadding = PaddingValues(14.dp)) {
+                Text("Большой профиль", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                val current = task
+                if (current != null) {
+                    Text(current.phase + if (current.total > 0) " · ${current.done}/${current.total}" else "", color = Hd.Muted)
+                    current.state?.str("session")?.let { Text("Аккаунт: $it", color = Hd.Dim, style = MaterialTheme.typography.labelSmall) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching { api?.cancelJob(current.key) }
+                                .onSuccess { task = null; loadFirst(); onToast("Наблюдение остановлено") }
+                                .onFailure { error = it.message }
+                        }
+                    }) { Text("Остановить", color = Hd.Bad) }
+                } else {
+                    Text("Выберите аккаунт для одного прохода или наблюдения каждые 15 минут. Другие обходы подарков ждут завершения прохода.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                    if (accounts.isEmpty()) {
+                        Text("Нет активных аккаунтов Telegram", color = Hd.Warn)
+                    } else {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            accounts.forEach { account ->
+                                FilterChip(selected = selectedSession == account.name, onClick = { selectedSession = account.name }, label = { Text(account.name) }, colors = giftChipColors())
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { start(false) }, enabled = selectedSession.isNotBlank() && !busy) { Text("Один проход") }
+                            Button(onClick = { start(true) }, enabled = selectedSession.isNotBlank() && !busy) { Text("Наблюдать") }
+                        }
+                    }
+                }
             }
         }
         error?.let { item { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) } }
         if (loading) item { LoadingBlock() }
         if (!loading && rows.isEmpty() && inventory.isEmpty()) item {
-            Text("Для этого профиля пока нет сохранённых подарков. Данные профиля получаются из Telegram при открытии.", color = Hd.Muted)
+            Text("Для этого профиля пока нет сохранённых подарков.", color = Hd.Muted)
         }
         items(rows, key = { "gift-${it.id}" }) { gift ->
             GiftCard(gift, api, onToast, onOpenProfile)
+        }
+        if (rows.size < total) item("more-gifts") {
+            OutlinedButton(onClick = {
+                scope.launch {
+                    val client = api ?: return@launch
+                    runCatching { client.gifts(owner = owner.tgId, limit = 200, offset = rows.size) }
+                        .onSuccess { page -> rows = (rows + page.rows).distinctBy { it.id }; total = page.total }
+                        .onFailure { error = it.message }
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Показать ещё") }
         }
         val knownSlugs = rows.mapNotNull { it.slug }.toSet()
         items(inventory.filterNot { it.slug in knownSlugs }, key = { "inventory-${it.slug}" }) { nft ->

@@ -104,6 +104,8 @@ class AppState:
         self.login = LoginManager(settings, self.store)
         self.jobs: dict[str, Job] = {}
         self.live_at: dict[str, float] = {}
+        # Не допускаем одновременных снимков профилей от разных задач подарков.
+        self.gift_lock = asyncio.Lock()
 
     def running(self, key: str) -> bool:
         job = self.jobs.get(key)
@@ -116,6 +118,8 @@ class AppState:
         job.task.cancel()
         try:
             await job.task
+        except asyncio.CancelledError:
+            pass
         except Exception:  # noqa: BLE001
             pass
         job.finished = True
@@ -802,7 +806,7 @@ def create_app(settings: Settings) -> Starlette:
             "rows": rows,
             "summary": summary,
             "owners": state.store.gift_owners(20),
-            "total": summary["total"],
+            "total": state.store.count_gifts(owner or None, nft_only=nft_only, chain=chain, q=query),
         }
 
     async def gifts_all_owners(request: Request) -> dict[str, Any]:
@@ -985,16 +989,18 @@ def create_app(settings: Settings) -> Starlette:
 
         async def runner() -> None:
             try:
-                result = await crawl_nft_chain(
-                    state.pool,
-                    state.store,
-                    settings,
-                    requests=requests_total,
-                    reporter=on_progress,
-                    discover=discover,
-                    slug=slug,
-                    total=total,
-                )
+                job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                async with state.gift_lock:
+                    result = await crawl_nft_chain(
+                        state.pool,
+                        state.store,
+                        settings,
+                        requests=requests_total,
+                        reporter=on_progress,
+                        discover=discover,
+                        slug=slug,
+                        total=total,
+                    )
                 job.state = {
                     "phase": "готово",
                     "done": int(result.get("requests", 0)),
@@ -1040,14 +1046,16 @@ def create_app(settings: Settings) -> Starlette:
 
         async def runner() -> None:
             try:
-                result = await refresh_gifts(
-                    state.pool,
-                    state.store,
-                    settings,
-                    limit=limit,
-                    per_profile=per_profile,
-                    reporter=on_progress,
-                )
+                job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                async with state.gift_lock:
+                    result = await refresh_gifts(
+                        state.pool,
+                        state.store,
+                        settings,
+                        limit=limit,
+                        per_profile=per_profile,
+                        reporter=on_progress,
+                    )
                 job.state = {
                     **job.state,
                     "phase": "готово",
@@ -1097,15 +1105,17 @@ def create_app(settings: Settings) -> Starlette:
 
         async def runner() -> None:
             try:
-                result = await crawl_nft_profiles(
-                    state.pool,
-                    state.store,
-                    settings,
-                    limit=limit,
-                    depth=depth,
-                    per_profile=per_profile,
-                    reporter=on_progress,
-                )
+                job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                async with state.gift_lock:
+                    result = await crawl_nft_profiles(
+                        state.pool,
+                        state.store,
+                        settings,
+                        limit=limit,
+                        depth=depth,
+                        per_profile=per_profile,
+                        reporter=on_progress,
+                    )
                 job.state = {
                     "phase": "готово",
                     "done": int(result.get("owners", 0)),
@@ -1123,6 +1133,80 @@ def create_app(settings: Settings) -> Starlette:
                 job.finished = True
 
         job.task = asyncio.create_task(runner(), name="gifts:nftprofiles")
+        return job.as_dict()
+
+    async def start_heavy_gifts(request: Request) -> dict[str, Any]:
+        """Выбранный аккаунт: один полный проход или периодическое наблюдение."""
+        guard(request)
+        owner = int(request.path_params["owner_id"])
+        body = await _body(request)
+        session = str(body.get("session") or "").strip()
+        if not session or session not in state.store.session_names():
+            raise HTTPException(400, "Выберите активный аккаунт для этого профиля")
+        info = state.store.query_one(
+            "SELECT owner_username AS username FROM gifts WHERE owner_tg_id = ? "
+            "AND owner_username IS NOT NULL ORDER BY seen_at DESC LIMIT 1", (owner,),
+        ) or state.store.query_one(
+            "SELECT owner_username AS username FROM nft_items WHERE owner_tg_id = ? "
+            "AND owner_username IS NOT NULL ORDER BY seen_at DESC LIMIT 1", (owner,),
+        ) or state.store.query_one(
+            "SELECT username FROM gift_heavy_profiles WHERE owner_tg_id = ?", (owner,),
+        )
+        if info is None and not state.store.scalar(
+            "SELECT EXISTS(SELECT 1 FROM gift_heavy_profiles WHERE owner_tg_id = ?) "
+            "OR EXISTS(SELECT 1 FROM gifts WHERE owner_tg_id = ?) "
+            "OR EXISTS(SELECT 1 FROM nft_items WHERE owner_tg_id = ?)", (owner, owner, owner), 0,
+        ):
+            raise HTTPException(404, "Профиль не найден в базе подарков")
+        query = (info or {}).get("username") or str(owner)
+        watch = body.get("watch") is True
+        interval = body.get("interval_seconds")
+        interval = max(60, min(86400, interval if isinstance(interval, int) else 900))
+        key = f"gifts:heavy:{owner}"
+        if state.running(key):
+            raise HTTPException(409, "Этот профиль уже обрабатывается")
+        job = Job(key=key, kind="gift_heavy_watch" if watch else "gift_heavy", target_id=owner)
+        job.state = {"phase": "ожидаю очередь", "done": 0, "total": 0, "found": 0, "session": session}
+        state.jobs[key] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = {**progress, "session": session, "watch": watch}
+
+        async def runner() -> None:
+            try:
+                while True:
+                    job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                    async with state.gift_lock:
+                        result = await crawl_gifts(
+                            state.pool, state.store, settings, query,
+                            sessions=[session], depth=1, max_profiles=1,
+                            per_profile=100_000, allow_heavy=True,
+                            expected_owner=owner, reporter=on_progress,
+                        )
+                    info_result = result["results"][0]
+                    if info_result.get("error"):
+                        raise RuntimeError(info_result["error"])
+                    complete = bool(info_result.get("complete"))
+                    job.state = {
+                        "phase": "готово" if complete else "обход неполный — статусы не менялись",
+                        "done": result["gifts"], "total": result["gifts"],
+                        "found": result["gifts"], "new": result["new"],
+                        "complete": complete, "session": session, "watch": watch,
+                    }
+                    if not watch:
+                        break
+                    job.state["phase"] = "наблюдение · ожидание следующего прохода"
+                    await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                job.state = {**job.state, "phase": "остановлено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("обход большого профиля не удался")
+                job.error = str(exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name=key)
         return job.as_dict()
 
     async def gifts_graph(request: Request) -> dict[str, Any]:
@@ -1144,7 +1228,7 @@ def create_app(settings: Settings) -> Starlette:
         depth = max(1, min(8, depth))
         max_profiles = body.get("max_profiles")
         max_profiles = int(max_profiles) if isinstance(max_profiles, int) else 5
-        max_profiles = max(1, min(5000, max_profiles))
+        max_profiles = max(1, min(50_000, max_profiles))
         per_profile = body.get("per_profile")
         per_profile = int(per_profile) if isinstance(per_profile, int) else 100
         key = f"gifts:{query}"
@@ -1159,16 +1243,19 @@ def create_app(settings: Settings) -> Starlette:
 
         async def runner() -> None:
             try:
-                result = await crawl_gifts(
-                    state.pool,
-                    state.store,
-                    settings,
-                    query,
-                    depth=depth,
-                    max_profiles=max_profiles,
-                    per_profile=per_profile,
-                    reporter=on_progress,
-                )
+                job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                async with state.gift_lock:
+                    result = await crawl_gifts(
+                        state.pool,
+                        state.store,
+                        settings,
+                        query,
+                        depth=depth,
+                        max_profiles=max_profiles,
+                        per_profile=per_profile,
+                        reporter=on_progress,
+                        skip_known=True,
+                    )
                 job.state = {
                     "phase": "готово",
                     "done": result["profiles"],
@@ -1510,6 +1597,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/heavy", _route(gifts_heavy)),
         Route("/api/gifts/owners", _route(gifts_all_owners)),
         Route("/api/gifts/owners/{owner_id:int}/profile", _route(gift_owner_profile)),
+        Route("/api/gifts/owners/{owner_id:int}/heavy", _route(start_heavy_gifts), methods=["POST"]),
         Route("/api/gifts/owners/{owner_id:int}/nft", _route(gift_owner_nft)),
         Route("/api/gifts/nft/{slug}/history", _route(nft_history)),
         Route("/api/gifts/nft", _route(gifts_nft)),

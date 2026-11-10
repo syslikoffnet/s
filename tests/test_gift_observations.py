@@ -140,3 +140,105 @@ async def test_inventory_does_not_present_hidden_as_confirmed(setup):
     client.pages[(1, "")] = page([])
     await scan(setup, 1)
     assert store.nft_items()[0]["owner_presence"] == "hidden"
+
+
+async def test_heavy_scan_streams_and_failed_pass_preserves_absences(setup):
+    import asyncio
+
+    store, client, pool, settings = setup
+    store.add_gift(1, saved_id=99, gift_id=44, title="Ранее видимый")
+    store.defer_gift_profile(1, None, "Человек 1", 1001)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def request(req):
+        if not req.offset:
+            return page([gift(1)], count=1001, next_offset="next")
+        entered.set()
+        await release.wait()
+        raise RuntimeError("сеть недоступна")
+
+    client.__class__ = type("SlowClient", (Client,), {"__call__": lambda self, req: request(req)})
+    task = asyncio.create_task(crawl_gifts(
+        pool, store, settings, "1", allow_heavy=True, per_profile=100_000,
+    ))
+    await asyncio.wait_for(entered.wait(), 2)
+    assert len(store.list_gifts(1)) == 2  # первая страница уже записана
+    release.set()
+    result = await task
+    assert result["errors"] == 1
+    assert all(row["presence"] == "visible" for row in store.list_gifts(1))
+    assert store.heavy_gift_profiles()[0]["owner_tg_id"] == 1
+
+
+async def test_known_profile_is_skipped_but_cached_sender_is_crawled(setup):
+    store, client, pool, settings = setup
+    store.add_gift(1, saved_id=1, gift_id=44, title="Мишка", from_tg_id=2)
+    existing_id = store.list_gifts(1)[0]["id"]
+    store.finish_gift_snapshot(1, {existing_id})
+    client.pages[(2, "")] = page([gift(2)])
+    result = await crawl_gifts(pool, store, settings, "1", depth=2, max_profiles=2, skip_known=True)
+    assert client.calls == [(2, "")]
+    assert result["results"][0]["skipped_known"]
+    assert len(store.list_gifts(2)) == 1
+
+
+async def test_heavy_repeated_offset_is_incomplete(setup):
+    store, client, pool, settings = setup
+    store.add_gift(1, saved_id=99, gift_id=44, title="Ранее видимый")
+    client.pages[(1, "")] = page([gift(1)], count=1000, next_offset="next")
+    client.pages[(1, "next")] = page([gift(2)], count=1000, next_offset="next")
+    result = await crawl_gifts(pool, store, settings, "1", allow_heavy=True, per_profile=5000)
+    assert not result["results"][0]["complete"]
+    assert all(row["presence"] == "visible" for row in store.list_gifts(1))
+
+
+async def test_regular_profile_streams_when_count_is_known(setup):
+    import asyncio
+
+    store, client, pool, settings = setup
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def request(req):
+        if not req.offset:
+            return page([gift(1)], count=2, next_offset="next")
+        entered.set()
+        await release.wait()
+        return page([gift(2)], count=2)
+
+    client.__class__ = type("StreamingClient", (Client,), {"__call__": lambda self, req: request(req)})
+    task = asyncio.create_task(crawl_gifts(pool, store, settings, "1"))
+    await asyncio.wait_for(entered.wait(), 2)
+    assert len(store.list_gifts(1)) == 1
+    release.set()
+    result = await task
+    assert result["results"][0]["complete"]
+    assert len(store.list_gifts(1)) == 2
+
+
+async def test_changing_server_count_does_not_mark_missing(setup):
+    store, client, pool, settings = setup
+    store.add_gift(1, saved_id=99, gift_id=44, title="Ранее видимый")
+    client.pages[(1, "")] = page([gift(1)], count=2, next_offset="next")
+    client.pages[(1, "next")] = page([gift(2), gift(3)], count=3)
+    result = await crawl_gifts(pool, store, settings, "1")
+    assert not result["results"][0]["complete"]
+    assert all(row["presence"] == "visible" for row in store.list_gifts(1))
+
+
+async def test_whole_network_depth_continues_beyond_eight(setup):
+    store, client, pool, settings = setup
+    for owner in range(1, 11):
+        item = gift(owner)
+        if owner < 10:
+            item.from_id = types.PeerUser(owner + 1)
+            next_user = types.User(id=owner + 1, access_hash=9, first_name=f"Человек {owner + 1}")
+            response = page([item])
+            response.users = [next_user]
+        else:
+            response = page([item])
+        client.pages[(owner, "")] = response
+    result = await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=20)
+    assert result["profiles"] == 10
+    assert len(store.list_gifts(10)) == 1

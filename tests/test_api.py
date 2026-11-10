@@ -506,3 +506,32 @@ def test_gift_owner_and_history_endpoints(client: TestClient) -> None:
     history = client.get("/api/gifts/nft/Bear-1/history", headers=HEADERS).json()["rows"]
     assert [row["owner_tg_id"] for row in history] == [991, 992]
     assert client.get("/api/gifts/nft/Bear-1/history").status_code == 401
+
+
+def test_heavy_watch_requires_valid_session_and_cancels(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    import threading
+
+    import healdragg.api as api_module
+
+    store = client.app.state.hd.store  # type: ignore[attr-defined]
+    store.add_gift(991, saved_id=1, gift_id=1, title="Мишка")
+    store.add_session("chosen", "/tmp/chosen.session", tg_user_id=9, status="active")
+    endpoint = "/api/gifts/owners/991/heavy"
+    assert client.post(endpoint, headers=HEADERS, json={"session": "missing"}).status_code == 400
+    started = threading.Event()
+    calls = []
+
+    async def fake_crawl(*args, **kwargs):
+        calls.append(kwargs)
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(api_module, "crawl_gifts", fake_crawl)
+    response = client.post(endpoint, headers=HEADERS, json={"session": "chosen", "watch": True})
+    assert response.status_code == 200
+    assert started.wait(2)
+    assert calls[0]["sessions"] == ["chosen"] and calls[0]["expected_owner"] == 991
+    assert client.post(endpoint, headers=HEADERS, json={"session": "chosen"}).status_code == 409
+    cancelled = client.post("/api/jobs/gifts%3Aheavy%3A991/cancel", headers=HEADERS)
+    assert cancelled.status_code == 200 and cancelled.json()["ok"] is True

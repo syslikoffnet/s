@@ -217,6 +217,9 @@ CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
 
 -- Отложенные тяжёлые профили и история наблюдений владельцев NFT.
+CREATE TABLE IF NOT EXISTS gift_profile_state (
+    owner_tg_id INTEGER PRIMARY KEY, completed_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS gift_heavy_profiles (
     owner_tg_id INTEGER PRIMARY KEY, username TEXT, name TEXT,
     gift_count INTEGER NOT NULL, detected_at INTEGER NOT NULL
@@ -1304,6 +1307,25 @@ class Store:
                     status = "hidden" if row["is_nft"] else "hidden_or_sold"
                     conn.execute("UPDATE gifts SET presence = ? WHERE id = ?", (status, row["id"]))
             conn.execute("DELETE FROM gift_heavy_profiles WHERE owner_tg_id = ?", (owner,))
+            conn.execute(
+                "INSERT INTO gift_profile_state(owner_tg_id, completed_at) VALUES (?, ?) "
+                "ON CONFLICT(owner_tg_id) DO UPDATE SET completed_at = excluded.completed_at",
+                (owner, now_ts()),
+            )
+
+    def gift_profile_known(self, owner: int) -> bool:
+        return bool(self.scalar(
+            "SELECT EXISTS(SELECT 1 FROM gift_profile_state WHERE owner_tg_id = ?) "
+            "OR EXISTS(SELECT 1 FROM gift_heavy_profiles WHERE owner_tg_id = ?)",
+            (owner, owner), 0,
+        ))
+
+    def gift_profile_senders(self, owner: int) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT from_tg_id, max(from_username) AS username FROM gifts "
+            "WHERE owner_tg_id = ? AND from_tg_id IS NOT NULL "
+            "GROUP BY from_tg_id ORDER BY max(date) DESC", (owner,),
+        )
 
     def observe_nft_owner(self, slug: str, owner: int, username: str | None, name: str | None) -> None:
         """Хронология наблюдений, не утверждение о времени или способе передачи."""
@@ -1383,6 +1405,28 @@ class Store:
             f"SELECT * FROM gifts {clause} ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ? OFFSET ?",
             params,
         )
+
+    def count_gifts(
+        self, owner_tg_id: int | None = None, *, nft_only: bool = False,
+        chain: str | None = None, q: str | None = None,
+    ) -> int:
+        where: list[str] = []
+        params: list[Any] = []
+        if owner_tg_id is not None:
+            where.append("owner_tg_id = ?")
+            params.append(owner_tg_id)
+        if nft_only:
+            where.append("is_nft = 1")
+        if chain == "wallet":
+            where.append("on_chain = 1")
+        elif chain == "telegram":
+            where.append("on_chain = 0")
+        if q:
+            where.append("(owner_username LIKE ? OR owner_name LIKE ? OR from_username LIKE ? "
+                         "OR title LIKE ? OR slug LIKE ?)")
+            params.extend([f"%{q.strip()}%"] * 5)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        return int(self.scalar(f"SELECT COUNT(*) FROM gifts {clause}", params, 0))
 
     def gift_summary(self) -> dict[str, Any]:
         row = self.query_one(

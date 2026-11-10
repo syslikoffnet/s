@@ -176,12 +176,17 @@ class Api(private val baseUrl: String, private val token: String) {
                 hosted = it.int("hosted"),
             )
         }
-        return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners)
+        return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners, total = data.int("total"))
     }
 
     suspend fun giftOwners(q: String?, limit: Int = 500): List<NftOwner> {
         val query = q?.let { "&q=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
         return jsonObjects(obj("api/gifts/owners?limit=$limit$query").arr("rows")).map(NftOwner::from)
+    }
+
+    suspend fun startHeavyGifts(id: Long, session: String, watch: Boolean): Job {
+        val body = JSONObject().put("session", session).put("watch", watch)
+        return Job.from(obj("api/gifts/owners/$id/heavy", "POST", body))
     }
 
     suspend fun giftOwnerNft(id: Long): List<NftItem> =
