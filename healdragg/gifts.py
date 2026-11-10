@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -41,6 +42,7 @@ Reporter = Callable[[dict[str, Any]], Awaitable[None]]
 MAX_DEPTH = 8
 MAX_PROFILES = 5000
 MAX_PER_PROFILE = 5000
+HEAVY_PROFILE_THRESHOLD = 1000
 
 
 def _as_int(value: Any) -> int | None:
@@ -53,6 +55,9 @@ def _stars_amount(value: Any) -> int | None:
         return value
     total = None
     for item in value or []:
+        # StarsTonAmount хранит нано-TON, его нельзя суммировать со звёздами.
+        if type(item).__name__ == "StarsTonAmount":
+            continue
         amount = getattr(item, "amount", None)
         if isinstance(amount, int):
             total = (total or 0) + amount
@@ -116,14 +121,12 @@ def _unique_meta(gift: Any) -> dict[str, Any]:
     if not owner_name and owner_peer_id:
         owner_name = f"id {owner_peer_id}"
     resell = _stars_amount(getattr(gift, "resell_amount", None))
-    value_amount = _as_int(getattr(gift, "value_amount", None)) or _as_int(
-        getattr(gift, "stars", None)
-    )
+    value_amount = _as_int(getattr(gift, "value_amount", None))
     value_currency = getattr(gift, "value_currency", None)
-    if value_currency is None and value_amount:
-        # У обычных подарков цена всегда в звёздах, у уникальных Telegram
-        # присылает валюту отдельно — если её нет, считаем звёздами.
-        value_currency = "STARS"
+    if value_amount is None:
+        value_amount = _as_int(getattr(gift, "stars", None))
+        if value_amount is not None:
+            value_currency = "STARS"
     return {
         "slug": str(slug) if slug else None,
         "num": _as_int(getattr(gift, "num", None)),
@@ -171,7 +174,7 @@ def _remember_meta(
         gift_id=meta.get("gift_id"),
         num=meta.get("num"),
         title=meta.get("title"),
-        owner_tg_id=meta.get("owner_tg_id") or owner_tg_id,
+        owner_tg_id=owner_tg_id or meta.get("owner_tg_id"),
         owner_username=owner_username,
         owner_name=meta.get("owner_name") or owner_name,
         owner_address=meta.get("owner_address"),
@@ -193,11 +196,13 @@ async def _saved_gifts(
     limiter: RateLimiter,
     peer: Any,
     per_profile: int,
-) -> tuple[list[Any], dict[int, User]]:
+) -> tuple[list[Any], dict[int, User], bool, int | None]:
     """Читает сохранённые подарки страницами по 100, пока не упрёмся в лимит."""
     saved: list[Any] = []
     users: dict[int, User] = {}
     offset = ""
+    offsets = {offset}
+    total: int | None = None
     while len(saved) < per_profile:
         limit = min(100, per_profile - len(saved))
         page = await limiter.call(
@@ -205,16 +210,27 @@ async def _saved_gifts(
                 GetSavedStarGiftsRequest(peer=peer, offset=offset, limit=limit)
             )
         )
+        count = _as_int(getattr(page, "count", None))
+        if count is not None:
+            total = count
+        if total is not None and total >= HEAVY_PROFILE_THRESHOLD:
+            return [], {}, False, total
         gifts = list(getattr(page, "gifts", None) or [])
         for user in getattr(page, "users", None) or []:
             if isinstance(user, User):
                 users[int(user.id)] = user
         saved.extend(gifts)
         next_offset = getattr(page, "next_offset", None)
-        if not gifts or not next_offset or next_offset == offset:
-            break
+        if len(saved) >= HEAVY_PROFILE_THRESHOLD:
+            return [], {}, False, count or len(saved)
+        if not next_offset:
+            # Пустая последняя страница допустима; без курсора обход завершён.
+            return saved, users, total is None or len(saved) >= total, None
+        if not gifts or next_offset in offsets:
+            return saved, users, False, None
+        offsets.add(next_offset)
         offset = next_offset
-    return saved, users
+    return saved, users, False, None
 
 
 async def crawl_gifts(
@@ -265,26 +281,31 @@ async def crawl_gifts(
         response = None
         try:
             peer = utils.get_input_peer(user)
-            saved, users = await _saved_gifts(client, limiter, peer, per_profile)
-            response = (saved, users)
+            saved, users, complete, heavy_count = await _saved_gifts(client, limiter, peer, per_profile)
+            if heavy_count is not None:
+                store.defer_gift_profile(owner_id, username, display, heavy_count)
+            else:
+                response = (saved, users, complete)
         except Exception as exc:  # noqa: BLE001 — скрытые подарки не должны ронять обход
             log.warning("подарки %s недоступны: %s", owner_id, exc)
             error = str(exc)[:300]
             errors += 1
 
         if response is not None:
-            saved, users = response
+            saved, users, complete = response
+            observed_ids: set[int] = set()
             for item in saved:
                 gift = getattr(item, "gift", None)
                 if gift is None:
+                    complete = False
                     continue
                 gift_id = getattr(gift, "id", None)
                 is_nft = isinstance(gift, StarGiftUnique)
                 meta = _unique_meta(gift) if is_nft else {}
                 title = _gift_title(gift, gift_id)
                 stars = getattr(gift, "stars", None)
-                if stars is None:
-                    stars = getattr(gift, "value_amount", None)
+                if stars is None and meta.get("value_currency") == "STARS":
+                    stars = meta.get("value_amount")
                 sender_peer = getattr(item, "from_id", None)
                 name_hidden = bool(getattr(item, "name_hidden", False))
                 sender_id = None if name_hidden else _sender_id(sender_peer)
@@ -321,7 +342,18 @@ async def crawl_gifts(
                     value_usd=meta.get("value_usd"),
                     burned=bool(meta.get("burned")),
                     crafted=meta.get("crafted"),
+                    raw=json.dumps([
+                        {"type": type(attr).__name__, "name": getattr(attr, "name", None),
+                         "rarity": getattr(getattr(attr, "rarity", None), "permille", None)}
+                        for attr in (getattr(gift, "attributes", None) or [])
+                        if getattr(attr, "name", None)
+                    ], ensure_ascii=False) if is_nft else None,
                 )
+                observed_ids.add(store.gift_observation_id(
+                    owner_id, int(saved_id) if saved_id else None,
+                    int(gift_id) if gift_id else None, slug=meta.get("slug"),
+                    date=_timestamp(getattr(item, "date", None)), sender=sender_id,
+                ))
                 profile_gifts += 1
                 gifts_found += 1
                 if created:
@@ -334,7 +366,9 @@ async def crawl_gifts(
                         nft_chain += 1
                     else:
                         nft_hosted += 1
-                    # инвентарь: владелец — тот, в чьём профиле лежит вещь
+                    if meta.get("slug"):
+                        store.observe_nft_owner(meta["slug"], owner_id, username, display)
+                    # Инвентарь: владелец — тот, в чьём профиле вещь наблюдалась.
                     _remember_meta(
                         store,
                         meta,
@@ -367,6 +401,8 @@ async def crawl_gifts(
                     seen.add(sender_id)
                     queue.append((sender, level + 1))
 
+            if complete:
+                store.finish_gift_snapshot(owner_id, observed_ids)
             store.touch_gifts(owner_id)
 
         results.append(
@@ -379,6 +415,9 @@ async def crawl_gifts(
                 "nft": profile_nft,
                 "level": level,
                 "error": error,
+                "deferred": response is None and error is None,
+                "gift_count": heavy_count if response is None and error is None else None,
+                "complete": response[2] if response else False,
             }
         )
         scanned += 1

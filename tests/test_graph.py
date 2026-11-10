@@ -51,3 +51,20 @@ def test_render_html_is_standalone(tmp_path: Path) -> None:
         assert "<script src=" not in html
     finally:
         store.close()
+
+
+def test_peer_has_only_chats_with_actual_interactions(tmp_path: Path) -> None:
+    store = Store(tmp_path / "peer.db")
+    target = store.upsert_target(42, first_name="Цель")
+    peer = store.upsert_peer(99, first_name="Аня")
+    first = store.upsert_group(100, title="Первый")
+    second = store.upsert_group(101, title="Без общения")
+    store.add_message(target["id"], first, 1, date=100, reply_to_peer=99, text="ответ")
+    store.add_message(target["id"], first, 2, date=101, mentions="99,777", text="привет")
+    store.add_message(target["id"], second, 3, date=102, text="другой чат")
+    store.bump_edge(target["id"], peer, replies=1, mentions=1, ts=101)
+    graph = build_graph(store, target["id"])
+    node = next(n for n in graph["nodes"] if n["type"] == "peer")
+    assert node["label"] == "Аня"
+    assert [(g["title"], g["interactions"]) for g in node["meta"]["chats"]] == [("Первый", 2)]
+    store.close()

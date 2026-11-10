@@ -48,3 +48,12 @@ def test_resell_amount_is_summed() -> None:
     )
     assert meta["resell_amount"] == 1500
     assert _stars_amount(None) is None
+
+
+def test_missing_currency_is_not_guessed_and_ton_is_not_stars() -> None:
+    from telethon.tl.types import StarsAmount, StarsTonAmount
+
+    meta = _unique_meta(_unique(value_amount=98500))
+    assert meta["value_currency"] is None
+    assert _stars_amount([StarsAmount(amount=4, nanos=0), StarsTonAmount(amount=2_000_000_000)]) == 4
+    assert _stars_amount([StarsTonAmount(amount=2_000_000_000)]) is None

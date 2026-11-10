@@ -805,6 +805,69 @@ def create_app(settings: Settings) -> Starlette:
             "total": summary["total"],
         }
 
+    async def gifts_all_owners(request: Request) -> dict[str, Any]:
+        guard(request)
+        return {"rows": state.store.all_gift_owners(
+            q=(request.query_params.get("q") or "").strip() or None,
+            limit=_q_int(request, "limit", 100, 1, 1000),
+            offset=_q_int(request, "offset", 0, 0, 1_000_000),
+        )}
+
+    async def gift_owner_nft(request: Request) -> dict[str, Any]:
+        guard(request)
+        owner_id = int(request.path_params["owner_id"])
+        rows = state.store.query(
+            "SELECT * FROM nft_items WHERE owner_tg_id = ? ORDER BY seen_at DESC LIMIT 1000", (owner_id,)
+        )
+        return {"rows": rows}
+
+    async def gift_owner_profile(request: Request) -> dict[str, Any]:
+        """Профиль для просмотра без добавления человека в список слежки."""
+        import base64
+
+        from telethon import functions
+
+        guard(request)
+        owner_id = int(request.path_params["owner_id"])
+        username = (request.query_params.get("username") or "").strip().lstrip("@")
+        try:
+            account = await state.pool.first()
+            entity = await account.client.get_entity(username or owner_id)
+            if int(getattr(entity, "id", 0)) != owner_id:
+                raise ValueError("Имя пользователя теперь принадлежит другому аккаунту")
+            result: dict[str, Any] = {
+                "tg_id": owner_id, "username": getattr(entity, "username", None),
+                "first_name": getattr(entity, "first_name", None),
+                "last_name": getattr(entity, "last_name", None),
+                "is_bot": bool(getattr(entity, "bot", False)),
+                "is_deleted": bool(getattr(entity, "deleted", False)),
+            }
+            try:
+                full = await account.client(functions.users.GetFullUserRequest(entity))
+                result["bio"] = getattr(getattr(full, "full_user", None), "about", None)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("профиль владельца %s: %s", owner_id, exc)
+            try:
+                raw = await account.client.download_profile_photo(entity, file=bytes)
+                if raw and len(raw) <= 2_500_000:
+                    result["photo"] = base64.b64encode(raw).decode("ascii")
+            except Exception as exc:  # noqa: BLE001
+                log.debug("фото владельца %s: %s", owner_id, exc)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Не удалось получить профиль из Telegram: {exc}") from exc
+
+    async def gifts_heavy(request: Request) -> dict[str, Any]:
+        guard(request)
+        return {"rows": state.store.heavy_gift_profiles(_q_int(request, "limit", 100, 1, 1000))}
+
+    async def nft_history(request: Request) -> dict[str, Any]:
+        guard(request)
+        slug = request.path_params["slug"].strip()
+        if not slug or len(slug) > 200:
+            raise HTTPException(400, "Укажите название NFT")
+        return {"rows": state.store.nft_history(slug)}
+
     async def gifts_nft(request: Request) -> dict[str, Any]:
         """NFT-инвентарь: все уникальные вещи с фильтром «кошелёк / Telegram»."""
         guard(request)
@@ -1442,6 +1505,11 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/graph", _route(gifts_graph)),
+        Route("/api/gifts/heavy", _route(gifts_heavy)),
+        Route("/api/gifts/owners", _route(gifts_all_owners)),
+        Route("/api/gifts/owners/{owner_id:int}/profile", _route(gift_owner_profile)),
+        Route("/api/gifts/owners/{owner_id:int}/nft", _route(gift_owner_nft)),
+        Route("/api/gifts/nft/{slug}/history", _route(nft_history)),
         Route("/api/gifts/nft", _route(gifts_nft)),
         Route("/api/gifts/nft/owners", _route(gifts_nft_owners)),
         Route("/api/gifts/nft/export.csv", _route(gifts_nft_csv)),

@@ -94,6 +94,7 @@ fun TargetDetailScreen(
     tgId: Long,
     onBack: () -> Unit,
     onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -694,7 +695,7 @@ fun TargetDetailScreen(
             }
 
             DetailTab.Network -> item("graph") {
-                GraphTab(api = api, tgId = tgId, onToast = onToast)
+                GraphTab(api = api, tgId = tgId, onToast = onToast, onOpenProfile = onOpenProfile)
             }
         }
     }

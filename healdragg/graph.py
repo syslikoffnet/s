@@ -41,6 +41,32 @@ def build_graph(
     counts = store.chat_activity(target_pk)
     edges = store.target_edges(target_pk, limit=max_peers)
     stats = store.activity_stats(target_pk)
+    # Контекст общения: только реальные ответы и упоминания в сообщениях,
+    # а не предположение, что участники общего чата общаются между собой.
+    peer_chats: dict[int, dict[int, dict[str, Any]]] = {}
+    messages = store.query(
+        """SELECT m.reply_to_peer, m.mentions, m.date, g.id AS group_id,
+                  g.tg_id, g.title, g.link
+             FROM messages m JOIN groups g ON g.id = m.group_id
+            WHERE m.target_id = ? AND (m.reply_to_peer IS NOT NULL OR m.mentions IS NOT NULL)""",
+        (target_pk,),
+    )
+    for message in messages:
+        ids = set()
+        if message.get("reply_to_peer"):
+            ids.add(int(message["reply_to_peer"]))
+        for part in (message.get("mentions") or "").split(","):
+            if part.isdigit():
+                ids.add(int(part))
+        for peer_id in ids:
+            chats = peer_chats.setdefault(peer_id, {})
+            group_id = int(message["group_id"])
+            row = chats.setdefault(group_id, {
+                "tg_id": message["tg_id"], "title": message.get("title") or "Чат",
+                "link": message.get("link"), "interactions": 0, "last": 0,
+            })
+            row["interactions"] += 1
+            row["last"] = max(row["last"], int(message.get("date") or 0))
 
     nodes: list[dict[str, Any]] = [
         {
@@ -109,6 +135,10 @@ def build_graph(
                     "mentions": edge.get("mentions", 0),
                     "last": edge.get("last_seen"),
                     "weight": edge.get("weight", 0),
+                    "chats": sorted(
+                        peer_chats.get(int(edge["tg_id"]), {}).values(),
+                        key=lambda row: (-row["interactions"], -row["last"]),
+                    ),
                 },
             }
         )

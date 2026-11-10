@@ -1,8 +1,13 @@
 package net.syslikoff.healdragg.ui
 
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +33,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.CardGiftcard
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,6 +60,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,10 +84,16 @@ fun GiftsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api = vm.api
+    var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
+    selectedOwner?.let { owner ->
+        BackHandler { selectedOwner = null }
+        OwnerGiftsScreen(api, owner, onBack = { selectedOwner = null }, onToast = onToast, onOpenProfile = onOpenProfile)
+        return
+    }
 
     var query by rememberSaveable { mutableStateOf("") }
-    var depth by rememberSaveable { mutableStateOf(1) }
-    var maxProfiles by rememberSaveable { mutableStateOf(5) }
+    var depth by rememberSaveable { mutableStateOf(8) }
+    var maxProfiles by rememberSaveable { mutableStateOf(5000) }
     var nftOnly by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -131,8 +145,7 @@ fun GiftsScreen(
             .onFailure { error = it.message ?: "Не удалось прочитать подарки" }
         if (mode == 2) {
             runCatching {
-                client.nftOwners(
-                    chain = chainArg,
+                client.giftOwners(
                     q = ownerQuery.trim().ifBlank { null },
                     limit = 500,
                 )
@@ -168,7 +181,6 @@ fun GiftsScreen(
                 nftRows = if (reset) it.rows else (nftRows + it.rows).distinctBy { row -> row.slug }
                 nftTotal = it.total
                 nftHasMore = (if (reset) it.rows.size else nftRows.size) < it.total
-                nftOwnersList = it.owners
                 error = null
             }
             .onFailure { error = it.message ?: "Не удалось прочитать NFT-инвентарь" }
@@ -327,7 +339,8 @@ fun GiftsScreen(
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "Вставь @username, ссылку t.me/… или ID профиля. Приложение соберёт, " +
-                            "кто кому и когда дарил подарки — с текстом и датой.",
+                            "кто кому и когда дарил подарки — с текстом и датой. Изображения NFT " +
+                            "загружаются с Fragment и кэшируются на устройстве.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Hd.Muted,
                     )
@@ -806,7 +819,7 @@ fun GiftsScreen(
                 }
 
                 items(rows, key = { it.id }) { gift ->
-                    GiftCard(gift = gift, onToast = onToast, onOpenProfile = onOpenProfile)
+                    GiftCard(gift = gift, api = api, onToast = onToast, onOpenProfile = onOpenProfile)
                 }
             }
 
@@ -863,7 +876,7 @@ fun GiftsScreen(
                     }
                 }
                 items(nftRows, key = { "nft-${it.slug}" }) { item ->
-                    NftItemCard(item = item, onToast = onToast, onOpenProfile = onOpenProfile)
+                    NftItemCard(item = item, api = api, onToast = onToast, onOpenProfile = onOpenProfile)
                 }
 
                 if (nftHasMore) {
@@ -918,8 +931,7 @@ fun GiftsScreen(
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Показано ${compactNumber(ownerTotal)} из " +
-                                "${compactNumber(nftSummary.owners)} владельцев базы",
+                            "Показано ${compactNumber(ownerTotal)} владельцев и отложенных профилей",
                             style = MaterialTheme.typography.labelSmall,
                             color = Hd.Dim,
                         )
@@ -991,7 +1003,7 @@ fun GiftsScreen(
                     }
                 }
                 items(nftOwnersList, key = { "owner-${it.tgId}" }) { owner ->
-                    NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = onOpenProfile)
+                    NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = { selectedOwner = owner })
                 }
             }
         }
@@ -1054,19 +1066,15 @@ private fun GiftBadge(
 @Composable
 private fun GiftCard(
     gift: GiftItem,
+    api: Api?,
     onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
 ) {
     val context = LocalContext.current
-    val ownerLink = gift.ownerUsername?.let { "https://t.me/$it" }
+    var detailsOpen by remember(gift.id) { mutableStateOf(false) }
     val ownerKey = gift.ownerUsername?.let { "@$it" } ?: gift.ownerTgId.toString()
     HdCard(
-        onClick = {
-            if (!openLink(context, ownerLink)) {
-                copyText(context, "owner", gift.ownerHandle)
-                onToast("Ссылки нет — профиль скопирован")
-            }
-        },
+        onClick = { detailsOpen = true },
         onLongClick = {
             val payload = buildString {
                 append(gift.title)
@@ -1083,7 +1091,9 @@ private fun GiftCard(
         contentPadding = PaddingValues(14.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 42.dp)
+            GiftArtwork(slug = gift.slug, title = gift.title, size = 68.dp) {
+                GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 68.dp)
+            }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1106,6 +1116,17 @@ private fun GiftCard(
                                 .padding(horizontal = 5.dp, vertical = 1.dp),
                         )
                     }
+                }
+                if (gift.presence != "visible") {
+                    Text(
+                        when (gift.presence) {
+                            "previous_owner" -> "Предыдущий владелец"
+                            "hidden" -> "Не виден в профиле · возможно скрыт"
+                            else -> "Не виден в профиле · скрыт или продан"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Warn,
+                    )
                 }
                 Spacer(Modifier.height(3.dp))
                 Text(
@@ -1146,7 +1167,7 @@ private fun GiftCard(
                 }
                 if (gift.isNft) {
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (gift.num > 0) Chip("#${gift.num}", Hd.Accent)
                         Chip(if (gift.onChain) "кошелёк" else "Telegram", if (gift.onChain) Hd.Warn else Hd.Accent2)
                         gift.priceLabel?.let { Chip(it, Hd.Warn) }
@@ -1158,7 +1179,7 @@ private fun GiftCard(
                         }
                     }
                     Spacer(Modifier.height(2.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(
                             onClick = { onOpenProfile(ownerKey) },
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
@@ -1206,23 +1227,23 @@ private fun GiftCard(
             }
         }
     }
+    if (detailsOpen) {
+        GiftDetailsDialog(gift, api, onDismiss = { detailsOpen = false })
+    }
 }
 
 /** Карточка одной NFT-вещи: где лежит, сколько стоит, чья и по какой ссылке. */
 @Composable
 private fun NftItemCard(
     item: NftItem,
+    api: Api?,
     onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    var detailsOpen by remember(item.slug) { mutableStateOf(false) }
     HdCard(
-        onClick = {
-            if (!openLink(context, item.nftLink)) {
-                copyText(context, "nft", item.nftLink)
-                onToast("Ссылка на NFT скопирована")
-            }
-        },
+        onClick = { detailsOpen = true },
         onLongClick = {
             val payload = buildString {
                 append(item.title)
@@ -1238,7 +1259,9 @@ private fun NftItemCard(
         contentPadding = PaddingValues(14.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            GiftBadge(title = item.title, token = item.slug, size = 42.dp)
+            GiftArtwork(slug = item.slug, title = item.title, size = 68.dp) {
+                GiftBadge(title = item.title, token = item.slug, size = 68.dp)
+            }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1271,7 +1294,7 @@ private fun NftItemCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(5.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Chip(
                         if (item.onChain) "на кошельке" else "в Telegram",
                         if (item.onChain) Hd.Warn else Hd.Accent2,
@@ -1282,7 +1305,7 @@ private fun NftItemCard(
                     }
                 }
                 Spacer(Modifier.height(2.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(
                         onClick = { onOpenProfile(item.ownerUsername?.let { "@$it" } ?: item.ownerTgId.toString()) },
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
@@ -1318,6 +1341,23 @@ private fun NftItemCard(
                 fontFamily = FontFamily.Monospace,
             )
         }
+    }
+    if (detailsOpen) {
+        GiftDetailsDialog(
+            gift = GiftItem(
+                id = 0, ownerTgId = item.ownerTgId, ownerUsername = item.ownerUsername,
+                ownerName = item.ownerName, title = item.title, kind = "unique", stars = 0,
+                fromTgId = 0, fromUsername = null, fromName = null, message = null,
+                date = item.seenAt, isNft = true, nameHidden = false, slug = item.slug,
+                num = item.num, valueAmount = item.valueAmount, valueCurrency = item.valueCurrency,
+                resellAmount = item.resellAmount, availabilityIssued = item.availabilityIssued,
+                availabilityTotal = item.availabilityTotal, onChain = item.onChain,
+                giftAddress = item.giftAddress, ownerAddress = item.ownerAddress,
+                valueUsd = item.valueUsd, burned = item.burned,
+            ),
+            api = api,
+            onDismiss = { detailsOpen = false },
+        )
     }
 }
 
@@ -1369,7 +1409,7 @@ private fun NftOwnerCard(
             }
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    "${owner.nft} NFT",
+                    if (owner.deferredCount >= 1000) "${owner.deferredCount} подарков · отложено" else "${owner.gifts} подарков · ${owner.nft} NFT",
                     style = MaterialTheme.typography.labelLarge,
                     color = Hd.Accent,
                 )
@@ -1381,4 +1421,129 @@ private fun NftOwnerCard(
             }
         }
     }
+}
+
+
+@Composable
+private fun OwnerGiftsScreen(
+    api: Api?, owner: NftOwner, onBack: () -> Unit, onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
+    var rows by remember(owner.tgId) { mutableStateOf<List<GiftItem>>(emptyList()) }
+    var inventory by remember(owner.tgId) { mutableStateOf<List<NftItem>>(emptyList()) }
+    var profile by remember(owner.tgId) { mutableStateOf<org.json.JSONObject?>(null) }
+    var photo by remember(owner.tgId) { mutableStateOf<ImageBitmap?>(null) }
+    var error by remember(owner.tgId) { mutableStateOf<String?>(null) }
+    var loading by remember(owner.tgId) { mutableStateOf(true) }
+    LaunchedEffect(owner.tgId) {
+        if (api == null) { loading = false; return@LaunchedEffect }
+        runCatching { api.gifts(owner = owner.tgId, limit = 1000) }
+            .onSuccess { rows = it.rows }
+            .onFailure { error = it.message }
+        runCatching { api.giftOwnerNft(owner.tgId) }.onSuccess { inventory = it }
+        loading = false
+    }
+    LaunchedEffect(owner.tgId) {
+        if (api == null) return@LaunchedEffect
+        runCatching { api.giftOwnerProfile(owner.tgId, owner.username) }.onSuccess { result ->
+            profile = result
+            result.str("photo")?.let { raw ->
+                photo = runCatching {
+                    val bytes = Base64.decode(raw, Base64.DEFAULT)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                }.getOrNull()
+            }
+        }.onFailure { error = it.message }
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            TextButton(onClick = onBack) { Text("Назад к владельцам") }
+            HdCard(contentPadding = PaddingValues(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val avatar = photo
+                    if (avatar != null) {
+                        Image(avatar, contentDescription = "Аватар владельца", modifier = Modifier.size(64.dp).clip(RoundedCornerShape(18.dp)))
+                    } else {
+                        Icon(Icons.Filled.Person, contentDescription = null, tint = Hd.Good, modifier = Modifier.size(64.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        val fullName = listOfNotNull(profile?.str("first_name"), profile?.str("last_name")).joinToString(" ")
+                        Text(fullName.ifBlank { owner.name ?: owner.handle }, style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                        Text(profile?.str("username")?.let { "@$it" } ?: owner.handle, color = Hd.Muted)
+                        Text("ID ${owner.tgId}", style = MaterialTheme.typography.labelSmall, color = Hd.Dim)
+                    }
+                }
+                profile?.str("bio")?.let { Text(it, modifier = Modifier.padding(top = 8.dp), color = Hd.Text) }
+                Text("Найдено ${rows.size} подарков в локальной базе", modifier = Modifier.padding(top = 8.dp), color = Hd.Muted)
+                if (rows.size >= 1000) Text("Показаны первые 1000 записей", color = Hd.Warn)
+            }
+        }
+        error?.let { item { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) } }
+        if (loading) item { LoadingBlock() }
+        if (!loading && rows.isEmpty() && inventory.isEmpty()) item {
+            Text("Для этого профиля пока нет сохранённых подарков. Данные профиля получаются из Telegram при открытии.", color = Hd.Muted)
+        }
+        items(rows, key = { "gift-${it.id}" }) { gift ->
+            GiftCard(gift, api, onToast, onOpenProfile)
+        }
+        val knownSlugs = rows.mapNotNull { it.slug }.toSet()
+        items(inventory.filterNot { it.slug in knownSlugs }, key = { "inventory-${it.slug}" }) { nft ->
+            NftItemCard(nft, api, onToast, onOpenProfile)
+        }
+    }
+}
+
+@Composable
+private fun GiftDetailsDialog(gift: GiftItem, api: Api?, onDismiss: () -> Unit) {
+    var history by remember(gift.slug) { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    LaunchedEffect(gift.slug) {
+        val slug = gift.slug ?: return@LaunchedEffect
+        if (api != null) history = runCatching { api.giftHistory(slug) }.getOrDefault(emptyList())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(gift.title) },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                GiftArtwork(gift.slug, gift.title, 120.dp) {
+                    GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 120.dp)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Владелец: ${gift.ownerName ?: gift.ownerHandle} · ID ${gift.ownerTgId}")
+                Text("От: ${gift.fromName ?: gift.fromUsername ?: if (gift.nameHidden) "аноним" else "неизвестно"}")
+                gift.message?.let { Text("Описание: $it") }
+                gift.slug?.let { Text("NFT: https://t.me/nft/$it") }
+                gift.priceLabel?.let { Text("Стоимость: $it") }
+                gift.attributes?.let { raw ->
+                    val attributes = runCatching { org.json.JSONArray(raw) }.getOrNull()
+                    if (attributes != null) for (i in 0 until attributes.length()) {
+                        val attr = attributes.optJSONObject(i) ?: continue
+                        val label = when (attr.optString("type")) {
+                            "StarGiftAttributeModel" -> "Модель"
+                            "StarGiftAttributeBackdrop" -> "Фон"
+                            "StarGiftAttributePattern" -> "Узор"
+                            else -> "Атрибут"
+                        }
+                        val rarity = attr.optInt("rarity", -1)
+                        Text("$label: ${attr.optString("name")}" + if (rarity >= 0) " · ${rarity / 10.0}%" else "")
+                    }
+                }
+                if (history.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("История наблюдений", style = MaterialTheme.typography.titleSmall)
+                    Text("Даты — время обнаружения, а не точное время передачи.", style = MaterialTheme.typography.bodySmall)
+                    history.forEach { row ->
+                        val who = row.str("owner_name") ?: row.str("owner_username") ?: "ID ${row.num("owner_tg_id")}"
+                        Text("$who · ${relativeTime(row.num("observed_at"))}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
 }

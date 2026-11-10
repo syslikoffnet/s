@@ -473,7 +473,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshGifts(
         limit: Int = 60,
-        perProfile: Int = 100,
+        perProfile: Int = 1000,
         onDone: (Result<Job>) -> Unit,
     ) {
         val client = api ?: run {

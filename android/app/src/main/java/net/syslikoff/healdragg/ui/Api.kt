@@ -179,6 +179,22 @@ class Api(private val baseUrl: String, private val token: String) {
         return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners)
     }
 
+    suspend fun giftOwners(q: String?, limit: Int = 500): List<NftOwner> {
+        val query = q?.let { "&q=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
+        return jsonObjects(obj("api/gifts/owners?limit=$limit$query").arr("rows")).map(NftOwner::from)
+    }
+
+    suspend fun giftOwnerNft(id: Long): List<NftItem> =
+        jsonObjects(obj("api/gifts/owners/$id/nft").arr("rows")).map(NftItem::from)
+
+    suspend fun giftOwnerProfile(id: Long, username: String?): JSONObject {
+        val query = username?.let { "?username=${URLEncoder.encode(it, "UTF-8")}" } ?: ""
+        return obj("api/gifts/owners/$id/profile$query", timeoutMillis = PROFILE_TIMEOUT)
+    }
+
+    suspend fun giftHistory(slug: String): List<JSONObject> =
+        jsonObjects(obj("api/gifts/nft/${URLEncoder.encode(slug, "UTF-8")}/history").arr("rows"))
+
     /** NFT-инвентарь: `chain` = wallet (на кошельке) | telegram (в аккаунте). */
     suspend fun giftsNft(
         chain: String? = null,
@@ -329,7 +345,7 @@ class Api(private val baseUrl: String, private val token: String) {
     }
 
     suspend fun startNftProfiles(limit: Int = 200, depth: Int = 2): Job {
-        val body = JSONObject().put("limit", limit).put("depth", depth)
+        val body = JSONObject().put("limit", limit).put("depth", depth).put("per_profile", 1000)
         return Job.from(obj("api/gifts/nft/profiles", "POST", body))
     }
 
@@ -338,7 +354,7 @@ class Api(private val baseUrl: String, private val token: String) {
         return Job.from(obj("api/gifts/chain", "POST", body))
     }
 
-    suspend fun refreshGifts(limit: Int = 60, perProfile: Int = 100): Job {
+    suspend fun refreshGifts(limit: Int = 60, perProfile: Int = 1000): Job {
         val body = JSONObject().put("limit", limit).put("per_profile", perProfile)
         return Job.from(obj("api/gifts/refresh", "POST", body))
     }
@@ -347,7 +363,7 @@ class Api(private val baseUrl: String, private val token: String) {
         query: String,
         depth: Int = 1,
         maxProfiles: Int = 5,
-        perProfile: Int = 100,
+        perProfile: Int = 1000,
     ): Job {
         val body = JSONObject()
             .put("query", query)

@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
@@ -60,7 +61,7 @@ import kotlin.math.sin
  * внешним кольцом. Жесты: щипок — зум, перетаскивание — сдвиг, тап — карточка узла.
  */
 @Composable
-fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
+fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (String) -> Unit) {
     val context = LocalContext.current
     var data by remember(tgId) { mutableStateOf<GraphData?>(null) }
     var loading by remember(tgId) { mutableStateOf(true) }
@@ -80,13 +81,17 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
             loading = false
             return@LaunchedEffect
         }
-        runCatching { client.graph(tgId) }
-            .onSuccess {
-                data = it
-                error = null
-            }
-            .onFailure { error = it.message }
-        loading = false
+        while (true) {
+            runCatching { client.graph(tgId) }
+                .onSuccess {
+                    data = it
+                    selected = selected?.let { old -> it.nodes.firstOrNull { n -> n.id == old.id } }
+                    error = null
+                }
+                .onFailure { error = it.message }
+            loading = false
+            delay(10_000)
+        }
     }
 
     Column(Modifier.fillMaxWidth()) {
@@ -101,7 +106,6 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
         }
         if (graph == null) return@Column
 
-        val chats = graph.nodes.count { it.type == "chat" }
         val peers = graph.nodes.count { it.type == "peer" }
         Row(
             Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -109,8 +113,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Chip("цель", Hd.Accent, icon = Icons.Filled.GpsFixed)
-            Chip(chats.toString(), Hd.Accent2, icon = Icons.Filled.ChatBubble)
-            Chip(peers.toString(), Hd.Good, icon = Icons.Filled.People)
+            Chip("$peers собеседников", Hd.Good, icon = Icons.Filled.People)
             Spacer(Modifier.weight(1f))
             TextButton(onClick = {
                 scale = 1f
@@ -119,12 +122,12 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
             }) { Text("Сброс", color = Hd.Muted, style = MaterialTheme.typography.labelMedium) }
         }
 
-        if (chats == 0 && peers == 0) {
+        if (peers == 0) {
             EmptyState(
                 emoji = "",
                 icon = Icons.Filled.Share,
                 title = "Паутина пуста",
-                text = "Граф строится из сообщений цели и её собеседников. Сначала собери ленту.",
+                text = "Здесь появятся люди, которым цель отвечала или которых упоминала. Данные зависят от доступной истории чатов.",
             )
             return@Column
         }
@@ -168,20 +171,13 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
                 fun screen(world: Offset): Offset = center + world * scale + pan
 
                 val targetNode = graph.nodes.firstOrNull { it.type == "target" }
-                val chatNodes = graph.nodes.filter { it.type == "chat" }
-                    .sortedByDescending { it.weight }.take(48)
                 val peerNodes = graph.nodes.filter { it.type == "peer" }
                     .sortedByDescending { it.weight }.take(72)
 
-                val chatRing = radiusBase * 0.52f
-                val peerRing = radiusBase * 0.86f
+                val peerRing = radiusBase * 0.76f
 
                 val world = LinkedHashMap<String, Offset>()
                 world["target"] = Offset.Zero
-                chatNodes.forEachIndexed { index, node ->
-                    val angle = (2.0 * Math.PI * index / chatNodes.size - Math.PI / 2).toFloat()
-                    world[node.id] = Offset(cos(angle) * chatRing, sin(angle) * chatRing)
-                }
                 peerNodes.forEachIndexed { index, node ->
                     val angle = (2.0 * Math.PI * index / peerNodes.size - Math.PI / 2 + 0.35).toFloat()
                     world[node.id] = Offset(cos(angle) * peerRing, sin(angle) * peerRing)
@@ -234,8 +230,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
                 labelPaint.color = Hd.Text.copy(alpha = 0.92f).toArgb()
                 val labelled = buildList {
                     targetNode?.let { add(it) }
-                    addAll(chatNodes.take(6))
-                    addAll(peerNodes.take(6))
+                    addAll(peerNodes.take(12))
                 }
                 labelled.forEach { node ->
                     val pos = world[node.id]?.let { screen(it) } ?: return@forEach
@@ -273,6 +268,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
                 node = node,
                 onClose = { selected = null },
                 onToast = onToast,
+                onOpenProfile = { onOpenProfile(node.username?.let { "@$it" } ?: node.tgId.toString()) },
                 onOpen = {
                     val link = node.link ?: telegramLink(node.username)
                     if (!openLink(context, link)) onToast("Нет ссылки Telegram")
@@ -287,6 +283,7 @@ private fun NodeCard(
     node: GraphNode,
     onClose: () -> Unit,
     onOpen: () -> Unit,
+    onOpenProfile: () -> Unit,
     onToast: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -347,8 +344,28 @@ private fun NodeCard(
                 )
             }
         }
+        if (node.type == "peer") {
+            val chats = meta?.optJSONArray("chats")
+            if (chats != null && chats.length() > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text("Где общались", style = MaterialTheme.typography.labelMedium, color = Hd.Text)
+                for (i in 0 until min(chats.length(), 8)) {
+                    val chat = chats.optJSONObject(i) ?: continue
+                    Text(
+                        "${chat.optString("title", "Чат")} · ${chat.optInt("interactions")} связей",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Hd.Muted,
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (node.type == "peer") {
+                TextButton(onClick = onOpenProfile) {
+                    Text("Профиль", color = Hd.Accent, style = MaterialTheme.typography.labelLarge)
+                }
+            }
             TextButton(onClick = onOpen) {
                 Text("Открыть в Telegram", color = Hd.Accent2, style = MaterialTheme.typography.labelLarge)
             }

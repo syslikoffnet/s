@@ -213,6 +213,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                         tgId = catalogTarget,
                                         onBack = { openTarget = null },
                                         onToast = toast,
+                            onOpenProfile = openProfile,
                                     )
                                 } else {
                                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -264,6 +265,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                             tgId = openTarget!!,
                                             onBack = { openTarget = null },
                                             onToast = toast,
+                                            onOpenProfile = openProfile,
                                         )
                                     } else {
                                         EmptyDetailHint(tab)
@@ -329,6 +331,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             tgId = openTarget!!,
                             onBack = { openTarget = null },
                             onToast = toast,
+                            onOpenProfile = openProfile,
                         )
                         tab == Tab.Targets -> TargetsScreen(
                             vm = vm,

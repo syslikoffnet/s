@@ -312,6 +312,11 @@ async def _global_target_messages(
             media=_media_kind(message),
             views=getattr(message, "views", None),
         )
+        if inserted:
+            for mention_id in _mention_ids(message):
+                if mention_id != target_tg_id:
+                    peer_pk = store.upsert_peer(mention_id)
+                    store.bump_edge(target_pk, peer_pk, mentions=1, ts=date or now_ts())
         stats["found"] += 1
         stats["stored"] += int(inserted)
     stats["chats"] = len(seen_chats)
@@ -334,7 +339,7 @@ async def collect_activity(
     """Собирает последние сообщения цели и связи с собеседниками.
 
     ``incremental=True`` — быстрый добор для режима наблюдения: меньше чатов,
-    без разбора ответов и без чистки базы.
+    с ограниченным разбором ответов и без чистки базы.
     """
     names = store.session_names()
     if not names:
@@ -354,7 +359,7 @@ async def collect_activity(
     if incremental:
         per_chat = min(int(per_chat), 25)
         max_chats = min(int(max_chats), 40)
-        max_replies = 0
+        max_replies = min(int(max_replies), 25)
         cutoff = now_ts() - 2 * 86400
     groups = _chat_candidates(store, target_pk, max(1, int(max_chats)))
     # Скан мог не успеть записать session_groups — тогда чаты берём прямо из
@@ -457,6 +462,7 @@ async def collect_activity(
                     text = (getattr(message, "message", "") or "").strip()[:MEDIA_LIMIT]
                     reply_msg_id = getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
                     reply_peer_id: int | None = None
+                    reply_info: dict[str, Any] | None = None
                     if reply_msg_id and replies_left > 0:
                         replies_left -= 1
                         try:
@@ -466,6 +472,7 @@ async def collect_activity(
                                 sender = await limiter.call(replied.get_sender)
                             info = _peer_from_sender(sender)
                             if info:
+                                reply_info = info
                                 reply_peer_id = info["tg_id"]
                         except (RPCError, OSError, asyncio.TimeoutError) as exc:  # noqa: BLE001
                             stats["errors"] += 1
@@ -486,8 +493,22 @@ async def collect_activity(
                         media=_media_kind(message),
                         views=getattr(message, "views", None),
                     )
-                    if inserted and reply_peer_id:
-                        peer_pk = store.upsert_peer(reply_peer_id)
+                    reply_is_new = inserted
+                    if not inserted and reply_peer_id:
+                        with store.tx() as conn:
+                            updated = conn.execute(
+                                "UPDATE messages SET reply_to_peer = ? WHERE target_id = ? AND group_id = ? "
+                                "AND tg_msg_id = ? AND reply_to_peer IS NULL",
+                                (reply_peer_id, target_pk, group_pk, int(message.id)),
+                            )
+                            reply_is_new = updated.rowcount > 0
+                    if reply_is_new and reply_peer_id:
+                        peer_pk = store.upsert_peer(
+                            reply_peer_id,
+                            username=reply_info.get("username") if reply_info else None,
+                            first_name=reply_info.get("first_name") if reply_info else None,
+                            last_name=reply_info.get("last_name") if reply_info else None,
+                        )
                         store.bump_edge(target_pk, peer_pk, replies=1, ts=date or now_ts())
                         stats["replies"] += 1
                         stats["peers"] += 1

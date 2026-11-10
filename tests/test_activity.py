@@ -180,3 +180,17 @@ async def test_observed_message_does_not_overwrite_membership(store: Store, tmp_
     row = store.all_target_groups(int(target["id"]))[0]
     assert row["status"] == "member"
     assert row["source"] == "probe"
+
+
+async def test_collect_enriches_existing_reply_once(store: Store, tmp_path) -> None:
+    target = _prepare(store)
+    group = store.all_target_groups(int(target["id"]))[0]
+    group_id = int(group["group_id"])
+    store.add_message(target["id"], group_id, 1, date=now_ts(), text="ответ", reply_to_msg=99)
+    sender = types.User(id=777, first_name="Аня", username="anya")
+    message = FakeMessage(1, "ответ", date=now_ts(), reply=SimpleNamespace(sender=sender))
+    await collect_activity(FakePool([message]), store, _settings(tmp_path), target, incremental=True)
+    await collect_activity(FakePool([message]), store, _settings(tmp_path), target, incremental=True)
+    rows = store.target_edges(target["id"])
+    assert len(rows) == 1 and rows[0]["replies"] == 1 and rows[0]["first_name"] == "Аня"
+    assert store.activity_feed(target["id"])[0]["reply_to_peer"] == 777

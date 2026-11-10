@@ -493,3 +493,16 @@ def test_live_activity_returns_feed_while_collection_runs(client: TestClient, mo
         assert client.post(f"/api/targets/{DEMO_TARGET}/activity/collect", headers=HEADERS).status_code == 409
     finally:
         release.set()
+
+
+def test_gift_owner_and_history_endpoints(client: TestClient) -> None:
+    store = client.app.state.hd.store  # type: ignore[attr-defined]
+    store.add_gift(991, saved_id=1, gift_id=1, title="Мишка", owner_name="Аня")
+    store.defer_gift_profile(992, "large", "Большой профиль", 1200)
+    store.observe_nft_owner("Bear-1", 991, None, "Аня")
+    store.observe_nft_owner("Bear-1", 992, "large", "Большой профиль")
+    owners = client.get("/api/gifts/owners?q=992", headers=HEADERS).json()["rows"]
+    assert owners[0]["deferred_count"] == 1200
+    history = client.get("/api/gifts/nft/Bear-1/history", headers=HEADERS).json()["rows"]
+    assert [row["owner_tg_id"] for row in history] == [991, 992]
+    assert client.get("/api/gifts/nft/Bear-1/history").status_code == 401

@@ -16,7 +16,12 @@ internal fun JSONObject.num(key: String): Long =
 
 internal fun JSONObject.int(key: String): Int = num(key).toInt()
 
-internal fun JSONObject.bool(key: String): Boolean = has(key) && !isNull(key) && optBoolean(key)
+internal fun JSONObject.bool(key: String): Boolean = when (val value = opt(key)) {
+    is Boolean -> value
+    is Number -> value.toLong() != 0L
+    is String -> value.equals("true", ignoreCase = true) || value == "1"
+    else -> false
+}
 
 internal fun JSONObject.dbl(key: String): Double =
     if (has(key) && !isNull(key)) optDouble(key, 0.0) else 0.0
@@ -447,6 +452,8 @@ data class GiftItem(
     val ownerAddress: String? = null,
     val valueUsd: Long = 0,
     val burned: Boolean = false,
+    val presence: String = "visible",
+    val attributes: String? = null,
 ) {
     val ownerHandle: String
         get() = ownerUsername?.let { "@$it" } ?: "id $ownerTgId"
@@ -455,7 +462,7 @@ data class GiftItem(
         get() = slug?.takeIf { it.isNotBlank() }?.let { "https://t.me/nft/$it" }
 
     val priceLabel: String?
-        get() = Money.both(valueAmount, valueCurrency ?: "TON")
+        get() = Money.both(valueAmount, valueCurrency)
 
     companion object {
         fun from(o: JSONObject): GiftItem = GiftItem(
@@ -485,6 +492,8 @@ data class GiftItem(
             ownerAddress = o.str("owner_address"),
             valueUsd = o.num("value_usd"),
             burned = o.optInt("burned") == 1,
+            presence = o.str("presence") ?: "visible",
+            attributes = o.str("raw"),
         )
     }
 }
@@ -567,7 +576,7 @@ data class NftItem(
     val priceLabel: String?
         get() = when {
             resellAmount > 0 -> Money.both(resellAmount, "STARS")?.let { "$it · ресейл" }
-            valueAmount > 0 -> Money.both(valueAmount, valueCurrency ?: "TON")
+            valueAmount > 0 -> Money.both(valueAmount, valueCurrency)
             else -> null
         }
     val chainLabel: String
@@ -610,6 +619,8 @@ data class NftOwner(
     val onChain: Int,
     val hosted: Int,
     val seenAt: Long,
+    val gifts: Int = 0,
+    val deferredCount: Int = 0,
 ) {
     val handle: String
         get() = username?.let { "@$it" } ?: name ?: "id $tgId"
@@ -623,6 +634,8 @@ data class NftOwner(
             onChain = o.int("on_chain"),
             hosted = o.int("hosted"),
             seenAt = o.num("seen_at"),
+            gifts = o.int("gifts"),
+            deferredCount = o.int("deferred_count"),
         )
     }
 }

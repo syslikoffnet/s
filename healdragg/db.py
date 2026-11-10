@@ -216,6 +216,18 @@ CREATE INDEX IF NOT EXISTS idx_gifts_from  ON gifts(from_tg_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
 
+-- Отложенные тяжёлые профили и история наблюдений владельцев NFT.
+CREATE TABLE IF NOT EXISTS gift_heavy_profiles (
+    owner_tg_id INTEGER PRIMARY KEY, username TEXT, name TEXT,
+    gift_count INTEGER NOT NULL, detected_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nft_owner_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL, owner_tg_id INTEGER NOT NULL,
+    owner_username TEXT, owner_name TEXT, observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nft_history_slug ON nft_owner_history(slug, id);
+
 -- NFT-инвентарь: каждая уникальная вещь ровно один раз (slug = <коллекция>-<num>).
 CREATE TABLE IF NOT EXISTS nft_items (
     slug          TEXT PRIMARY KEY,
@@ -492,6 +504,7 @@ class Store:
             "value_usd": "INTEGER",
             "burned": "INTEGER NOT NULL DEFAULT 0",
             "crafted": "INTEGER",
+            "presence": "TEXT NOT NULL DEFAULT 'visible'",
         }
         for column, ddl in gift_additions.items():
             if column not in gift_cols:
@@ -1140,10 +1153,22 @@ class Store:
     ) -> bool:
         """Сохраняет подарок. True — если он появился в базе впервые."""
         with self.tx() as conn:
-            existing = conn.execute(
-                "SELECT id FROM gifts WHERE owner_tg_id = ? AND saved_id IS ? AND gift_id IS ?",
-                (owner_tg_id, saved_id, gift_id),
-            ).fetchone()
+            if is_nft and slug:
+                existing = conn.execute(
+                    "SELECT id FROM gifts WHERE owner_tg_id = ? AND slug = ? ORDER BY id LIMIT 1",
+                    (owner_tg_id, slug),
+                ).fetchone()
+            elif saved_id is None:
+                existing = conn.execute(
+                    "SELECT id FROM gifts WHERE owner_tg_id = ? AND saved_id IS NULL "
+                    "AND gift_id IS ? AND date IS ? AND from_tg_id IS ? ORDER BY id LIMIT 1",
+                    (owner_tg_id, gift_id, date, from_tg_id),
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id FROM gifts WHERE owner_tg_id = ? AND saved_id = ? AND gift_id IS ?",
+                    (owner_tg_id, saved_id, gift_id),
+                ).fetchone()
             if existing is None:
                 conn.execute(
                     """
@@ -1211,7 +1236,7 @@ class Store:
                        owner_address = coalesce(?, owner_address),
                        value_usd = coalesce(?, value_usd), burned = max(burned, ?),
                        crafted = coalesce(?, crafted),
-                       seen_at = ?
+                       seen_at = ?, presence = 'visible'
                  WHERE id = ?
                 """,
                 (
@@ -1245,6 +1270,82 @@ class Store:
                 ),
             )
             return False
+
+    def gift_observation_id(
+        self, owner: int, saved_id: int | None, gift_id: int | None,
+        *, slug: str | None, date: int | None, sender: int | None,
+    ) -> int:
+        if slug:
+            row = self.query_one(
+                "SELECT id FROM gifts WHERE owner_tg_id = ? AND slug = ? ORDER BY id LIMIT 1",
+                (owner, slug),
+            )
+        elif saved_id is None:
+            row = self.query_one(
+                "SELECT id FROM gifts WHERE owner_tg_id = ? AND saved_id IS NULL "
+                "AND gift_id IS ? AND date IS ? AND from_tg_id IS ? ORDER BY id LIMIT 1",
+                (owner, gift_id, date, sender),
+            )
+        else:
+            row = self.query_one(
+                "SELECT id FROM gifts WHERE owner_tg_id = ? AND saved_id = ? AND gift_id IS ?",
+                (owner, saved_id, gift_id),
+            )
+        if not row:
+            raise RuntimeError("Не удалось найти сохранённый подарок")
+        return int(row["id"])
+
+    def finish_gift_snapshot(self, owner: int, observed_ids: set[int]) -> None:
+        """Отмечаем отсутствующие подарки только после полного успешного чтения."""
+        with self.tx() as conn:
+            rows = conn.execute("SELECT id, is_nft FROM gifts WHERE owner_tg_id = ? AND presence = 'visible'", (owner,)).fetchall()
+            for row in rows:
+                if int(row["id"]) not in observed_ids:
+                    status = "hidden" if row["is_nft"] else "hidden_or_sold"
+                    conn.execute("UPDATE gifts SET presence = ? WHERE id = ?", (status, row["id"]))
+
+    def observe_nft_owner(self, slug: str, owner: int, username: str | None, name: str | None) -> None:
+        """Хронология наблюдений, не утверждение о времени или способе передачи."""
+        with self.tx() as conn:
+            last = conn.execute(
+                "SELECT owner_tg_id FROM nft_owner_history WHERE slug = ? ORDER BY id DESC LIMIT 1", (slug,)
+            ).fetchone()
+            if last is None:
+                previous = conn.execute(
+                    "SELECT owner_tg_id, owner_username, owner_name, seen_at FROM nft_items WHERE slug = ?", (slug,)
+                ).fetchone()
+                if previous and previous["owner_tg_id"] and int(previous["owner_tg_id"]) != owner:
+                    conn.execute(
+                        "INSERT INTO nft_owner_history(slug, owner_tg_id, owner_username, owner_name, observed_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (slug, previous["owner_tg_id"], previous["owner_username"], previous["owner_name"], previous["seen_at"]),
+                    )
+            if last is None or int(last["owner_tg_id"]) != owner:
+                # Исторические строки других владельцев сохраняются.
+                conn.execute(
+                    "UPDATE gifts SET presence = 'previous_owner' "
+                    "WHERE slug = ? AND owner_tg_id != ? AND is_nft = 1", (slug, owner),
+                )
+                conn.execute(
+                    "INSERT INTO nft_owner_history(slug, owner_tg_id, owner_username, owner_name, observed_at) "
+                    "VALUES (?, ?, ?, ?, ?)", (slug, owner, username, name, now_ts()),
+                )
+
+    def nft_history(self, slug: str) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM nft_owner_history WHERE slug = ? ORDER BY id", (slug,))
+
+    def defer_gift_profile(self, owner: int, username: str | None, name: str | None, count: int) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                """INSERT INTO gift_heavy_profiles(owner_tg_id, username, name, gift_count, detected_at)
+                   VALUES (?, ?, ?, ?, ?) ON CONFLICT(owner_tg_id) DO UPDATE SET
+                   username=excluded.username, name=excluded.name,
+                   gift_count=excluded.gift_count, detected_at=excluded.detected_at""",
+                (owner, username, name, count, now_ts()),
+            )
+
+    def heavy_gift_profiles(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM gift_heavy_profiles ORDER BY detected_at DESC LIMIT ?", (limit,))
 
     def list_gifts(
         self,
@@ -1497,6 +1598,39 @@ class Store:
              ORDER BY nft DESC, seen_at DESC LIMIT ? OFFSET ?
             """,
             params,
+        )
+
+    def all_gift_owners(self, q: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """Все известные владельцы, включая обычные подарки и отложенные профили."""
+        needle = f"%{(q or '').strip()}%"
+        return self.query(
+            """WITH ids AS (
+                   SELECT owner_tg_id AS id FROM gifts WHERE owner_tg_id IS NOT NULL
+                   UNION SELECT owner_tg_id FROM nft_items WHERE owner_tg_id IS NOT NULL
+                   UNION SELECT owner_tg_id FROM gift_heavy_profiles
+               ), g AS (
+                   SELECT owner_tg_id, max(owner_username) AS username, max(owner_name) AS name,
+                          COUNT(*) AS gifts, max(seen_at) AS seen_at
+                     FROM gifts GROUP BY owner_tg_id
+               ), n AS (
+                   SELECT owner_tg_id, max(owner_username) AS username, max(owner_name) AS name,
+                          COUNT(*) AS nft, sum(on_chain) AS on_chain,
+                          sum(CASE WHEN on_chain = 0 THEN 1 ELSE 0 END) AS hosted, max(seen_at) AS seen_at
+                     FROM nft_items WHERE owner_tg_id IS NOT NULL GROUP BY owner_tg_id
+               )
+               SELECT ids.id AS owner_tg_id, coalesce(g.username, n.username, h.username) AS owner_username,
+                      coalesce(g.name, n.name, h.name) AS owner_name, coalesce(g.gifts, 0) AS gifts,
+                      coalesce(n.nft, 0) AS nft, coalesce(n.on_chain, 0) AS on_chain,
+                      coalesce(n.hosted, 0) AS hosted,
+                      max(coalesce(g.seen_at, 0), coalesce(n.seen_at, 0), coalesce(h.detected_at, 0)) AS seen_at,
+                      h.gift_count AS deferred_count
+                 FROM ids LEFT JOIN g ON g.owner_tg_id = ids.id
+                          LEFT JOIN n ON n.owner_tg_id = ids.id
+                          LEFT JOIN gift_heavy_profiles h ON h.owner_tg_id = ids.id
+                WHERE coalesce(g.username, n.username, h.username, '') LIKE ?
+                   OR coalesce(g.name, n.name, h.name, '') LIKE ? OR CAST(ids.id AS TEXT) LIKE ?
+                ORDER BY gifts DESC, nft DESC, seen_at DESC LIMIT ? OFFSET ?""",
+            (needle, needle, needle, max(1, min(1000, int(limit))), max(0, int(offset))),
         )
 
     def nft_owners_fresh(self, limit: int = 200) -> list[dict[str, Any]]:
