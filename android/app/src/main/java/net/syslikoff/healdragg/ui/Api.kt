@@ -253,14 +253,6 @@ class Api(private val baseUrl: String, private val token: String) {
 
     // ── транспорт ────────────────────────────────────────────────────────────
 
-    private fun jsonObjects(arr: JSONArray): List<JSONObject> {
-        val out = ArrayList<JSONObject>(arr.length())
-        for (i in 0 until arr.length()) {
-            arr.optJSONObject(i)?.let(out::add)
-        }
-        return out
-    }
-
     private suspend fun obj(
         path: String,
         method: String = "GET",
@@ -332,4 +324,13 @@ class Api(private val baseUrl: String, private val token: String) {
             else -> "Ошибка движка (HTTP $code)"
         }
     }
+}
+
+
+internal fun jsonObjects(arr: JSONArray): List<JSONObject> {
+    val out = ArrayList<JSONObject>(arr.length())
+    for (i in 0 until arr.length()) {
+        arr.optJSONObject(i)?.let(out::add)
+    }
+    return out
 }
