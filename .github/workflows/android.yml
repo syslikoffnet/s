@@ -75,6 +75,8 @@ jobs:
       # Проверяем, что в APK лежит именно байткод движка, а исходники .py — нет.
       # Chaquopy кладёт python-код в assets/chaquopy/*.zip, поэтому смотрим внутрь.
       - name: Проверка содержимого APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           APK=android/app/build/outputs/apk/release/app-release.apk
@@ -103,6 +105,7 @@ jobs:
           if not pyc:
               print("ПРЕДУПРЕЖДЕНИЕ: .pyc не найдены по текущему шаблону")
           PY
+          gh pr comment 1 --body-file /tmp/apk-check.txt || true
 
       - name: Приложить к релизу
         if: github.event_name == 'release'
