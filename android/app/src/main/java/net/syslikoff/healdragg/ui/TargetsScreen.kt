@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -40,6 +42,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -69,6 +72,7 @@ fun TargetsScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var addOpen by rememberSaveable { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<Target?>(null) }
+    var showMap by rememberSaveable { mutableStateOf(false) }
 
     val filtered = remember(vm.targets, query) {
         val needle = query.trim().lowercase()
@@ -84,6 +88,23 @@ fun TargetsScreen(
         if (vm.targets.isEmpty()) vm.refresh(force = true)
     }
 
+    if (showMap) {
+        GlobalMapScreen(
+            api = vm.api,
+            onBack = { showMap = false },
+            onOpenProfile = { handle ->
+                val needle = handle.removePrefix("@").lowercase()
+                val found = vm.targets.firstOrNull { target ->
+                    target.username?.lowercase() == needle || target.tgId.toString() == needle
+                }
+                if (found != null) onOpenTarget(found.tgId)
+                else onToast("Профиля $handle пока нет в целях")
+            },
+            onToast = onToast,
+        )
+        return
+    }
+
     Box(Modifier.fillMaxSize()) {
         RefreshableBox(
             refreshing = vm.refreshing,
@@ -96,6 +117,26 @@ fun TargetsScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item("stats") { StatsStrip(vm.stats) }
+                item("map") {
+                    OutlinedButton(
+                        onClick = { showMap = true },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Share,
+                            contentDescription = null,
+                            tint = Hd.Accent2,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Карта сети: кто с кем связан",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
                 item("search") {
                     OutlinedTextField(
                         value = query,

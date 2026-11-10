@@ -816,3 +816,48 @@ data class BackupPage(
     val latest: BackupInfo?,
     val counts: JSONObject?,
 )
+
+/** Узел общей карты: цель, чат или собеседник. */
+data class MapNode(
+    val id: String,
+    val type: String,
+    val label: String,
+    val tgId: Long,
+    val weight: Int,
+    val username: String?,
+) {
+    val kindLabel: String
+        get() = when (type) {
+            "target" -> "цель"
+            "chat" -> "чат"
+            "peer" -> "собеседник"
+            else -> type
+        }
+
+    companion object {
+        fun from(o: org.json.JSONObject): MapNode = MapNode(
+            id = o.str("id") ?: "",
+            type = o.str("type") ?: "peer",
+            label = o.str("label") ?: "без названия",
+            tgId = o.num("tg_id"),
+            weight = o.num("weight").toInt(),
+            username = o.obj("meta")?.str("username"),
+        )
+    }
+}
+
+/** Связь между узлами: «пишет в чат», «общается с», «отвечает в чате». */
+data class MapLink(
+    val source: String,
+    val target: String,
+    val kind: String,
+    val weight: Int,
+)
+
+data class GlobalMap(
+    val nodes: List<MapNode>,
+    val links: List<MapLink>,
+    val targets: Int,
+    val chats: Int,
+    val peers: Int,
+)

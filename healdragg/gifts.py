@@ -115,6 +115,15 @@ def _unique_meta(gift: Any) -> dict[str, Any]:
     owner_name = getattr(gift, "owner_name", None)
     if not owner_name and owner_peer_id:
         owner_name = f"id {owner_peer_id}"
+    resell = _stars_amount(getattr(gift, "resell_amount", None))
+    value_amount = _as_int(getattr(gift, "value_amount", None)) or _as_int(
+        getattr(gift, "stars", None)
+    )
+    value_currency = getattr(gift, "value_currency", None)
+    if value_currency is None and value_amount:
+        # У обычных подарков цена всегда в звёздах, у уникальных Telegram
+        # присылает валюту отдельно — если её нет, считаем звёздами.
+        value_currency = "STARS"
     return {
         "slug": str(slug) if slug else None,
         "num": _as_int(getattr(gift, "num", None)),
@@ -128,10 +137,10 @@ def _unique_meta(gift: Any) -> dict[str, Any]:
         "on_chain": bool(owner_address or gift_address),
         "burned": bool(getattr(gift, "burned", False)),
         "crafted": _as_int(getattr(gift, "crafted", None)),
-        "value_amount": _as_int(getattr(gift, "value_amount", None)),
-        "value_currency": getattr(gift, "value_currency", None),
+        "value_amount": value_amount,
+        "value_currency": value_currency,
         "value_usd": _as_int(getattr(gift, "value_usd_amount", None)),
-        "resell_amount": _stars_amount(getattr(gift, "resell_amount", None)),
+        "resell_amount": resell,
         "availability_issued": _as_int(getattr(gift, "availability_issued", None)),
         "availability_total": _as_int(getattr(gift, "availability_total", None)),
     }

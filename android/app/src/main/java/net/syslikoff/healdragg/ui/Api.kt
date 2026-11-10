@@ -238,6 +238,26 @@ class Api(private val baseUrl: String, private val token: String) {
         return raw(path, "GET", null, "text/csv")
     }
 
+    /** Общая OSINT-карта: цели ↔ чаты ↔ собеседники. */
+    suspend fun globalGraph(targets: Int = 60, chats: Int = 120, peers: Int = 200): GlobalMap {
+        val data = obj("api/graph/global?targets=$targets&chats=$chats&peers=$peers")
+        val stats = data.obj("stats")
+        return GlobalMap(
+            nodes = jsonObjects(data.arr("nodes")).map(MapNode::from),
+            links = jsonObjects(data.arr("links")).map { row ->
+                MapLink(
+                    source = row.str("source").orEmpty(),
+                    target = row.str("target").orEmpty(),
+                    kind = row.str("kind").orEmpty(),
+                    weight = row.num("weight").toInt(),
+                )
+            },
+            targets = stats?.num("targets")?.toInt() ?: 0,
+            chats = stats?.num("chats")?.toInt() ?: 0,
+            peers = stats?.num("peers")?.toInt() ?: 0,
+        )
+    }
+
     /** Валюта приложения и курсы — цены на карточках считаются в ней. */
     suspend fun displaySettings(): JSONObject = obj("api/settings/display")
 
