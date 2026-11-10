@@ -66,7 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           LOG="$GITHUB_WORKSPACE/gradle-build.log"
-          BODY="$(grep -E '^e: |What went wrong|^> Task .*FAILED|ResolutionImpossible|ERROR: ' "$LOG" | head -60 || true)"
+          BODY="$(awk '/ERROR: Cannot install|^e: |What went wrong/{f=1} f' "$LOG" | head -80 || true)"
           if [ -z "$BODY" ]; then BODY="$(tail -80 "$LOG" || true)"; fi
           printf 'Сборка APK упала на %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$BODY" > /tmp/comment.md
           gh pr comment 1 --body-file /tmp/comment.md || true
