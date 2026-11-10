@@ -126,3 +126,57 @@ def test_prune_activity(store: Store) -> None:
     store.add_message(int(target["id"]), group_pk, 2, date=now_ts(), text="новое")
     assert store.prune_activity(int(target["id"]), days=30) == 1
     assert store.activity_stats(int(target["id"]))["messages"] == 1
+
+
+async def test_incremental_activity_emits_alert_after_baseline(store: Store, tmp_path) -> None:
+    target = _prepare(store)
+    pool = FakePool([])
+    await collect_activity(pool, store, _settings(tmp_path), target, incremental=True)
+    assert store.count_alerts() == 0
+    pool.messages.append(FakeMessage(5, "новое сообщение", date=now_ts()))
+    stats = await collect_activity(pool, store, _settings(tmp_path), target, incremental=True)
+    assert stats["messages"] == 1
+    assert any(a["kind"] == "message" for a in store.list_alerts())
+    await collect_activity(pool, store, _settings(tmp_path), target, incremental=True)
+    assert sum(a["kind"] == "message" for a in store.list_alerts()) == 1
+
+
+async def test_dialog_activity_records_only_observed_chat(store: Store, tmp_path) -> None:
+    target = store.upsert_target(42, username="target_user")
+    store.add_session("main", "/tmp/m.session", tg_user_id=1, status="active")
+
+    class Client(FakeClient):
+        async def iter_dialogs(self, limit=100):
+            for number in (1001, 1002):
+                yield SimpleNamespace(
+                    entity=SimpleNamespace(id=number, title=f"Чат {number}", megagroup=True, access_hash=7),
+                    is_group=True,
+                    is_channel=True,
+                )
+
+        def iter_messages(self, peer, from_user=None, limit=None):
+            async def generate():
+                if getattr(peer, "channel_id", None) == 1001:
+                    yield FakeMessage(1, "сообщение", date=now_ts())
+
+            return generate()
+
+    class Pool:
+        async def connect(self, name):
+            return SimpleNamespace(client=Client([]), limiter=RateLimiter(0, 0))
+
+    await collect_activity(Pool(), store, _settings(tmp_path), target, incremental=True)
+    groups = store.all_target_groups(int(target["id"]))
+    assert [row["tg_id"] for row in groups] == [1001]
+    assert store.activity_feed(int(target["id"]))[0]["text"] == "сообщение"
+
+
+async def test_observed_message_does_not_overwrite_membership(store: Store, tmp_path) -> None:
+    target = _prepare(store)
+    await collect_activity(
+        FakePool([FakeMessage(1, "сообщение", date=now_ts())]),
+        store, _settings(tmp_path), target, incremental=True,
+    )
+    row = store.all_target_groups(int(target["id"]))[0]
+    assert row["status"] == "member"
+    assert row["source"] == "probe"

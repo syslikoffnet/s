@@ -204,6 +204,11 @@ fun TargetDetailScreen(
                 break
             }
             job = fresh
+            if (!fresh.finished) {
+                loadFeed()
+                loadChats(reset = true)
+                loadTarget()
+            }
             if (fresh.finished) {
                 if (fresh.error != null) onToast("Ошибка: ${fresh.error}")
                 else onToast("Готово: ${fresh.found} находок")
@@ -252,11 +257,14 @@ fun TargetDetailScreen(
     LaunchedEffect(tgId, tab, liveOn) {
         if (tab != DetailTab.Feed || !liveOn) return@LaunchedEffect
         val client = api ?: return@LaunchedEffect
+        var cycles = 0
         while (true) {
             delay(4_000)
             val fresh = runCatching { client.liveActivity(tgId) }.getOrNull() ?: continue
-            if (fresh.second.isNotEmpty()) {
-                messages = fresh.second
+            messages = fresh.second
+            if (++cycles % 3 == 0) {
+                loadTarget()
+                loadChats(reset = true)
             }
         }
     }

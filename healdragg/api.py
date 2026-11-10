@@ -123,9 +123,11 @@ class AppState:
         return True
 
     async def close(self) -> None:
-        for job in list(self.jobs.values()):
-            if job.task and not job.task.done():
-                job.task.cancel()
+        tasks = [job.task for job in self.jobs.values() if job.task and not job.task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self.login.close()
         await self.pool.close()
         self.store.close()
@@ -642,8 +644,8 @@ def create_app(settings: Settings) -> Starlette:
     async def live_activity(request: Request) -> dict[str, Any]:
         """Режим наблюдения: тихо добирает свежие сообщения цели.
 
-        Вызывается с экрана цели каждые несколько секунд. Работа ограничена
-        по времени и частоте, чтобы не дёргать Telegram и не копить запросы.
+        Отдаёт текущую ленту сразу и запускает не более одного фонового
+        сбора на цель, чтобы медленный Telegram не задерживал обновление UI.
         """
         guard(request)
         tg_id = request.path_params["tg_id"]
@@ -666,31 +668,38 @@ def create_app(settings: Settings) -> Starlette:
 
         if not state.store.session_names():
             return feed_payload({"skipped": "нет аккаунта"})
-        if any(state.running(key) for key in ("boot", "import", f"act:{tg_id}")):
+        live_key = f"live:{tg_id}"
+        if any(state.running(key) for key in ("boot", "import", f"act:{tg_id}", live_key)):
             return feed_payload({"skipped": "занято"})
         stamp = time.time()
         if stamp - state.live_at.get(str(tg_id), 0) < 3.5:
             return feed_payload({"skipped": "пауза"})
         state.live_at[str(tg_id)] = stamp
+        job = Job(key=live_key, kind="live_activity", target_id=tg_id)
+        state.jobs[live_key] = job
 
-        stats: dict[str, Any] = {}
-        try:
-            stats = await collect_activity(
-                state.pool,
-                state.store,
-                settings,
-                target,
-                days=2,
-                per_chat=settings.activity_per_chat,
-                max_chats=settings.activity_max_chats,
-                reporter=None,
-                incremental=True,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            log.info("live activity %s: %s", tg_id, exc)
-        return feed_payload({"live": stats, "skipped": None})
+        async def runner() -> None:
+            try:
+                job.state = await collect_activity(
+                    state.pool,
+                    state.store,
+                    settings,
+                    target,
+                    days=2,
+                    per_chat=settings.activity_per_chat,
+                    max_chats=settings.activity_max_chats,
+                    incremental=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                job.error = str(exc)
+                log.warning("live activity %s: %s", tg_id, exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name=live_key)
+        return feed_payload({"skipped": None})
 
     # ── фоновые задачи ──────────────────────────────────────────────────────
     async def collect_target_activity(request: Request) -> dict[str, Any]:
@@ -702,7 +711,7 @@ def create_app(settings: Settings) -> Starlette:
         if not state.store.session_names():
             raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
         key = f"act:{tg_id}"
-        if state.running(key):
+        if state.running(key) or state.running(f"live:{tg_id}"):
             raise HTTPException(409, "Сбор активности уже идёт")
         job = Job(key=key, kind="activity", target_id=tg_id)
         job.state = {"phase": "старт", "done": 0, "total": 0, "found": 0}

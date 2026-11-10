@@ -462,3 +462,34 @@ def test_graph_global(client: TestClient) -> None:
     kinds = {link["kind"] for link in payload["links"]}
     assert {"writes", "talks"} <= kinds
     assert payload["stats"]["targets"] >= 1
+
+
+def test_live_activity_returns_feed_while_collection_runs(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    import threading
+
+    import healdragg.api as api_module
+
+    store = client.app.state.hd.store  # type: ignore[attr-defined]
+    monkeypatch.setattr(store, "session_names", lambda: ["main"])
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    async def collect(*args, **kwargs):
+        calls.append(1)
+        started.set()
+        await asyncio.to_thread(release.wait, 5)
+        return {"messages": 0}
+
+    monkeypatch.setattr(api_module, "collect_activity", collect)
+    try:
+        first = client.post(f"/api/targets/{DEMO_TARGET}/activity/live", headers=HEADERS)
+        assert first.status_code == 200 and first.json()["rows"]
+        assert started.wait(2)
+        second = client.post(f"/api/targets/{DEMO_TARGET}/activity/live", headers=HEADERS)
+        assert second.json()["skipped"] == "занято"
+        assert len(calls) == 1
+        assert client.post(f"/api/targets/{DEMO_TARGET}/activity/collect", headers=HEADERS).status_code == 409
+    finally:
+        release.set()

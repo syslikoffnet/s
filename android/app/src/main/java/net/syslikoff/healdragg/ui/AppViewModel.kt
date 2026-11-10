@@ -281,6 +281,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 refresh(force = true)
             }
             if (!displayLoaded) loadDisplay()
+            refreshAlerts()
         } else {
             val state = prefs.getString(KEY_ENGINE_STATE, "").orEmpty()
             engine = when {

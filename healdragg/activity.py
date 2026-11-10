@@ -131,6 +131,21 @@ def _peer_from_sender(sender: Any) -> dict[str, Any] | None:
 
 
 
+def _record_observed_chat(store: Store, target_pk: int, group_pk: int, *, source: str) -> None:
+    """Сообщение подтверждает связь с чатом, но не текущее членство.
+
+    Не перезаписываем результаты проверок членства более слабым свидетельством.
+    """
+    ts = now_ts()
+    with store.tx() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO target_groups
+               (target_id, group_id, status, source, found_at, updated_at)
+               VALUES (?, ?, 'unknown', ?, ?, ?)""",
+            (target_pk, group_pk, source, ts, ts),
+        )
+
+
 async def _dialog_chats(
     pool: SessionPool,
     store: Store,
@@ -146,7 +161,6 @@ async def _dialog_chats(
     """
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
-    target_pk = int(target["id"])
     for name in store.session_names():
         try:
             account = await pool.connect(name)
@@ -177,7 +191,6 @@ async def _dialog_chats(
                     discovered_from="dialogs",
                     discovered_by=name,
                 )
-                store.upsert_target_group(target_pk, group_pk, status="unknown", source="dialogs", session=name)
                 out.append(
                     {
                         "group_id": group_pk,
@@ -202,11 +215,10 @@ async def _global_target_messages(
     *,
     limit: int = 100,
 ) -> dict[str, int]:
-    """Глобальный поиск сообщений цели по всем чатам Telegram.
+    """Дополнительная попытка поиска сообщений через Telegram API.
 
-    ``messages.search`` с пустым peer'ом отдаёт сообщения автора где угодно —
-    это единственный способ увидеть активность в чатах, где наших аккаунтов нет
-    и где участники скрыты. Ничего не перебираем вручную: один запрос.
+    Доступность такого запроса зависит от Telegram и прав аккаунта.
+    Не гарантирует поиск по чатам, недоступным аккаунту.
     """
     stats = {"found": 0, "chats": 0, "stored": 0}
     names = store.session_names()
@@ -287,7 +299,7 @@ async def _global_target_messages(
             members_count=getattr(chat, "participants_count", None),
             discovered_from="search",
         )
-        store.upsert_target_group(target_pk, group_pk, status="unknown", source="search")
+        _record_observed_chat(store, target_pk, group_pk, source="search")
         text = (getattr(message, "message", "") or "").strip()[:MEDIA_LIMIT]
         inserted = store.add_message(
             target_pk,
@@ -379,8 +391,7 @@ async def collect_activity(
     started = time.time()
     replies_left = max(0, int(max_replies))
 
-    # Один запрос глобального поиска: сообщения цели в любых чатах, даже там,
-    # где наших аккаунтов нет и где участники скрыты.
+    # Дополнительная попытка поиска; её доступность зависит от Telegram.
     try:
         global_stats = await _global_target_messages(
             pool, store, target, cutoff, limit=100 if not incremental else 60
@@ -442,6 +453,7 @@ async def collect_activity(
                     date = int(message.date.timestamp()) if getattr(message, "date", None) else 0
                     if date and date < cutoff:
                         continue
+                    _record_observed_chat(store, target_pk, group_pk, source="activity")
                     text = (getattr(message, "message", "") or "").strip()[:MEDIA_LIMIT]
                     reply_msg_id = getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
                     reply_peer_id: int | None = None
@@ -495,10 +507,9 @@ async def collect_activity(
 
         if incremental:
             stats["pruned"] = 0
-            stats["alerts"] = 0
         else:
             stats["pruned"] = store.prune_activity(target_pk, days=max(int(days), 30) * 3)
-            stats["alerts"] = len(run_detection(store, target, messages=True))
+        stats["alerts"] = len(run_detection(store, target, messages=True))
         stats["elapsed"] = round(time.time() - started, 1)
         store.finish_scan(scan_id, status="done", stats=stats)
         await rep.update(force=True, phase="готово", found=stats["messages"])

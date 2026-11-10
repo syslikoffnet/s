@@ -60,9 +60,10 @@ def test_dialog_chats_work_without_scan(tmp_path: Path) -> None:
     try:
         rows = asyncio_run(_dialog_chats(_FakePool(_FakeAccount(Client())), store, target, coverage))
         assert [row["tg_id"] for row in rows] == [555]
-        assert coverage["main"][555] == 12345 or coverage  # имя сессии может отличаться
+        assert coverage["main"][555] == 12345
         groups = store.all_target_groups(int(target["id"]))
-        assert any(int(group["tg_id"]) == 555 for group in groups)
+        # Диалог нашего аккаунта сам по себе не доказывает связь цели с чатом.
+        assert groups == []
     finally:
         store.close()
 
