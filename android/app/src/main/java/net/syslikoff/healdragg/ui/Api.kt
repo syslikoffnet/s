@@ -132,6 +132,17 @@ class Api(private val baseUrl: String, private val token: String) {
         return (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.map(Chat::from)
     }
 
+    suspend fun catalogPage(q: String?, page: Int = 1, size: Int = 30): CatalogPage {
+        val query = buildString {
+            append("api/catalog?page=$page&size=$size")
+            if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
+        }
+        return CatalogPage.from(obj(query))
+    }
+
+    suspend fun bootstrap(join: Boolean = false): Job =
+        Job.from(obj("api/bootstrap?join=$join", "POST"))
+
     suspend fun catalog(q: String?, page: Int = 1, size: Int = 30): List<Chat> {
         val query = buildString {
             append("api/catalog?page=$page&size=$size")

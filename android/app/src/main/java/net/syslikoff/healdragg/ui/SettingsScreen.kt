@@ -197,6 +197,101 @@ fun SettingsScreen(
             }
         }
 
+        item("base") {
+            HdCard {
+                val boot = vm.bootJob
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "База чатов",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        compactNumber(vm.stats?.groups ?: 0),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Accent2,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Сбор обходит диалоги всех аккаунтов и ищет публичные чаты. Чем полнее база, " +
+                        "тем точнее список чатов цели.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Hd.Muted,
+                )
+                if (vm.bootRunning) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        buildString {
+                            append(boot?.phase ?: "сбор")
+                            boot?.let {
+                                if (it.total > 0) append(" · ${it.done}/${it.total}")
+                                if (it.found > 0) append(" · найдено ${it.found}")
+                            }
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Hd.Accent2,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    LinearProgressIndicator(
+                        progress = { boot?.percent ?: 0f },
+                        color = Hd.Accent,
+                        trackColor = Hd.Stroke,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { vm.cancelBootstrap() },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.heightIn(min = 44.dp),
+                        ) { Text("Отменить", color = Hd.Bad) }
+                    }
+                } else {
+                    if (boot != null && boot.finished && boot.error == null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Готово: найдено ${boot.found}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Hd.Good,
+                        )
+                    }
+                    vm.bootError?.let { message ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(message, style = MaterialTheme.typography.labelSmall, color = Hd.Bad)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { vm.startBootstrap() },
+                            enabled = vm.hasSessions && !vm.bootStarting,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Hd.Accent,
+                                contentColor = Hd.Black,
+                            ),
+                            modifier = Modifier.heightIn(min = 44.dp),
+                        ) {
+                            if (vm.bootStarting) {
+                                CircularProgressIndicator(
+                                    strokeWidth = 2.dp,
+                                    color = Hd.Black,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(if (vm.bootStarting) "Запускаю…" else "Собрать базу")
+                        }
+                        if (!vm.hasSessions) {
+                            TextButton(onClick = { onOpenAccounts() }) {
+                                Text("Войти в Telegram", color = Hd.Accent2)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item("telegram") {
             HdCard {
                 Text("Ключи Telegram", style = MaterialTheme.typography.titleSmall, color = Hd.Text)

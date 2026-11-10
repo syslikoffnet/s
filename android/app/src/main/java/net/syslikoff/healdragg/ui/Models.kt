@@ -376,3 +376,24 @@ data class LoginFlow(
         )
     }
 }
+
+/** Страница каталога публичных чатов из локальной базы. */
+data class CatalogPage(
+    val total: Int,
+    val page: Int,
+    val pages: Int,
+    val rows: List<Chat>,
+) {
+    companion object {
+        fun from(o: JSONObject): CatalogPage {
+            val arr = o.arr("rows")
+            val rows = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.map(Chat::from)
+            return CatalogPage(
+                total = o.int("total"),
+                page = o.int("page").coerceAtLeast(1),
+                pages = o.int("pages").coerceAtLeast(1),
+                rows = rows,
+            )
+        }
+    }
+}

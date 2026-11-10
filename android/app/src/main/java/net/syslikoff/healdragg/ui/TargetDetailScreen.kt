@@ -124,7 +124,7 @@ fun TargetDetailScreen(
         val page = if (reset) 1 else chatPage + 1
         runCatching { client.chats(tgId, page, size = 25, order = chatOrder) }
             .onSuccess { rows ->
-                chats = if (reset) rows else chats + rows
+                chats = (if (reset) rows else chats + rows).distinctBy { it.tgId }
                 chatPage = page
                 chatsDone = rows.size < 25
                 error = null

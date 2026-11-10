@@ -52,6 +52,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var sessions by mutableStateOf<List<SessionInfo>>(emptyList())
         private set
 
+    /** Сбор базы: текущий (или последний) job и его ошибка. */
+    var bootJob by mutableStateOf<Job?>(null)
+        private set
+    var bootError by mutableStateOf<String?>(null)
+        private set
+    var bootStarting by mutableStateOf(false)
+        private set
+
+    val bootRunning: Boolean
+        get() = bootJob?.let { !it.finished } ?: false
+
     var loading by mutableStateOf(false)
         private set
     var refreshing by mutableStateOf(false)
@@ -341,6 +352,51 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val client = api ?: return
         viewModelScope.launch {
             runCatching { client.sessions() }.onSuccess { sessions = it }
+        }
+    }
+
+    // ── сбор базы ────────────────────────────────────────────────────────────
+
+    fun startBootstrap() {
+        val client = api ?: run {
+            bootError = "Движок не запущен"
+            return
+        }
+        if (bootRunning || bootStarting) return
+        bootStarting = true
+        bootError = null
+        bootJob = null
+        viewModelScope.launch {
+            runCatching { client.bootstrap() }
+                .onSuccess { job ->
+                    bootJob = job
+                    pollBootstrap(client, job.key)
+                }
+                .onFailure { bootError = it.message ?: "Не удалось запустить сбор" }
+            bootStarting = false
+        }
+    }
+
+    fun cancelBootstrap() {
+        val client = api ?: return
+        val key = bootJob?.key ?: return
+        viewModelScope.launch {
+            runCatching { client.cancelJob(key) }
+            bootJob = null
+            bootError = null
+        }
+    }
+
+    private suspend fun pollBootstrap(client: Api, key: String) {
+        while (true) {
+            delay(2_500)
+            val fresh = runCatching { client.jobs().firstOrNull { it.key == key } }.getOrNull() ?: return
+            bootJob = fresh
+            if (fresh.finished) {
+                bootError = fresh.error
+                refresh(force = true)
+                return
+            }
         }
     }
 

@@ -63,6 +63,7 @@ import kotlinx.coroutines.launch
 private enum class Tab(val title: String, val emoji: String) {
     Targets("Цели", "🎯"),
     Alerts("Алерты", "🔔"),
+    Catalog("База", "🗂"),
     Settings("Настройки", "⚙"),
 }
 
@@ -158,6 +159,16 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                     )
                     Box(Modifier.weight(1f)) {
                         when (tab) {
+                            Tab.Catalog -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                                Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) {
+                                    CatalogScreen(
+                                        vm = vm,
+                                        onOpenTarget = { openTarget = it },
+                                        onToast = toast,
+                                        onOpenAccounts = { showAccounts = true },
+                                    )
+                                }
+                            }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                 Box(Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
                                     SettingsScreen(
@@ -250,6 +261,12 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             onOpenAccounts = { showAccounts = true },
                         )
                         tab == Tab.Alerts -> AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                        tab == Tab.Catalog -> CatalogScreen(
+                            vm = vm,
+                            onOpenTarget = { openTarget = it },
+                            onToast = toast,
+                            onOpenAccounts = { showAccounts = true },
+                        )
                         else -> SettingsScreen(
                             vm = vm,
                             onOpenBattery = onOpenBattery,
