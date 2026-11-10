@@ -233,13 +233,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLog() {
         val file = File(filesDir, "engine/logs/engine.log")
-        val text = try {
+        val content = try {
             file.readLines().takeLast(400).joinToString("\n").ifBlank { "Лог пока пуст." }
         } catch (_: Exception) {
             "Лог пока пуст."
         }
         val view = TextView(this).apply {
-            text = text
+            text = content
             setTextColor(Color.parseColor("#E8F0FF"))
             textSize = 11f
             setPadding(32, 24, 32, 24)
@@ -368,7 +368,7 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest,
                 error: WebResourceError,
             ) {
-                if (request.isMainFrame) {
+                if (request.isForMainFrame) {
                     progress.visibility = View.GONE
                     refresh.isRefreshing = false
                     Toast.makeText(this@MainActivity, R.string.error_load, Toast.LENGTH_LONG).show()
