@@ -661,6 +661,8 @@ data class NftPage(
     val summary: NftSummary,
     val owners: List<NftOwner>,
     val collections: List<NftCollection>,
+    /** Сколько всего строк подходит под фильтр (не только загруженная страница). */
+    val total: Int = 0,
 )
 
 data class GiftOwner(

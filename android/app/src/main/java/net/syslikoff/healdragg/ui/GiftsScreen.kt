@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.CardGiftcard
@@ -32,6 +34,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -90,6 +93,9 @@ fun GiftsScreen(
     var nftQuery by rememberSaveable { mutableStateOf("") }
     var nftSort by rememberSaveable { mutableStateOf("value") }
     var nftHasMore by remember { mutableStateOf(false) }
+    var nftResale by rememberSaveable { mutableStateOf(false) }
+    var nftCollection by rememberSaveable { mutableStateOf("") }
+    var nftTotal by remember { mutableStateOf(0) }
     var nftMoreBusy by remember { mutableStateOf(false) }
     var pendingCsv by remember { mutableStateOf<ByteArray?>(null) }
     val saveCsv = rememberLauncherForActivityResult(
@@ -129,12 +135,23 @@ fun GiftsScreen(
         val chainArg = chain.ifBlank { null }
         val query = nftQuery.trim().ifBlank { null }
         val offset = if (reset) 0 else nftRows.size
-        runCatching { client.giftsNft(chain = chainArg, q = query, sort = nftSort, limit = 200, offset = offset) }
+        runCatching {
+            client.giftsNft(
+                chain = chainArg,
+                q = query,
+                sort = nftSort,
+                limit = 200,
+                offset = offset,
+                resaleOnly = nftResale,
+                collection = nftCollection.ifBlank { null },
+            )
+        }
             .onSuccess {
                 nftSummary = it.summary
                 collections = it.collections
                 nftRows = if (reset) it.rows else nftRows + it.rows
-                nftHasMore = it.rows.size >= 200
+                nftTotal = it.total
+                nftHasMore = (if (reset) it.rows.size else nftRows.size) < it.total
                 nftOwnersList = it.owners
                 error = null
             }
@@ -154,7 +171,15 @@ fun GiftsScreen(
         scope.launch {
             val client = api ?: return@launch
             onToast("Готовлю CSV…")
-            runCatching { client.nftCsv(chain = chain.ifBlank { null }, q = nftQuery.trim().ifBlank { null }, sort = nftSort) }
+            runCatching {
+                client.nftCsv(
+                    chain = chain.ifBlank { null },
+                    q = nftQuery.trim().ifBlank { null },
+                    sort = nftSort,
+                    resaleOnly = nftResale,
+                    collection = nftCollection.ifBlank { null },
+                )
+            }
                 .onSuccess { payload ->
                     pendingCsv = payload
                     saveCsv.launch("healdragg-nft.csv")
@@ -164,7 +189,7 @@ fun GiftsScreen(
     }
 
     LaunchedEffect(mode, chain, nftOnly) { reload() }
-    LaunchedEffect(mode, chain, nftQuery, nftSort) {
+    LaunchedEffect(mode, chain, nftQuery, nftSort, nftResale, nftCollection) {
         if (mode == 0) return@LaunchedEffect
         if (nftQuery.isNotBlank()) delay(400)
         loadNft(reset = true)
@@ -489,7 +514,65 @@ fun GiftsScreen(
                             label = "Поиск по базе NFT",
                             hint = "ник, id, PlushPepe, адрес кошелька",
                             singleLine = true,
+                            trailing = if (nftQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { nftQuery = "" }) {
+                                        Icon(
+                                            Icons.Filled.Clear,
+                                            contentDescription = "Очистить поиск",
+                                            tint = Hd.Muted,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
                         )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            if (nftRows.isEmpty()) "В базе пока ничего не найдено"
+                            else "Найдено ${compactNumber(nftTotal)} · показано ${compactNumber(nftRows.size)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                        if (nftResale || nftCollection.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (nftResale) {
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = { nftResale = false },
+                                        label = { Text("только ресейл") },
+                                        trailingIcon = {
+                                            Icon(
+                                                Icons.Filled.Clear,
+                                                contentDescription = null,
+                                                tint = Hd.Muted,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        },
+                                        colors = giftChipColors(),
+                                    )
+                                }
+                                if (nftCollection.isNotBlank()) {
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = { nftCollection = "" },
+                                        label = { Text(nftCollection) },
+                                        trailingIcon = {
+                                            Icon(
+                                                Icons.Filled.Clear,
+                                                contentDescription = null,
+                                                tint = Hd.Muted,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        },
+                                        colors = giftChipColors(),
+                                    )
+                                }
+                            }
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(
                             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -508,6 +591,24 @@ fun GiftsScreen(
                                     colors = giftChipColors(),
                                 )
                             }
+                            FilterChip(
+                                selected = nftResale,
+                                onClick = { nftResale = !nftResale },
+                                label = { Text("На продажу") },
+                                leadingIcon = if (nftResale) {
+                                    {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = Hd.Accent,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                colors = giftChipColors(),
+                            )
                         }
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -697,6 +798,42 @@ fun GiftsScreen(
                                 "уникальных подарков и запишет владельцев — и тех, что лежат " +
                                 "в кошельках, и тех, что остались в Telegram.",
                         )
+                    }
+                }
+                if (nftRows.isEmpty() && !loading) {
+                    item("nftEmpty") {
+                        HdCard(contentPadding = PaddingValues(16.dp)) {
+                            Text(
+                                if (nftQuery.isBlank() && nftCollection.isBlank() && !nftResale)
+                                    "В базе пока пусто"
+                                else "Ничего не нашлось",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Hd.Text,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Ищи по нику или id владельца, названию коллекции " +
+                                    "(PlushPepe), номеру подарка или адресу кошелька. " +
+                                    "База пополняется обходами — запусти сбор ниже, и " +
+                                    "результат сразу появится здесь.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Hd.Muted,
+                            )
+                            if (nftQuery.isNotBlank() || nftCollection.isNotBlank() || nftResale) {
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = {
+                                    nftQuery = ""
+                                    nftCollection = ""
+                                    nftResale = false
+                                }) {
+                                    Text(
+                                        "Сбросить фильтры",
+                                        color = Hd.Accent2,
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 items(nftRows, key = { "nft-${it.slug}" }) { item ->

@@ -3,3 +3,4 @@ rich>=13.9
 python-dotenv>=1.0
 starlette>=0.37
 uvicorn>=0.27
+tzdata>=2024.1

@@ -328,6 +328,42 @@ def test_nft_profiles_requires_session(client: TestClient) -> None:
     assert "аккаунта" in response.text.lower()
 
 
+def test_nft_filters_and_total(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.upsert_nft_item(
+        "PlushPepe-777", gift_id=777, num=777, title="Плюшевый Пепе",
+        owner_tg_id=777000, owner_username="durov", owner_name="Павел",
+        owner_address="EQwallet", on_chain=1, value_amount=100, value_currency="TON",
+        value_usd=900, resell_amount=0, availability_issued=1, availability_total=9000,
+        seen_at=1,
+    )
+    store.upsert_nft_item(
+        "SwissWatch-888", gift_id=888, num=888, title="Часы",
+        owner_tg_id=777001, owner_username="durov", owner_name="Павел",
+        on_chain=0, value_amount=10, value_currency="TON", value_usd=50,
+        resell_amount=75, availability_issued=1, availability_total=9000, seen_at=2,
+    )
+
+    page = client.get("/api/gifts/nft?q=durov&limit=5", headers=HEADERS).json()
+    assert page["total"] >= 2
+    assert page["total"] == len(page["rows"]) or page["total"] > len(page["rows"])
+
+    resale = client.get("/api/gifts/nft?q=durov&resell=1", headers=HEADERS).json()
+    assert all(row["resell_amount"] for row in resale["rows"])
+    assert all("SwissWatch" in row["slug"] for row in resale["rows"])
+
+    by_collection = client.get("/api/gifts/nft?collection=SwissWatch", headers=HEADERS).json()
+    assert [row["slug"] for row in by_collection["rows"]] == ["SwissWatch-888"]
+
+    by_id = client.get("/api/gifts/nft?q=777000", headers=HEADERS).json()
+    assert [row["slug"] for row in by_id["rows"]] == ["PlushPepe-777"]
+
+    csv_resale = client.get("/api/gifts/nft/export.csv?q=durov&resell=1", headers=HEADERS)
+    assert csv_resale.status_code == 200
+    assert "SwissWatch-888" in csv_resale.text
+    assert "PlushPepe-777" not in csv_resale.text
+
+
 def test_nft_csv_export(client: TestClient) -> None:
     response = client.get("/api/gifts/nft/export.csv?chain=wallet", headers=HEADERS)
     assert response.status_code == 200

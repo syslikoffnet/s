@@ -324,6 +324,14 @@ SELECT tg.target_id, tg.group_id, tg.status, tg.source, tg.session,
 """
 
 
+def _is_comment_only(statement: str) -> bool:
+    for line in statement.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("--"):
+            return False
+    return True
+
+
 class Store:
     """Тонкая, но аккуратная обёртка над sqlite3 с потокобезопасным доступом."""
 
@@ -357,18 +365,69 @@ class Store:
 
     def _migrate(self) -> None:
         with self._lock:
-            self._conn.executescript(SCHEMA)
+            # Порядок важен: сначала таблицы и всё, что к ним липнет, потом
+            # догоняющие ALTER TABLE, и только потом — то, что не создалось
+            # из-за отсутствующих колонок (индексы старой базы).
+            pending = self._apply_script(SCHEMA)
+            self._migrate_columns()
+            for statement in pending:
+                try:
+                    self._conn.execute(statement)
+                except sqlite3.DatabaseError:
+                    pass
             try:
                 self._conn.executescript(FTS_SCHEMA)
                 self._fts = True
             except sqlite3.DatabaseError:
                 self._fts = False
-            self._migrate_columns()
             version = self.get_meta("schema_version")
             if version is None:
                 self.set_meta("schema_version", str(SCHEMA_VERSION))
                 self.set_meta("created_at", str(now_ts()))
             self._conn.commit()
+
+    def _apply_script(self, script: str) -> list[str]:
+        """Выполняет DDL по одному выражению.
+
+        Возвращает те, что не прошли из-за отсутствующих колонок/таблиц: на
+        базе, созданной старой версией, ``CREATE INDEX ... ON gifts(on_chain)``
+        падает раньше, чем миграция успевает добавить колонку. Такие выражения
+        повторяются после ``_migrate_columns`` — иначе движок не стартует.
+        """
+        pending: list[str] = []
+        buffer = ""
+        for line in script.splitlines(keepends=True):
+            buffer += line
+            if not sqlite3.complete_statement(buffer):
+                continue
+            statement = buffer.strip()
+            buffer = ""
+            if not statement or _is_comment_only(statement):
+                continue
+            try:
+                self._conn.execute(statement)
+            except sqlite3.ProgrammingError:
+                # на одной строке оказалось несколько выражений
+                self._conn.executescript(statement)
+            except sqlite3.OperationalError as exc:
+                text = str(exc).lower()
+                if "no such column" in text or "no such table" in text:
+                    pending.append(statement)
+                else:
+                    raise
+        tail = buffer.strip()
+        if tail and not _is_comment_only(tail):
+            try:
+                self._conn.execute(tail)
+            except sqlite3.ProgrammingError:
+                self._conn.executescript(tail)
+            except sqlite3.OperationalError as exc:
+                text = str(exc).lower()
+                if "no such column" in text or "no such table" in text:
+                    pending.append(tail)
+                else:
+                    raise
+        return pending
 
     def _migrate_columns(self) -> None:
         """Догоняющие ALTER TABLE для баз, созданных старыми версиями."""
@@ -1285,21 +1344,26 @@ class Store:
             )
             return False
 
-    def nft_items(
+    def _nft_where(
         self,
         *,
         chain: str | None = None,
         q: str | None = None,
-        sort: str = "value",
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[dict[str, Any]]:
+        resale_only: bool = False,
+        collection: str | None = None,
+    ) -> tuple[str, list[Any]]:
+        """Общее условие выборки NFT — одно и то же для списка, счётчика и CSV."""
         where: list[str] = []
         params: list[Any] = []
         if chain == "wallet":
             where.append("on_chain = 1")
         elif chain == "telegram":
             where.append("on_chain = 0")
+        if collection:
+            where.append("slug LIKE ?")
+            params.append(f"{collection.strip()}-%")
+        if resale_only:
+            where.append("coalesce(resell_amount, 0) > 0")
         if q:
             needle = f"%{q.strip()}%"
             where.append(
@@ -1309,6 +1373,22 @@ class Store:
             )
             params.extend([needle, needle, needle, needle, needle, needle, needle, q.strip()])
         clause = f"WHERE {' AND '.join(where)}" if where else ""
+        return clause, params
+
+    def nft_items(
+        self,
+        *,
+        chain: str | None = None,
+        q: str | None = None,
+        sort: str = "value",
+        limit: int = 100,
+        offset: int = 0,
+        resale_only: bool = False,
+        collection: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clause, params = self._nft_where(
+            chain=chain, q=q, resale_only=resale_only, collection=collection
+        )
         order = {
             "value": "coalesce(value_usd, value_amount, 0) DESC, seen_at DESC",
             "resell": "coalesce(resell_amount, 0) DESC, seen_at DESC",
@@ -1319,6 +1399,21 @@ class Store:
         return self.query(
             f"SELECT * FROM nft_items {clause} ORDER BY {order} LIMIT ? OFFSET ?", params
         )
+
+    def nft_count(
+        self,
+        *,
+        chain: str | None = None,
+        q: str | None = None,
+        resale_only: bool = False,
+        collection: str | None = None,
+    ) -> int:
+        """Сколько всего NFT подходит под фильтр — для «найдено N из M»."""
+        clause, params = self._nft_where(
+            chain=chain, q=q, resale_only=resale_only, collection=collection
+        )
+        row = self.query_one(f"SELECT COUNT(*) AS n FROM nft_items {clause}", params) or {}
+        return int(row.get("n") or 0)
 
     def nft_summary(self) -> dict[str, Any]:
         row = self.query_one(

@@ -186,11 +186,15 @@ class Api(private val baseUrl: String, private val token: String) {
         sort: String = "value",
         limit: Int = 100,
         offset: Int = 0,
+        resaleOnly: Boolean = false,
+        collection: String? = null,
     ): NftPage {
         val path = buildString {
             append("api/gifts/nft?limit=$limit&offset=$offset&sort=$sort")
             if (!chain.isNullOrBlank()) append("&chain=$chain")
             if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
+            if (resaleOnly) append("&resell=1")
+            if (!collection.isNullOrBlank()) append("&collection=${URLEncoder.encode(collection, "UTF-8")}")
         }
         val data = obj(path)
         return NftPage(
@@ -198,6 +202,7 @@ class Api(private val baseUrl: String, private val token: String) {
             summary = NftSummary.from(data.obj("summary")),
             owners = jsonObjects(data.arr("owners")).map(NftOwner::from),
             collections = jsonObjects(data.arr("collections")).map(NftCollection::from),
+            total = data.num("total").toInt(),
         )
     }
 
@@ -216,11 +221,19 @@ class Api(private val baseUrl: String, private val token: String) {
     }
 
     /** Выгрузка NFT-инвентаря в CSV (для Excel/Sheets). */
-    suspend fun nftCsv(chain: String? = null, q: String? = null, sort: String = "value"): ByteArray {
+    suspend fun nftCsv(
+        chain: String? = null,
+        q: String? = null,
+        sort: String = "value",
+        resaleOnly: Boolean = false,
+        collection: String? = null,
+    ): ByteArray {
         val path = buildString {
             append("api/gifts/nft/export.csv?sort=$sort&limit=100000")
             if (!chain.isNullOrBlank()) append("&chain=$chain")
             if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
+            if (resaleOnly) append("&resell=1")
+            if (!collection.isNullOrBlank()) append("&collection=${URLEncoder.encode(collection, "UTF-8")}")
         }
         return raw(path, "GET", null, "text/csv")
     }
@@ -259,7 +272,15 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun createBackup(): BackupInfo =
         BackupInfo.from(obj("api/backup/create", "POST", null, BACKUP_TIMEOUT))
 
-    suspend fun downloadBackup(): ByteArray = raw("api/backup/download", "GET", null, "application/zip")
+    /** Свежая копия (или конкретная по имени — для списка копий в настройках). */
+    suspend fun downloadBackup(name: String? = null): ByteArray {
+        val path = if (name.isNullOrBlank()) {
+            "api/backup/download"
+        } else {
+            "api/backup/download?name=${URLEncoder.encode(name, "UTF-8")}"
+        }
+        return raw(path, "GET", null, "application/zip")
+    }
 
     suspend fun restoreBackup(payload: ByteArray): JSONObject {
         val data = JSONObject(

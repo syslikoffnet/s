@@ -223,6 +223,20 @@ def _q_chain(request: Request) -> str | None:
     return None
 
 
+def _q_flag(request: Request, name: str) -> bool:
+    """Флаги в query: ``1``, ``true``, ``yes``, ``on`` — включено."""
+    raw = (request.query_params.get(name) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "да"}
+
+
+def _q_collection(request: Request) -> str | None:
+    """Коллекция NFT: принимаем и slug (``PlushPepe``), и ``PlushPepe-1234``."""
+    raw = (request.query_params.get("collection") or "").strip()
+    if not raw:
+        return None
+    return raw.split("-", 1)[0]
+
+
 async def _body(request: Request) -> dict[str, Any]:
     raw = await request.body()
     if not raw:
@@ -759,9 +773,20 @@ def create_app(settings: Settings) -> Starlette:
         sort = (request.query_params.get("sort") or "value").strip()
         limit = _q_int(request, "limit", 100, 1, 1000)
         offset = _q_int(request, "offset", 0, 0, 1_000_000)
+        resale_only = _q_flag(request, "resell")
+        collection = _q_collection(request)
         return {
             "rows": state.store.nft_items(
-                chain=chain, q=query, sort=sort, limit=limit, offset=offset
+                chain=chain,
+                q=query,
+                sort=sort,
+                limit=limit,
+                offset=offset,
+                resale_only=resale_only,
+                collection=collection,
+            ),
+            "total": state.store.nft_count(
+                chain=chain, q=query, resale_only=resale_only, collection=collection
             ),
             "summary": state.store.nft_summary(),
             "owners": state.store.nft_owners(chain=chain, limit=24),
@@ -789,7 +814,13 @@ def create_app(settings: Settings) -> Starlette:
         sort = (request.query_params.get("sort") or "value").strip()
         limit = _q_int(request, "limit", 5000, 1, 100_000)
         rows = state.store.nft_items(
-            chain=chain, q=query, sort=sort, limit=limit, offset=0
+            chain=chain,
+            q=query,
+            sort=sort,
+            limit=limit,
+            offset=0,
+            resale_only=_q_flag(request, "resell"),
+            collection=_q_collection(request),
         )
         buffer = io.StringIO()
         writer = csv.writer(buffer, delimiter=";")

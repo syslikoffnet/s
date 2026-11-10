@@ -7,9 +7,10 @@ import re
 import unicodedata
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import tzinfo as TzBase
 from typing import TypeVar
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 T = TypeVar("T")
 
@@ -49,11 +50,81 @@ WEEKDAYS = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-def tzinfo(name: str) -> ZoneInfo:
+#: Смещения на случай, когда база часовых поясов недоступна (Android без tzdata).
+_TZ_HOURS: dict[str, float] = {
+    "UTC": 0,
+    "Etc/UTC": 0,
+    "GMT": 0,
+    "Europe/London": 0,
+    "Europe/Lisbon": 0,
+    "Europe/Berlin": 1,
+    "Europe/Paris": 1,
+    "Europe/Warsaw": 1,
+    "Europe/Prague": 1,
+    "Europe/Rome": 1,
+    "Europe/Madrid": 1,
+    "Europe/Amsterdam": 1,
+    "Europe/Vienna": 1,
+    "Europe/Zurich": 1,
+    "Europe/Belgrade": 1,
+    "Europe/Budapest": 1,
+    "Europe/Kyiv": 2,
+    "Europe/Kiev": 2,
+    "Europe/Chisinau": 2,
+    "Europe/Kaliningrad": 2,
+    "Europe/Helsinki": 2,
+    "Europe/Athens": 2,
+    "Europe/Bucharest": 2,
+    "Europe/Sofia": 2,
+    "Europe/Riga": 2,
+    "Europe/Vilnius": 2,
+    "Europe/Tallinn": 2,
+    "Europe/Moscow": 3,
+    "Europe/Minsk": 3,
+    "Europe/Istanbul": 3,
+    "Europe/Simferopol": 3,
+    "Europe/Volgograd": 3,
+    "Asia/Tbilisi": 4,
+    "Asia/Yerevan": 4,
+    "Asia/Baku": 4,
+    "Asia/Dubai": 4,
+    "Asia/Samarkand": 5,
+    "Asia/Tashkent": 5,
+    "Asia/Almaty": 5,
+    "Asia/Astana": 5,
+    "Asia/Yekaterinburg": 5,
+    "Asia/Omsk": 6,
+    "Asia/Bishkek": 6,
+    "Asia/Novosibirsk": 7,
+    "Asia/Krasnoyarsk": 7,
+    "Asia/Irkutsk": 8,
+    "Asia/Yakutsk": 9,
+    "Asia/Vladivostok": 10,
+    "Asia/Magadan": 11,
+    "Asia/Kamchatka": 12,
+    "Pacific/Auckland": 12,
+    "America/New_York": -5,
+    "America/Chicago": -6,
+    "America/Denver": -7,
+    "America/Los_Angeles": -8,
+}
+
+
+def tzinfo(name: str) -> TzBase:
+    """Часовой пояс с гарантией: без tzdata возвращаем фиксированное смещение.
+
+    На Android ``zoneinfo`` есть, а базы зон нет — ``ZoneInfo`` бросает
+    ``ZoneInfoNotFoundError``, и раньше это роняло все ответы API. Теперь
+    приложение просто считает время по известному смещению.
+    """
     try:
         return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("UTC")
+    except Exception:  # noqa: BLE001 — любые проблемы с базой зон
+        pass
+    hours = _TZ_HOURS.get(name)
+    if hours is None:
+        return timezone.utc
+    return timezone(timedelta(hours=hours), name)
 
 
 def now_ts() -> int:

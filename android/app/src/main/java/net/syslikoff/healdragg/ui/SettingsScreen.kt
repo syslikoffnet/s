@@ -85,6 +85,7 @@ fun SettingsScreen(
     var restoreBusy by remember { mutableStateOf(false) }
     var backupLabel by remember { mutableStateOf<String?>(null) }
     var pendingBackup by remember { mutableStateOf<ByteArray?>(null) }
+    var backupList by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
 
     val saveBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
@@ -95,6 +96,7 @@ fun SettingsScreen(
         val ok = writeDocument(context, uri, payload)
         backupBusy = false
         onToast(if (ok) "Копия сохранена в выбранный файл" else "Не удалось записать файл")
+        reloadBackups()
         backupLabel = if (ok) "Сохранено: ${fileNameFrom(context, uri)}" else backupLabel
     }
 
@@ -120,7 +122,40 @@ fun SettingsScreen(
                 onToast("Копия восстановлена")
                 vm.refresh()
                 vm.refreshSessions()
+                reloadBackups()
             }.onFailure { onToast(it.message ?: "Не удалось восстановить копию") }
+        }
+    }
+
+    fun reloadBackups() {
+        scope.launch {
+            val client = vm.api ?: return@launch
+            runCatching { client.backups() }.onSuccess { page ->
+                backupList = page.rows
+                page.latest?.let { latest ->
+                    backupLabel = "Последняя копия: ${latest.name} · ${latest.sizeLabel}"
+                }
+            }
+        }
+    }
+
+    fun saveNamedBackup(name: String) {
+        if (backupBusy) return
+        backupBusy = true
+        scope.launch {
+            val client = vm.api ?: return@launch
+            runCatching { client.downloadBackup(name) }
+                .onSuccess { payload ->
+                    pendingBackup = payload
+                    runCatching { saveBackup.launch(name) }.onFailure {
+                        backupBusy = false
+                        onToast("Не удалось открыть сохранение файла")
+                    }
+                }
+                .onFailure {
+                    backupBusy = false
+                    onToast(it.message ?: "Не удалось скачать копию")
+                }
         }
     }
 
@@ -166,6 +201,7 @@ fun SettingsScreen(
                 onToast("Копия из «Загрузок» восстановлена")
                 vm.refresh()
                 vm.refreshSessions()
+                reloadBackups()
             }.onFailure { onToast(it.message ?: "Не удалось восстановить копию") }
         }
     }
@@ -184,6 +220,7 @@ fun SettingsScreen(
     LaunchedEffect(vm.api, vm.engine) {
         val client = vm.api ?: return@LaunchedEffect
         runCatching { client.backups() }.onSuccess { page ->
+            backupList = page.rows
             page.latest?.let { latest ->
                 backupLabel = "Последняя копия: ${latest.name} · ${latest.sizeLabel}"
             }
@@ -582,6 +619,45 @@ fun SettingsScreen(
                         Spacer(Modifier.width(8.dp))
                     }
                     Text(if (backupBusy) "Собираю копию…" else "Сохранить копию в файл")
+                }
+                if (backupList.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Копии внутри приложения",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Hd.Dim,
+                    )
+                    backupList.take(6).forEach { backup ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    backup.name.removePrefix("healdragg-").removeSuffix(".zip"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Hd.Text,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    backup.sizeLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Hd.Dim,
+                                )
+                            }
+                            TextButton(
+                                onClick = { saveNamedBackup(backup.name) },
+                                enabled = !backupBusy && !restoreBusy,
+                            ) {
+                                Text(
+                                    "Сохранить",
+                                    color = Hd.Accent2,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(

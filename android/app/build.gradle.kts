@@ -102,6 +102,8 @@ chaquopy {
             install("uvicorn>=0.27")
             install("rich>=13,<15")
             install("python-dotenv>=1.0")
+            // база часовых поясов: на Android zoneinfo без неё не работает
+            install("tzdata")
         }
     }
     sourceSets {
