@@ -1304,9 +1304,10 @@ class Store:
             needle = f"%{q.strip()}%"
             where.append(
                 "(slug LIKE ? OR title LIKE ? OR owner_username LIKE ? OR owner_name LIKE ? "
-                "OR owner_address LIKE ? OR CAST(owner_tg_id AS TEXT) LIKE ?)"
+                "OR owner_address LIKE ? OR gift_address LIKE ? "
+                "OR CAST(owner_tg_id AS TEXT) LIKE ? OR CAST(num AS TEXT) = ?)"
             )
-            params.extend([needle] * 6)
+            params.extend([needle, needle, needle, needle, needle, needle, needle, q.strip()])
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         order = {
             "value": "coalesce(value_usd, value_amount, 0) DESC, seen_at DESC",
