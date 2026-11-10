@@ -51,7 +51,24 @@ jobs:
 
       - name: Сборка debug + release
         working-directory: android
-        run: gradle assembleDebug assembleRelease --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          gradle assembleDebug assembleRelease --no-daemon --stacktrace --console=plain \
+            2>&1 | tee "$GITHUB_WORKSPACE/gradle-build.log"
+
+      # Логи Actions недоступны снаружи, поэтому при падении сборки кладём
+      # хвост вывода в комментарий PR — так ошибку видно и без скачивания логов.
+      - name: Отчёт об ошибке сборки
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LOG="$GITHUB_WORKSPACE/gradle-build.log"
+          BODY="$(grep -nE 'What went wrong|FAILURE:|error:|e: |Caused by|Could not|Unresolved' "$LOG" | tail -40 || true)"
+          if [ -z "$BODY" ]; then BODY="$(tail -60 "$LOG" || true)"; fi
+          printf 'Сборка APK упала на %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$BODY" > /tmp/comment.md
+          gh pr comment 1 --body-file /tmp/comment.md || true
 
       - name: Локальные артефакты
         run: |
