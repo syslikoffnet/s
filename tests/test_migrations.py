@@ -116,3 +116,27 @@ def test_recover_without_backups_is_noop(tmp_path: Path) -> None:
     db_path.write_bytes(b"broken")
     assert recover_from_latest(tmp_path, db_path) is None
     assert db_path.read_bytes() == b"broken"
+
+
+def test_store_survives_weird_old_database(tmp_path: Path) -> None:
+    """Совсем старая база: нет части колонок, но движок обязан подняться."""
+    db_path = tmp_path / "ancient.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE groups (id INTEGER PRIMARY KEY, tg_id INTEGER, title TEXT);
+        CREATE TABLE gifts (id INTEGER PRIMARY KEY, target_id INTEGER, gift_id INTEGER, date INTEGER);
+        INSERT INTO groups (tg_id, title) VALUES (111, 'чат');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(db_path)
+    try:
+        assert store.query_one("SELECT COUNT(*) AS n FROM groups")["n"] == 1
+        columns = {row["name"] for row in store.query("PRAGMA table_info(gifts)")}
+        assert "on_chain" in columns
+    finally:
+        store.close()

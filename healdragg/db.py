@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from .util import group_link, now_ts
+
+log = logging.getLogger("healdragg.db")
 
 SCHEMA_VERSION = 9
 
@@ -369,7 +372,12 @@ class Store:
             # догоняющие ALTER TABLE, и только потом — то, что не создалось
             # из-за отсутствующих колонок (индексы старой базы).
             pending = self._apply_script(SCHEMA)
-            self._migrate_columns()
+            try:
+                self._migrate_columns()
+            except sqlite3.DatabaseError:
+                # Старая база бывает совсем нестандартной: лучше подняться
+                # на том, что есть, чем не запустить движок вообще.
+                log.exception("догоняющая миграция не удалсь — продолжаю как есть")
             for statement in pending:
                 try:
                     self._conn.execute(statement)
@@ -429,18 +437,25 @@ class Store:
                     raise
         return pending
 
+    def _soft(self, sql: str) -> None:
+        """Миграция, которая не имеет права уронить старт движка."""
+        try:
+            self._conn.execute(sql)
+        except sqlite3.DatabaseError:
+            log.warning("шаг миграции пропущен: %s", sql.strip().splitlines()[0][:90])
+
     def _migrate_columns(self) -> None:
         """Догоняющие ALTER TABLE для баз, созданных старыми версиями."""
         cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(groups)")}
         if "link" not in cols:
-            self._conn.execute("ALTER TABLE groups ADD COLUMN link TEXT")
+            self._soft("ALTER TABLE groups ADD COLUMN link TEXT")
         # ссылки для уже собранных чатов: публичные — по username,
         # приватные супергруппы/каналы — рабочая t.me/c/… для участников
-        self._conn.execute(
+        self._soft(
             "UPDATE groups SET link = 'https://t.me/' || username "
             "WHERE link IS NULL AND username IS NOT NULL AND username <> ''"
         )
-        self._conn.execute(
+        self._soft(
             "UPDATE groups SET link = 'https://t.me/c/' || "
             "(CASE WHEN tg_id < 0 THEN -tg_id - 1000000000000 ELSE tg_id END) || '/1' "
             "WHERE link IS NULL AND kind IN ('channel', 'supergroup') AND tg_id <> 0"
@@ -461,7 +476,7 @@ class Store:
         }
         for column, ddl in target_additions.items():
             if column not in target_cols:
-                self._conn.execute(f"ALTER TABLE targets ADD COLUMN {column} {ddl}")
+                self._soft(f"ALTER TABLE targets ADD COLUMN {column} {ddl}")
         gift_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gifts)")}
         gift_additions = {
             "slug": "TEXT",
@@ -480,7 +495,7 @@ class Store:
         }
         for column, ddl in gift_additions.items():
             if column not in gift_cols:
-                self._conn.execute(f"ALTER TABLE gifts ADD COLUMN {column} {ddl}")
+                self._soft(f"ALTER TABLE gifts ADD COLUMN {column} {ddl}")
         self._conn.commit()
 
     @contextmanager
