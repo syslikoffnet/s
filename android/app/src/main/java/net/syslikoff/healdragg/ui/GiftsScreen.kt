@@ -98,6 +98,7 @@ fun GiftsScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var savedRun by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
     var summary by remember { mutableStateOf(GiftSummary()) }
     var loading by remember { mutableStateOf(true) }
@@ -226,6 +227,22 @@ fun GiftsScreen(
         if (mode == 0) return@LaunchedEffect
         if (nftQuery.isNotBlank()) delay(400)
         loadNft(reset = true)
+    }
+
+    // При возврате на экран получаем состояние из движка, а не из remember.
+    LaunchedEffect(api) {
+        val client = api ?: return@LaunchedEffect
+        while (true) {
+            val active = runCatching { client.jobs().firstOrNull {
+                !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles")
+            } }.getOrNull()
+            if (job == null && active != null) job = active
+            savedRun = runCatching { client.giftRuns().firstOrNull {
+                it.optString("status") in listOf("paused", "error") ||
+                    (it.optString("status") == "done" && (it.optJSONObject("queue")?.optInt("unavailable") ?: 0) > 0)
+            } }.getOrNull()
+            delay(3_000)
+        }
     }
 
     LaunchedEffect(job?.key) {
@@ -477,6 +494,12 @@ fun GiftsScreen(
                                 }
                             }) { Text("Стоп", color = Hd.Bad) }
                         }
+                        current.state?.optJSONObject("queue")?.let { counts ->
+                            Text(
+                                "В очереди: ${counts.optInt("pending")} · недоступно: ${counts.optInt("unavailable")} · отложено: ${counts.optInt("deferred")}",
+                                style = MaterialTheme.typography.labelSmall, color = Hd.Muted,
+                            )
+                        }
                         if (current.total > 0) {
                             Spacer(Modifier.height(8.dp))
                             LinearProgressIndicator(
@@ -486,6 +509,30 @@ fun GiftsScreen(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
+                    }
+                }
+            }
+
+            if (job == null) savedRun?.let { run ->
+                item("savedRun") {
+                    val counts = run.optJSONObject("queue")
+                    HdCard(contentPadding = PaddingValues(14.dp)) {
+                        Text("Сохранённый обход: ${run.optString("query")}", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "Готово: ${counts?.optInt("done") ?: 0} · в очереди: ${counts?.optInt("pending") ?: 0} · " +
+                                "недоступно: ${counts?.optInt("unavailable") ?: 0} · отложено: ${counts?.optInt("deferred") ?: 0}",
+                            style = MaterialTheme.typography.labelSmall, color = Hd.Muted,
+                        )
+                        run.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let {
+                            Text(it, style = MaterialTheme.typography.labelSmall, color = Hd.Bad)
+                        }
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                runCatching { api?.resumeGiftRun(run.optLong("id")) }
+                                    .onSuccess { job = it; savedRun = null }
+                                    .onFailure { error = it.message ?: "Не удалось продолжить обход" }
+                            }
+                        }) { Text("Продолжить и повторить недоступные") }
                     }
                 }
             }
@@ -826,18 +873,6 @@ fun GiftsScreen(
             if (mode == 1) {
                 if (loading && nftRows.isEmpty()) {
                     item("nftLoading") { LoadingBlock() }
-                }
-                if (!loading && nftRows.isEmpty()) {
-                    item("nftEmpty") {
-                        EmptyState(
-                            emoji = "",
-                            icon = Icons.Filled.AutoAwesome,
-                            title = "Инвентарь пуст",
-                            text = "Запусти массовый сбор: приложение пройдёт по коллекциям " +
-                                "уникальных подарков и запишет владельцев — и тех, что лежат " +
-                                "в кошельках, и тех, что остались в Telegram.",
-                        )
-                    }
                 }
                 if (nftRows.isEmpty() && !loading) {
                     item("nftEmpty") {

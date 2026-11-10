@@ -311,6 +311,8 @@ def create_app(settings: Settings) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(_: Starlette):
+        for run in state.store.gift_crawls(("running",)):
+            launch_gift_crawl(int(run["id"]))
         repaired = state.store.repair_session_paths(settings.sessions_dir)
         if repaired:
             log.info("починил пути к сессиям: %s", repaired)
@@ -1215,68 +1217,94 @@ def create_app(settings: Settings) -> Starlette:
         seed = int(seed_raw) if seed_raw.lstrip("-").isdigit() else None
         return state.store.gift_graph(seed=seed)
 
-    async def start_gifts(request: Request) -> dict[str, Any]:
-        guard(request)
-        body = await _body(request)
-        query = str(body.get("query") or "").strip()
-        if not query:
-            raise HTTPException(400, "query: нужен @username, ссылка или ID")
-        if not state.store.session_names():
-            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
-        depth = body.get("depth")
-        depth = int(depth) if isinstance(depth, int) else 1
-        depth = max(1, min(8, depth))
-        max_profiles = body.get("max_profiles")
-        max_profiles = int(max_profiles) if isinstance(max_profiles, int) else 5
-        max_profiles = max(1, min(50_000, max_profiles))
-        per_profile = body.get("per_profile")
-        per_profile = int(per_profile) if isinstance(per_profile, int) else 100
-        key = f"gifts:{query}"
-        if state.running(key):
-            raise HTTPException(409, "Сбор подарков по этому профилю уже идёт")
+    def launch_gift_crawl(run_id: int) -> Job:
+        run = state.store.gift_crawl(run_id)
+        if not run:
+            raise ValueError("Обход не найден")
+        key = f"gifts:run:{run_id}"
         job = Job(key=key, kind="gifts")
-        job.state = {"phase": "старт", "done": 0, "total": max(1, max_profiles), "found": 0}
+        job.state = {"phase": "ожидаю очередь", "done": 0, "total": 0, "found": 0, "run_id": run_id}
         state.jobs[key] = job
 
         async def on_progress(progress: dict[str, Any]) -> None:
-            job.state = progress
+            counts = state.store.gift_crawl_counts(run_id)
+            job.state = {**progress, "run_id": run_id, "queue": counts,
+                         "done": counts["done"], "total": counts["total"]}
 
         async def runner() -> None:
             try:
                 job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
                 async with state.gift_lock:
                     result = await crawl_gifts(
-                        state.pool,
-                        state.store,
-                        settings,
-                        query,
-                        depth=depth,
-                        max_profiles=max_profiles,
-                        per_profile=per_profile,
-                        reporter=on_progress,
-                        skip_known=True,
+                        state.pool, state.store, settings, run["query"],
+                        depth=int(run["depth"]), max_profiles=int(run["max_profiles"]),
+                        per_profile=int(run["per_profile"]), reporter=on_progress,
+                        skip_known=True, run_id=run_id,
                     )
-                job.state = {
-                    "phase": "готово",
-                    "done": result["profiles"],
-                    "total": result["profiles"],
-                    "found": result["gifts"],
-                    "new": result["new"],
-                    "nft": result["nft"],
-                    "nft_new": result["nft_new"],
-                    "errors": result["errors"],
-                }
+                counts = state.store.gift_crawl_counts(run_id)
+                status = "paused" if counts["pending"] else "done"
+                state.store.gift_crawl_status(run_id, status)
+                job.state = {"phase": "остановлено по лимиту" if status == "paused" else "готово",
+                             "done": counts["done"], "total": counts["total"],
+                             "found": result["gifts"], "new": result["new"],
+                             "queue": counts, "run_id": run_id}
             except asyncio.CancelledError:
-                job.state = {**job.state, "phase": "отменено"}
+                # Пользовательская остановка уже записана в БД обработчиком cancel;
+                # при завершении процесса состояние остаётся running для восстановления.
+                job.state = {**job.state, "phase": "остановлено"}
                 raise
             except Exception as exc:  # noqa: BLE001
                 log.exception("сбор подарков не удался")
                 job.error = str(exc)
+                state.store.gift_crawl_status(run_id, "error", str(exc)[:300])
             finally:
                 job.finished = True
 
         job.task = asyncio.create_task(runner(), name=key)
-        return job.as_dict()
+        return job
+
+    async def gift_crawl_runs(request: Request) -> dict[str, Any]:
+        guard(request)
+        runs = state.store.gift_crawls(("running", "paused", "error", "done"))[:30]
+        return {"rows": [{**run, "queue": state.store.gift_crawl_counts(int(run["id"]))} for run in runs]}
+
+    async def resume_gift_crawl(request: Request) -> dict[str, Any]:
+        guard(request)
+        run_id = int(request.path_params["run_id"])
+        run = state.store.gift_crawl(run_id)
+        if not run:
+            raise HTTPException(404, "Обход не найден")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет активного аккаунта Telegram")
+        if state.running(f"gifts:run:{run_id}"):
+            raise HTTPException(409, "Обход уже идёт")
+        # Недоступные аккаунты пробуются повторно только по явной команде.
+        with state.store.tx() as conn:
+            conn.execute("UPDATE gift_crawl_queue SET state = 'pending', error = NULL "
+                         "WHERE run_id = ? AND state = 'unavailable'", (run_id,))
+        state.store.gift_crawl_status(run_id, "running")
+        return launch_gift_crawl(run_id).as_dict()
+
+    async def start_gifts(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        query = str(body.get("query") or "").strip()
+        if not query and body.get("existing") is True:
+            rows = state.store.gift_owners(1)
+            if rows:
+                query = rows[0].get("owner_username") or str(rows[0]["owner_tg_id"])
+        if not query:
+            raise HTTPException(400, "Укажите профиль или продолжите сеть из существующей базы")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+        depth = body.get("depth")
+        depth = max(1, min(8, int(depth) if isinstance(depth, int) else 1))
+        max_profiles = body.get("max_profiles")
+        max_profiles = max(1, min(50_000, int(max_profiles) if isinstance(max_profiles, int) else 5))
+        per_profile = body.get("per_profile")
+        per_profile = max(10, min(5000, int(per_profile) if isinstance(per_profile, int) else 100))
+        run_id = state.store.create_gift_crawl(query, depth, max_profiles, per_profile)
+        return launch_gift_crawl(run_id).as_dict()
 
     async def start_scan(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1469,7 +1497,13 @@ def create_app(settings: Settings) -> Starlette:
 
     async def cancel(request: Request) -> dict[str, Any]:
         guard(request)
-        return {"ok": await state.cancel(str(request.path_params["key"]))}
+        key = str(request.path_params["key"])
+        if key.startswith("gifts:run:") and state.running(key):
+            try:
+                state.store.gift_crawl_status(int(key.rsplit(":", 1)[-1]), "paused")
+            except ValueError:
+                pass
+        return {"ok": await state.cancel(key)}
 
     async def start_bootstrap(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1606,6 +1640,8 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/chain", _route(start_nft_chain), methods=["POST"]),
         Route("/api/gifts/nft/profiles", _route(start_nft_profiles), methods=["POST"]),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
+        Route("/api/gifts/runs", _route(gift_crawl_runs)),
+        Route("/api/gifts/runs/{run_id:int}/resume", _route(resume_gift_crawl), methods=["POST"]),
         Route("/api/gifts/refresh", _route(start_gift_refresh), methods=["POST"]),
         Route("/api/intel", _route(intel)),
         Route("/api/alerts", _route(alerts)),

@@ -135,6 +135,7 @@ def _unique_meta(gift: Any) -> dict[str, Any]:
         "gift_id": _as_int(getattr(gift, "gift_id", None))
         or _as_int(getattr(gift, "id", None)),
         "owner_tg_id": owner_peer_id,
+        "host_tg_id": _sender_id(getattr(gift, "host_id", None)),
         "owner_name": str(owner_name) if owner_name else None,
         "owner_address": str(owner_address) if owner_address else None,
         "gift_address": str(gift_address) if gift_address else None,
@@ -175,9 +176,11 @@ def _remember_meta(
         gift_id=meta.get("gift_id"),
         num=meta.get("num"),
         title=meta.get("title"),
-        owner_tg_id=owner_tg_id or meta.get("owner_tg_id"),
-        owner_username=owner_username,
-        owner_name=meta.get("owner_name") or owner_name,
+        owner_tg_id=meta.get("owner_tg_id") or (owner_tg_id if not meta.get("on_chain") and not meta.get("host_tg_id") else None),
+        owner_username=(owner_username if owner_tg_id and (meta.get("owner_tg_id") == owner_tg_id or
+                        (not meta.get("owner_tg_id") and not meta.get("on_chain") and not meta.get("host_tg_id"))) else None),
+        owner_name=meta.get("owner_name") or (owner_name if not meta.get("on_chain") and not meta.get("host_tg_id") else None),
+        ownership_observed=True,
         owner_address=meta.get("owner_address"),
         gift_address=meta.get("gift_address"),
         on_chain=meta.get("on_chain"),
@@ -267,6 +270,7 @@ async def crawl_gifts(
     allow_heavy: bool = False,
     skip_known: bool = False,
     expected_owner: int | None = None,
+    run_id: int | None = None,
 ) -> dict[str, Any]:
     """Собирает подарки пользователя и (опционально) его дарителей."""
     query = (query or "").strip()
@@ -281,25 +285,69 @@ async def crawl_gifts(
     client = account.client
     limiter = account.limiter or RateLimiter()
 
-    entity = await limiter.call(lambda: client.get_entity(query))
-    seed_user = entity if isinstance(entity, User) else None
-    if seed_user is None:
-        users = getattr(entity, "users", None) or []
-        seed_user = next((u for u in users if isinstance(u, User)), None)
-    if seed_user is None:
-        raise ValueError("это не пользователь — подарки ищутся по людям")
-    if expected_owner is not None and int(seed_user.id) != int(expected_owner):
-        raise ValueError("Имя пользователя больше не принадлежит указанному владельцу")
-
-    queue: deque[tuple[User, int]] = deque([(seed_user, 0)])
-    seen: set[int] = {int(seed_user.id)}
+    run = store.gift_crawl(run_id) if run_id is not None else None
+    if run_id is not None and run is None:
+        raise ValueError("Задание обхода не найдено")
+    seed_user: User | None = None
+    if run is None or not run["initialized"]:
+        entity = await limiter.call(lambda: client.get_entity(query))
+        seed_user = entity if isinstance(entity, User) else None
+        if seed_user is None:
+            users = getattr(entity, "users", None) or []
+            seed_user = next((u for u in users if isinstance(u, User)), None)
+        if seed_user is None:
+            raise ValueError("это не пользователь — подарки ищутся по людям")
+        if expected_owner is not None and int(seed_user.id) != int(expected_owner):
+            raise ValueError("Имя пользователя больше не принадлежит указанному владельцу")
+        if run_id is not None:
+            store.init_gift_crawl(run_id, int(seed_user.id), seed_user.username,
+                                  getattr(seed_user, "access_hash", None), False)
+    queue: deque[tuple[User, int]] = deque([(seed_user, 0)] if seed_user and run_id is None else [])
+    seen: set[int] = {int(seed_user.id)} if seed_user else set()
     results: list[dict[str, Any]] = []
     scanned = gifts_found = new_count = nft_seen = nft_new = errors = 0
     nft_chain = nft_hosted = 0
 
-    while queue and scanned < max_profiles:
-        user, level = queue.popleft()
-        owner_id = int(user.id)
+    while scanned < max_profiles:
+        pending = store.gift_crawl_next(run_id) if run_id is not None else None
+        if run_id is not None:
+            if pending is None:
+                break
+            owner_id = int(pending["tg_id"])
+            level = int(pending["level"])
+            user = seed_user if seed_user is not None and int(seed_user.id) == owner_id else None
+            if user is None and skip_known and store.gift_profile_known(owner_id):
+                # Разворачиваем известные связи даже если профиль больше не разрешается.
+                user = User(id=owner_id, username=pending.get("username"))
+            if user is None:
+                candidates: list[Any] = []
+                if pending.get("username"):
+                    candidates.append(pending["username"])
+                candidates.append(owner_id)
+                if pending.get("access_hash"):
+                    from telethon.tl.types import InputPeerUser
+
+                    candidates.append(InputPeerUser(owner_id, int(pending["access_hash"])))
+                for candidate in candidates:
+                    try:
+                        resolved = await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+                        if isinstance(resolved, User) and int(resolved.id) == owner_id:
+                            user = resolved
+                            break
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("профиль %s недоступен: %s", owner_id, exc)
+            if user is None:
+                store.gift_crawl_finish_item(run_id, owner_id, "unavailable", "Профиль недоступен аккаунту")
+                scanned += 1
+                if reporter:
+                    await reporter({"phase": "профиль недоступен", "done": scanned,
+                                    "total": max_profiles, "found": new_count})
+                continue
+        else:
+            if not queue:
+                break
+            user, level = queue.popleft()
+            owner_id = int(user.id)
         username = user.username
         display = _user_label(user, owner_id)
         if skip_known and not allow_heavy and store.gift_profile_known(owner_id):
@@ -308,6 +356,9 @@ async def crawl_gifts(
             if unlimited_depth or level + 1 < depth:
                 for sender in store.gift_profile_senders(owner_id):
                     sender_id = int(sender["from_tg_id"])
+                    if run_id is not None:
+                        store.gift_crawl_enqueue(run_id, sender_id, level + 1, sender.get("username"))
+                        continue
                     if sender_id in seen:
                         continue
                     seen.add(sender_id)
@@ -321,6 +372,8 @@ async def crawl_gifts(
                             queue.append((entity, level + 1))
                     except Exception as exc:  # noqa: BLE001
                         log.debug("даритель %s недоступен: %s", sender_id, exc)
+            if run_id is not None:
+                store.gift_crawl_finish_item(run_id, owner_id, "done")
             scanned += 1
             results.append({"owner_tg_id": owner_id, "owner_username": username,
                             "owner_name": display, "level": level, "skipped_known": True})
@@ -419,9 +472,14 @@ async def crawl_gifts(
                     nft_chain += 1
                 else:
                     nft_hosted += 1
-                if meta.get("slug"):
-                    store.observe_nft_owner(meta["slug"], owner_id, username, display)
-                # Инвентарь: владелец — тот, в чьём профиле вещь наблюдалась.
+                actual_owner = meta.get("owner_tg_id")
+                if not actual_owner and not meta.get("on_chain") and not meta.get("host_tg_id"):
+                    actual_owner = owner_id
+                if meta.get("slug") and actual_owner:
+                    store.observe_nft_owner(meta["slug"], actual_owner,
+                                            username if actual_owner == owner_id else None,
+                                            display if actual_owner == owner_id else meta.get("owner_name"))
+                # Размещение в профиле не доказывает владение NFT из кошелька.
                 _remember_meta(
                     store,
                     meta,
@@ -450,9 +508,15 @@ async def crawl_gifts(
                         target_pk=target_row["id"] if target_row else None,
                         dedup=f"gift:{owner_id}:{saved_id or gift_id}",
                     )
-            if (unlimited_depth or level + 1 < depth) and sender_id and sender_id not in seen and sender:
-                seen.add(sender_id)
-                queue.append((sender, level + 1))
+            if (unlimited_depth or level + 1 < depth) and sender_id:
+                if run_id is not None:
+                    store.gift_crawl_enqueue(
+                        run_id, sender_id, level + 1,
+                        getattr(sender, "username", None), getattr(sender, "access_hash", None),
+                    )
+                elif sender_id not in seen and sender:
+                    seen.add(sender_id)
+                    queue.append((sender, level + 1))
 
 
         async def process_page(
@@ -491,6 +555,12 @@ async def crawl_gifts(
                 store.finish_gift_snapshot(owner_id, observed_ids)
             store.touch_gifts(owner_id)
 
+        if run_id is not None:
+            if not error and response is not None and not complete:
+                error = "Профиль прочитан не полностью: достигнут лимит или прервана выдача"
+            state_name = "unavailable" if error else ("deferred" if heavy_count is not None else "done")
+            store.gift_crawl_finish_item(run_id, owner_id, state_name, error)
+
         results.append(
             {
                 "owner_tg_id": owner_id,
@@ -521,9 +591,9 @@ async def crawl_gifts(
     return {
         "query": query,
         "seed": {
-            "tg_user_id": int(seed_user.id),
-            "username": seed_user.username,
-            "name": _user_label(seed_user, int(seed_user.id)),
+            "tg_user_id": int(seed_user.id) if seed_user else 0,
+            "username": seed_user.username if seed_user else None,
+            "name": _user_label(seed_user, int(seed_user.id)) if seed_user else query,
         },
         "depth": depth,
         "max_profiles": max_profiles,
@@ -538,7 +608,7 @@ async def crawl_gifts(
         "errors": errors,
         "results": results,
         "summary": summary,
-        "graph": store.gift_graph(seed=int(seed_user.id)),
+        "graph": store.gift_graph(seed=int(seed_user.id)) if seed_user else {"nodes": [], "edges": []},
     }
 
 

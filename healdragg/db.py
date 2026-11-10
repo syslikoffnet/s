@@ -217,6 +217,21 @@ CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
 
 -- Отложенные тяжёлые профили и история наблюдений владельцев NFT.
+-- Очередь обхода сохраняется независимо от процесса и экрана.
+CREATE TABLE IF NOT EXISTS gift_crawl_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
+    depth INTEGER NOT NULL, max_profiles INTEGER NOT NULL, per_profile INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running', initialized INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, error TEXT
+);
+CREATE TABLE IF NOT EXISTS gift_crawl_queue (
+    run_id INTEGER NOT NULL REFERENCES gift_crawl_runs(id) ON DELETE CASCADE,
+    tg_id INTEGER NOT NULL, username TEXT, access_hash INTEGER, level INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending', error TEXT,
+    PRIMARY KEY(run_id, tg_id)
+);
+CREATE INDEX IF NOT EXISTS idx_gift_queue_pending ON gift_crawl_queue(run_id, state, level);
+
 CREATE TABLE IF NOT EXISTS gift_profile_state (
     owner_tg_id INTEGER PRIMARY KEY, completed_at INTEGER NOT NULL
 );
@@ -1234,9 +1249,9 @@ class Store:
                        resell_amount = coalesce(?, resell_amount),
                        availability_issued = coalesce(?, availability_issued),
                        availability_total = coalesce(?, availability_total),
-                       on_chain = max(on_chain, ?),
-                       gift_address = coalesce(?, gift_address),
-                       owner_address = coalesce(?, owner_address),
+                       on_chain = ?,
+                       gift_address = ?,
+                       owner_address = ?,
                        value_usd = coalesce(?, value_usd), burned = max(burned, ?),
                        crafted = coalesce(?, crafted),
                        seen_at = ?, presence = 'visible'
@@ -1312,6 +1327,82 @@ class Store:
                 "ON CONFLICT(owner_tg_id) DO UPDATE SET completed_at = excluded.completed_at",
                 (owner, now_ts()),
             )
+
+    def create_gift_crawl(self, query: str, depth: int, max_profiles: int, per_profile: int) -> int:
+        with self.tx() as conn:
+            cur = conn.execute(
+                "INSERT INTO gift_crawl_runs(query, depth, max_profiles, per_profile, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (query, depth, max_profiles, per_profile, now_ts(), now_ts()),
+            )
+            return int(cur.lastrowid)
+
+    def gift_crawl(self, run_id: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM gift_crawl_runs WHERE id = ?", (run_id,))
+
+    def gift_crawls(self, statuses: tuple[str, ...] = ("running", "paused", "error")) -> list[dict[str, Any]]:
+        marks = ",".join("?" for _ in statuses)
+        return self.query(f"SELECT * FROM gift_crawl_runs WHERE status IN ({marks}) ORDER BY id DESC", statuses)
+
+    def gift_crawl_status(self, run_id: int, status: str, error: str | None = None) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE gift_crawl_runs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
+                         (status, error, now_ts(), run_id))
+
+    def gift_crawl_enqueue(
+        self, run_id: int, tg_id: int, level: int, username: str | None = None,
+        access_hash: int | None = None,
+    ) -> None:
+        if tg_id <= 0:
+            return
+        with self.tx() as conn:
+            conn.execute(
+                """INSERT INTO gift_crawl_queue(run_id, tg_id, username, access_hash, level)
+                   VALUES (?, ?, ?, ?, ?) ON CONFLICT(run_id, tg_id) DO UPDATE SET
+                   username=coalesce(excluded.username, username),
+                   access_hash=coalesce(excluded.access_hash, access_hash),
+                   level=min(level, excluded.level)""",
+                (run_id, tg_id, username, access_hash, level),
+            )
+
+    def init_gift_crawl(self, run_id: int, seed_id: int, username: str | None,
+                        access_hash: int | None, include_existing: bool) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO gift_crawl_queue(run_id, tg_id, username, access_hash, level) VALUES (?, ?, ?, ?, 0)",
+                (run_id, seed_id, username, access_hash),
+            )
+            if include_existing:
+                conn.execute(
+                    """INSERT OR IGNORE INTO gift_crawl_queue(run_id, tg_id, username, level)
+                       SELECT ?, from_tg_id, max(from_username), 1 FROM gifts
+                       WHERE from_tg_id > 0 GROUP BY from_tg_id""", (run_id,),
+                )
+                conn.execute(
+                    """INSERT OR IGNORE INTO gift_crawl_queue(run_id, tg_id, username, level)
+                       SELECT ?, owner_tg_id, max(owner_username), 1 FROM gifts
+                       WHERE owner_tg_id > 0 GROUP BY owner_tg_id""", (run_id,),
+                )
+            conn.execute("UPDATE gift_crawl_runs SET initialized = 1, updated_at = ? WHERE id = ?",
+                         (now_ts(), run_id))
+
+    def gift_crawl_next(self, run_id: int) -> dict[str, Any] | None:
+        return self.query_one(
+            "SELECT * FROM gift_crawl_queue WHERE run_id = ? AND state = 'pending' "
+            "ORDER BY level, rowid LIMIT 1", (run_id,),
+        )
+
+    def gift_crawl_finish_item(self, run_id: int, tg_id: int, state: str, error: str | None = None) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE gift_crawl_queue SET state = ?, error = ? WHERE run_id = ? AND tg_id = ?",
+                         (state, error, run_id, tg_id))
+            conn.execute("UPDATE gift_crawl_runs SET updated_at = ? WHERE id = ?", (now_ts(), run_id))
+
+    def gift_crawl_counts(self, run_id: int) -> dict[str, int]:
+        rows = self.query("SELECT state, COUNT(*) AS n FROM gift_crawl_queue WHERE run_id = ? GROUP BY state", (run_id,))
+        counts = {r["state"]: int(r["n"]) for r in rows}
+        return {"pending": counts.get("pending", 0), "done": counts.get("done", 0),
+                "deferred": counts.get("deferred", 0), "unavailable": counts.get("unavailable", 0),
+                "total": sum(counts.values())}
 
     def gift_profile_known(self, owner: int) -> bool:
         return bool(self.scalar(
@@ -1494,9 +1585,12 @@ class Store:
                     (slug, *columns.values(), now_ts()),
                 )
                 return True
+            authoritative = bool(fields.get("ownership_observed"))
             assignments = ", ".join(
-                (f"{name} = max({name}, ?)" if name in ("on_chain", "burned")
-                 else f"{name} = coalesce(?, {name})")
+                (f"{name} = max({name}, ?)" if name == "burned" or (name == "on_chain" and not authoritative)
+                 else f"{name} = ?" if authoritative and name in (
+                     "on_chain", "gift_address", "owner_address", "owner_tg_id", "owner_username", "owner_name"
+                 ) else f"{name} = coalesce(?, {name})")
                 for name in columns
             )
             conn.execute(

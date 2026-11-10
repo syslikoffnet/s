@@ -349,6 +349,10 @@ class Api(private val baseUrl: String, private val token: String) {
         return data.obj("counts") ?: JSONObject()
     }
 
+    suspend fun giftRuns(): List<JSONObject> = jsonObjects(obj("api/gifts/runs").arr("rows"))
+
+    suspend fun resumeGiftRun(id: Long): Job = Job.from(obj("api/gifts/runs/$id/resume", "POST"))
+
     suspend fun startNftProfiles(limit: Int = 200, depth: Int = 2): Job {
         val body = JSONObject().put("limit", limit).put("depth", depth).put("per_profile", 1000)
         return Job.from(obj("api/gifts/nft/profiles", "POST", body))

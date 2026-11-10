@@ -242,3 +242,60 @@ async def test_whole_network_depth_continues_beyond_eight(setup):
     result = await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=20)
     assert result["profiles"] == 10
     assert len(store.list_gifts(10)) == 1
+
+async def test_persistent_queue_resumes_after_interruption(setup):
+    store, client, pool, settings = setup
+    sender = types.User(id=2, access_hash=9, first_name="Даритель")
+    item = gift(1)
+    item.from_id = types.PeerUser(user_id=2)
+    client.pages[(1, "")] = SimpleNamespace(gifts=[item], users=[sender], count=1, next_offset=None)
+    client.pages[(2, "")] = page([])
+    run_id = store.create_gift_crawl("1", 8, 50, 100)
+
+    async def interrupt(progress):
+        if progress["phase"].startswith("профиль 1"):
+            raise RuntimeError("прерывание")
+
+    with pytest.raises(RuntimeError, match="прерывание"):
+        await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=50,
+                          run_id=run_id, reporter=interrupt, skip_known=True)
+    assert store.gift_crawl_counts(run_id)["pending"] == 1
+    await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=50,
+                      run_id=run_id, skip_known=True)
+    assert store.gift_crawl_counts(run_id)["done"] == 2
+    assert client.calls.count((1, "")) == 1
+
+
+async def test_donor_without_user_object_is_preserved(setup):
+    store, client, pool, settings = setup
+    item = gift(1)
+    item.from_id = types.PeerUser(user_id=2)
+    client.pages[(1, "")] = page([item])
+    client.pages[(2, "")] = page([])
+    run_id = store.create_gift_crawl("1", 8, 50, 100)
+    await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=50, run_id=run_id)
+    assert store.gift_crawl_counts(run_id)["done"] == 2
+
+
+def test_nft_latest_observation_replaces_old_chain_state(store: Store):
+    store.upsert_nft_item("Test-1", on_chain=True, owner_address="wallet", owner_tg_id=5)
+    store.upsert_nft_item("Test-1", on_chain=False, ownership_observed=True, owner_tg_id=6)
+    row = store.nft_items()[0]
+    assert row["on_chain"] == 0
+    assert row["owner_address"] is None
+    assert row["owner_tg_id"] == 6
+
+
+def test_wallet_host_is_not_invented_owner(store: Store):
+    from healdragg.gifts import _remember_meta, _unique_meta
+
+    meta = _unique_meta(SimpleNamespace(
+        slug="Test-9", owner_address="EQwallet", gift_address="EQgift",
+        owner_id=None, host_id=types.PeerUser(user_id=11),
+    ))
+    _remember_meta(store, meta, owner_tg_id=11, owner_username="host", owner_name="Хост")
+    row = store.nft_items()[0]
+    assert row["on_chain"] == 1
+    assert row["owner_tg_id"] is None
+    assert row["owner_username"] is None
+    assert row["owner_address"] == "EQwallet"
