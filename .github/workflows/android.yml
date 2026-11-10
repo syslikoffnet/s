@@ -66,8 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           LOG="$GITHUB_WORKSPACE/gradle-build.log"
-          BODY="$(grep -nE 'What went wrong|FAILURE:|error:|e: |Caused by|Could not|Unresolved' "$LOG" | tail -40 || true)"
-          if [ -z "$BODY" ]; then BODY="$(tail -60 "$LOG" || true)"; fi
+          BODY="$(tail -120 "$LOG" || true)"
           printf 'Сборка APK упала на %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$BODY" > /tmp/comment.md
           gh pr comment 1 --body-file /tmp/comment.md || true
 
