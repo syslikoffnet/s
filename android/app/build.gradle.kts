@@ -47,13 +47,25 @@ android {
         applicationId = "net.syslikoff.healdragg"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "1.1.2"
         resourceConfigurations += listOf("ru", "en")
         buildConfigField("String", "ENGINE_ID", "\"$engineStamp\"")
     }
 
     sourceSets.getByName("main").assets.srcDir(engineAssetsDir)
+
+    // Один ключ на debug и release: обновления ставятся поверх старой версии,
+    // подпись больше не меняется от сборки к сборке.
+    // Ключ только для сайдлоада; для Google Play нужен отдельный.
+    signingConfigs {
+        create("shared") {
+            storeFile = file("../keystore/healdragg.p12")
+            storePassword = "healdragg"
+            keyAlias = "healdragg"
+            keyPassword = "healdragg"
+        }
+    }
 
     buildTypes {
         release {
@@ -62,11 +74,11 @@ android {
             isShrinkResources = true
             isDebuggable = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // подпись debug-ключом, чтобы APK из CI сразу ставился; для стора — свой keystore
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("shared")
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("shared")
         }
     }
 

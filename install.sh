@@ -7,6 +7,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+# --with-bot / --no-bot: ставить ли aiogram (на Termux по умолчанию нет —
+# pydantic-core там собирается из Rust очень долго)
+WITH_BOT="${HEALDRAGG_WITH_BOT:-auto}"
+for arg in "$@"; do
+  case "$arg" in
+    --with-bot) WITH_BOT=1 ;;
+    --no-bot)   WITH_BOT=0 ;;
+  esac
+done
+
 BOLD=$'\033[1m'; DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; CYAN=$'\033[36m'; OFF=$'\033[0m'
 say()  { printf '%s\n' "$*"; }
 ok()   { printf '%s✓%s %s\n' "$GREEN" "$OFF" "$*"; }
@@ -26,18 +36,15 @@ say ""
 if [ "$IS_TERMUX" = "1" ]; then
   say "${CYAN}Termux: обновляю пакеты${OFF}"
   pkg update -y >/dev/null 2>&1 || true
-  # rust/clang нужны, только если pydantic-core придётся собирать из исходников
-  pkg install -y python clang rust binutils libffi openssl libandroid-support \
-                 make pkg-config termux-api >/dev/null 2>&1 || {
+  # панель на starlette: компилятор и Rust больше не нужны
+  pkg install -y python libffi openssl libandroid-support termux-api >/dev/null 2>&1 || {
     warn "часть пакетов не установилась — пробую минимум"
     pkg install -y python >/dev/null
   }
   ok "python $(python -V 2>&1 | awk '{print $2}')"
   command -v termux-wake-lock >/dev/null 2>&1 && ok "termux-api на месте" || warn "termux-api не установлен (уведомления/батарея)"
 
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
   export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
-  export ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-24}"
 else
   command -v python3 >/dev/null 2>&1 || die "нужен python3 ≥ 3.10"
   ok "python $(python3 -V 2>&1 | awk '{print $2}')"
@@ -64,14 +71,20 @@ pip install --upgrade pip wheel setuptools >/dev/null 2>&1 || warn "pip не о�
 say "${CYAN}Ставлю ядро (telethon + rich)${OFF}"
 pip install --no-cache-dir "telethon>=1.36" "rich>=13.9" "python-dotenv>=1.0" || die "ядро не установилось"
 
-say "${CYAN}Ставлю бота и панель (aiogram + fastapi)${OFF}"
-if ! pip install --no-cache-dir "aiogram>=3.20" "fastapi>=0.110" "uvicorn>=0.27"; then
-  warn "pydantic-core не собрался."
-  if [ "$IS_TERMUX" = "1" ]; then
-    warn "Попробуй: pkg install tur-repo && pkg install python-pydantic"
-    warn "или поставь pydantic вручную и повтори: pip install aiogram fastapi uvicorn"
-  fi
-  warn "CLI и TUI работать будут, бот и веб-панель — нет."
+# Панель: starlette + uvicorn — чистый Python, без pydantic-core и Rust.
+say "${CYAN}Ставлю панель (starlette + uvicorn)${OFF}"
+pip install --no-cache-dir "starlette>=0.37" "uvicorn>=0.27" || die "панель не установилась"
+
+WANT_BOT=1
+if [ "$IS_TERMUX" = "1" ]; then WANT_BOT=0; fi
+if [ "$WITH_BOT" = "1" ]; then WANT_BOT=1; fi
+if [ "$WITH_BOT" = "0" ]; then WANT_BOT=0; fi
+if [ "$WANT_BOT" = "1" ]; then
+  say "${CYAN}Ставлю бота (aiogram)${OFF}"
+  pip install --no-cache-dir "aiogram>=3.20" || warn "бот не установился — панель, CLI и TUI работают"
+else
+  warn "бот пропущен: aiogram тянет pydantic-core, на Termux он собирается очень долго"
+  say "${DIM}  включить: bash install.sh --with-bot${OFF}"
 fi
 
 # ── 4. сам пакет ───────────────────────────────────────────────────────────

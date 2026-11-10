@@ -12,13 +12,16 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.routing import Route
 
 from . import __version__
 from .activity import collect_activity
@@ -38,21 +41,6 @@ from .util import Page, fmt_relative, human_size, now_ts
 
 log = logging.getLogger("healdragg.api")
 WEB_DIR = Path(__file__).parent / "web"
-
-
-# ── схемы ──────────────────────────────────────────────────────────────────
-class TargetIn(BaseModel):
-    query: str = Field(min_length=1, max_length=128)
-
-
-class AlertsReadIn(BaseModel):
-    ids: list[int] | None = None
-
-
-class ScanIn(BaseModel):
-    deep: bool = False
-    max_groups: int | None = None
-    sessions: list[str] | None = None
 
 
 @dataclass
@@ -178,12 +166,56 @@ def _groups_payload(
     }
 
 
-def create_app(settings: Settings) -> FastAPI:
+def _q_int(request: Request, name: str, default: int, lo: int, hi: int) -> int:
+    raw = request.query_params.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise HTTPException(400, f"{name}: нужно число") from exc
+    return max(lo, min(hi, value))
+
+
+def _q_bool(request: Request, name: str, default: bool = False) -> bool:
+    raw = request.query_params.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
+async def _body(request: Request) -> dict[str, Any]:
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        data = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, "Некорректный JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Ожидался JSON-объект")
+    return data
+
+
+def _route(fn: Any) -> Any:
+    """JSON-ответ по умолчанию: dict/list → JSONResponse, Response — как есть."""
+
+    @wraps(fn)
+    async def wrapper(request: Request) -> Any:
+        result = await fn(request)
+        if isinstance(result, Response):
+            return result
+        return JSONResponse(result)
+
+    return wrapper
+
+
+def create_app(settings: Settings) -> Starlette:
     token = settings.ensure_api_token()
     state = AppState(settings)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(_: Starlette):
         autopilot_task: asyncio.Task | None = None
         if settings.autopilot_minutes > 0:
             from .autopilot import loop as autopilot_loop
@@ -203,22 +235,7 @@ def create_app(settings: Settings) -> FastAPI:
                     pass
             await state.close()
 
-    app = FastAPI(
-        title="Healdragg",
-        version=__version__,
-        docs_url="/api/docs",
-        openapi_url="/api/openapi.json",
-        lifespan=lifespan,
-    )
-    app.state.hd = state
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    async def guard(request: Request) -> None:
+    def guard(request: Request) -> None:
         supplied = (
             request.headers.get("x-api-token")
             or request.query_params.get("token")
@@ -226,14 +243,14 @@ def create_app(settings: Settings) -> FastAPI:
             or ""
         )
         if not supplied or not hmac.compare_digest(supplied, token):
-            raise HTTPException(status_code=401, detail="Неверный токен")
+            raise HTTPException(401, "Неверный токен")
 
-    @app.get("/api/health")
-    async def health() -> dict[str, Any]:
+    # ── служебное ───────────────────────────────────────────────────────────
+    async def health(_: Request) -> dict[str, Any]:
         return {"ok": True, "version": __version__, "time": now_ts()}
 
-    @app.get("/api/stats", dependencies=[Depends(guard)])
-    async def stats() -> dict[str, Any]:
+    async def stats(request: Request) -> dict[str, Any]:
+        guard(request)
         data = state.store.stats()
         return {
             **data,
@@ -242,8 +259,8 @@ def create_app(settings: Settings) -> FastAPI:
             "counts": state.store.table_counts(),
         }
 
-    @app.get("/api/sessions", dependencies=[Depends(guard)])
-    async def sessions() -> list[dict[str, Any]]:
+    async def sessions(request: Request) -> list[dict[str, Any]]:
+        guard(request)
         return [
             {
                 "name": s["name"],
@@ -256,66 +273,82 @@ def create_app(settings: Settings) -> FastAPI:
             for s in state.store.list_sessions()
         ]
 
-    @app.get("/api/targets", dependencies=[Depends(guard)])
-    async def targets() -> list[dict[str, Any]]:
+    # ── цели ────────────────────────────────────────────────────────────────
+    async def targets(request: Request) -> list[dict[str, Any]]:
+        guard(request)
         return [_target_payload(state.store, t) for t in state.store.list_targets(100)]
 
-    @app.post("/api/targets", dependencies=[Depends(guard)])
-    async def add_target(payload: TargetIn) -> dict[str, Any]:
+    async def add_target(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        query = str(body.get("query") or "").strip()
+        if not 1 <= len(query) <= 128:
+            raise HTTPException(400, "query: от 1 до 128 символов")
         if not state.store.session_names():
             raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
         try:
-            target = await resolve_and_store_target(state.pool, state.store, payload.query)
+            target = await resolve_and_store_target(state.pool, state.store, query)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, f"Не удалось найти аккаунт: {exc}") from exc
         return _target_payload(state.store, target)
 
-    @app.get("/api/targets/{tg_id}", dependencies=[Depends(guard)])
-    async def get_target(tg_id: int) -> dict[str, Any]:
-        target = state.store.get_target(tg_id)
+    async def get_target(request: Request) -> dict[str, Any]:
+        guard(request)
+        target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
         return _target_payload(state.store, target)
 
-    @app.delete("/api/targets/{tg_id}", dependencies=[Depends(guard)])
-    async def delete_target(tg_id: int) -> dict[str, Any]:
-        state.store.delete_target(tg_id)
+    async def delete_target(request: Request) -> dict[str, Any]:
+        guard(request)
+        state.store.delete_target(request.path_params["tg_id"])
         return {"ok": True}
 
-    @app.get("/api/targets/{tg_id}/groups", dependencies=[Depends(guard)])
-    async def target_groups(
-        tg_id: int,
-        page: int = Query(1, ge=1),
-        size: int = Query(15, ge=1, le=100),
-        order: str = Query("last", pattern="^(last|members|title|found)$"),
-    ) -> dict[str, Any]:
-        target = state.store.get_target(tg_id)
+    async def target_groups(request: Request) -> dict[str, Any]:
+        guard(request)
+        target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
-        return _groups_payload(state.store, target, page=page, size=size, order=order)
+        order = request.query_params.get("order") or "last"
+        if order not in {"last", "members", "title", "found"}:
+            order = "last"
+        return _groups_payload(
+            state.store,
+            target,
+            page=_q_int(request, "page", 1, 1, 10_000),
+            size=_q_int(request, "size", 15, 1, 100),
+            order=order,
+        )
 
-    @app.get("/api/alerts", dependencies=[Depends(guard)])
-    async def alerts(limit: int = Query(50, ge=1, le=200), unread: bool = False) -> dict[str, Any]:
+    # ── алерты ──────────────────────────────────────────────────────────────
+    async def alerts(request: Request) -> dict[str, Any]:
+        guard(request)
         return {
-            "rows": state.store.list_alerts(limit=limit, unread_only=unread),
+            "rows": state.store.list_alerts(
+                limit=_q_int(request, "limit", 50, 1, 200),
+                unread_only=_q_bool(request, "unread"),
+            ),
             "unread": state.store.count_alerts(),
         }
 
-    @app.post("/api/alerts/read", dependencies=[Depends(guard)])
-    async def alerts_read(payload: AlertsReadIn | None = None) -> dict[str, Any]:
-        changed = state.store.mark_alerts_read((payload or AlertsReadIn()).ids)
+    async def alerts_read(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        ids = body.get("ids")
+        if ids is not None and not (isinstance(ids, list) and all(isinstance(i, int) for i in ids)):
+            raise HTTPException(400, "ids: список чисел")
+        changed = state.store.mark_alerts_read(ids)
         return {"ok": True, "changed": changed, "unread": state.store.count_alerts()}
 
-    @app.get("/api/targets/{tg_id}/links", dependencies=[Depends(guard)])
-    async def target_links(
-        tg_id: int,
-        limit: int = Query(100, ge=1, le=500),
-        offset: int = Query(0, ge=0),
-    ) -> dict[str, Any]:
-        target = state.store.get_target(tg_id)
+    # ── ссылки / граф / активность ──────────────────────────────────────────
+    async def target_links(request: Request) -> dict[str, Any]:
+        guard(request)
+        target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
         rows = state.store.all_target_groups(int(target["id"]))
+        offset = _q_int(request, "offset", 0, 0, 1_000_000)
+        limit = _q_int(request, "limit", 100, 1, 500)
         chunk = rows[offset : offset + limit]
         return {
             "total": len(rows),
@@ -333,32 +366,35 @@ def create_app(settings: Settings) -> FastAPI:
             ],
         }
 
-    @app.get("/api/targets/{tg_id}/graph", dependencies=[Depends(guard)])
-    async def target_graph(tg_id: int, max_peers: int = Query(200, ge=10, le=500)) -> dict[str, Any]:
-        target = state.store.get_target(tg_id)
+    async def target_graph(request: Request) -> dict[str, Any]:
+        guard(request)
+        target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
-        return build_graph(state.store, int(target["id"]), max_peers=max_peers)
+        return build_graph(
+            state.store,
+            int(target["id"]),
+            max_peers=_q_int(request, "max_peers", 200, 10, 500),
+        )
 
-    @app.get("/api/targets/{tg_id}/activity", dependencies=[Depends(guard)])
-    async def target_activity(tg_id: int, limit: int = Query(60, ge=1, le=300)) -> dict[str, Any]:
-        target = state.store.get_target(tg_id)
+    async def target_activity(request: Request) -> dict[str, Any]:
+        guard(request)
+        target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
         target_pk = int(target["id"])
         return {
             "stats": state.store.activity_stats(target_pk),
-            "rows": state.store.activity_feed(target_pk, limit=limit),
+            "rows": state.store.activity_feed(
+                target_pk, limit=_q_int(request, "limit", 60, 1, 300)
+            ),
             "edges": state.store.target_edges(target_pk, limit=50),
         }
 
-    @app.post("/api/targets/{tg_id}/activity/collect", dependencies=[Depends(guard)])
-    async def collect_target_activity(
-        tg_id: int,
-        days: int = Query(30, ge=1, le=365),
-        per_chat: int = Query(40, ge=1, le=200),
-        max_chats: int = Query(80, ge=1, le=500),
-    ) -> dict[str, Any]:
+    # ── фоновые задачи ──────────────────────────────────────────────────────
+    async def collect_target_activity(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = request.path_params["tg_id"]
         target = state.store.get_target(tg_id)
         if not target:
             raise HTTPException(404, "Цель не найдена")
@@ -381,9 +417,9 @@ def create_app(settings: Settings) -> FastAPI:
                     state.store,
                     settings,
                     target,
-                    days=days,
-                    per_chat=per_chat,
-                    max_chats=max_chats,
+                    days=_q_int(request, "days", 30, 1, 365),
+                    per_chat=_q_int(request, "per_chat", settings.activity_per_chat, 1, 200),
+                    max_chats=_q_int(request, "max_chats", settings.activity_max_chats, 1, 500),
                     reporter=on_progress,
                 )
                 job.state = {**job.state, "phase": "готово"}
@@ -399,8 +435,9 @@ def create_app(settings: Settings) -> FastAPI:
         job.task = asyncio.create_task(runner(), name=key)
         return job.as_dict()
 
-    @app.post("/api/targets/{tg_id}/scan", dependencies=[Depends(guard)])
-    async def start_scan(tg_id: int, payload: ScanIn | None = None) -> dict[str, Any]:
+    async def start_scan(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = request.path_params["tg_id"]
         target = state.store.get_target(tg_id)
         if not target:
             raise HTTPException(404, "Цель не найдена")
@@ -409,7 +446,15 @@ def create_app(settings: Settings) -> FastAPI:
         key = f"scan:{tg_id}"
         if state.running(key):
             raise HTTPException(409, "Скан уже идёт")
-        payload = payload or ScanIn()
+        body = await _body(request)
+        deep = bool(body.get("deep", False))
+        max_groups = body.get("max_groups")
+        if max_groups is not None and not isinstance(max_groups, int):
+            max_groups = None
+        sessions_in = body.get("sessions")
+        if not (isinstance(sessions_in, list) and all(isinstance(s, str) for s in sessions_in)):
+            sessions_in = None
+
         job = Job(key=key, kind="scan", target_id=tg_id)
         job.state = {"phase": "старт", "done": 0, "total": 0, "found": 0}
         state.jobs[key] = job
@@ -424,9 +469,9 @@ def create_app(settings: Settings) -> FastAPI:
                     state.store,
                     settings,
                     target,
-                    sessions=payload.sessions,
-                    max_groups=payload.max_groups,
-                    deep=payload.deep,
+                    sessions=sessions_in,
+                    max_groups=max_groups,
+                    deep=deep,
                     reporter=on_progress,
                 )
                 job.state = {**job.state, "phase": "готово"}
@@ -442,15 +487,12 @@ def create_app(settings: Settings) -> FastAPI:
         job.task = asyncio.create_task(runner(), name=key)
         return job.as_dict()
 
-    @app.get("/api/catalog", dependencies=[Depends(guard)])
-    async def catalog(
-        page: int = Query(1, ge=1),
-        size: int = Query(20, ge=1, le=100),
-        q: str | None = None,
-    ) -> dict[str, Any]:
+    async def catalog(request: Request) -> dict[str, Any]:
+        guard(request)
+        q = request.query_params.get("q") or None
         total = state.store.count_groups(q)
-        pg = Page.build(total, page, size)
-        rows = state.store.list_groups(page=pg.page, size=size, query=q)
+        pg = Page.build(total, _q_int(request, "page", 1, 1, 10_000), _q_int(request, "size", 20, 1, 100))
+        rows = state.store.list_groups(page=pg.page, size=pg.size, query=q)
         return {
             "total": total,
             "page": pg.page,
@@ -459,25 +501,29 @@ def create_app(settings: Settings) -> FastAPI:
             "text": render_catalog(rows, page=pg),
         }
 
-    @app.get("/api/find", dependencies=[Depends(guard)])
-    async def find(q: str = Query(min_length=1)) -> dict[str, Any]:
+    async def find(request: Request) -> dict[str, Any]:
+        guard(request)
+        q = (request.query_params.get("q") or "").strip()
+        if not q:
+            raise HTTPException(400, "q: пустой запрос")
         rows = state.store.search_groups(q, limit=25)
         return {"query": q, "rows": rows, "total": len(rows)}
 
-    @app.get("/api/jobs", dependencies=[Depends(guard)])
-    async def jobs() -> list[dict[str, Any]]:
+    async def jobs(request: Request) -> list[dict[str, Any]]:
+        guard(request)
         return [job.as_dict() for job in state.jobs.values()]
 
-    @app.post("/api/jobs/{key}/cancel", dependencies=[Depends(guard)])
-    async def cancel(key: str) -> dict[str, Any]:
-        return {"ok": await state.cancel(key)}
+    async def cancel(request: Request) -> dict[str, Any]:
+        guard(request)
+        return {"ok": await state.cancel(str(request.path_params["key"]))}
 
-    @app.post("/api/bootstrap", dependencies=[Depends(guard)])
-    async def start_bootstrap(join: bool = False) -> dict[str, Any]:
+    async def start_bootstrap(request: Request) -> dict[str, Any]:
+        guard(request)
         if not state.store.session_names():
             raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
         if state.running("boot"):
             raise HTTPException(409, "Сбор уже идёт")
+        join = _q_bool(request, "join")
         job = Job(key="boot", kind="bootstrap")
         job.state = {"phase": "старт", "done": 0, "total": 0, "found": 0}
         state.jobs["boot"] = job
@@ -508,40 +554,34 @@ def create_app(settings: Settings) -> FastAPI:
         job.task = asyncio.create_task(runner(), name="boot")
         return job.as_dict()
 
-    @app.get("/api/export/{tg_id}", dependencies=[Depends(guard)])
-    async def export(tg_id: int) -> JSONResponse:
-        target = state.store.get_target(tg_id)
+    async def export(request: Request) -> JSONResponse:
+        guard(request)
+        target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
         return JSONResponse(state.store.export_target(int(target["id"])))
 
     # ── веб-панель ─────────────────────────────────────────────────────────
-    @app.get("/", include_in_schema=False)
-    async def index() -> FileResponse:
+    async def index(_: Request) -> FileResponse:
         return FileResponse(WEB_DIR / "index.html")
 
-    @app.get("/manifest.webmanifest", include_in_schema=False)
-    async def manifest() -> JSONResponse:
+    async def manifest(_: Request) -> JSONResponse:
         return JSONResponse(
             {
                 "name": "Healdragg",
                 "short_name": "Healdragg",
                 "start_url": "/",
                 "display": "standalone",
-                "background_color": "#12121a",
-                "theme_color": "#bd93f9",
+                "background_color": "#05070d",
+                "theme_color": "#05070d",
                 "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}],
             }
         )
 
-    @app.get("/graph.js", include_in_schema=False)
-    async def graph_js() -> FileResponse:
+    async def graph_js(_: Request) -> FileResponse:
         return FileResponse(WEB_DIR / "graph.js", media_type="application/javascript")
 
-    @app.get("/icon.svg", include_in_schema=False)
-    async def icon() -> Any:
-        from fastapi.responses import Response
-
+    async def icon(_: Request) -> Response:
         svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
             '<rect width="64" height="64" rx="16" fill="#12121a"/>'
@@ -549,6 +589,62 @@ def create_app(settings: Settings) -> FastAPI:
         )
         return Response(svg, media_type="image/svg+xml")
 
+    async def docs(_: Request) -> Response:
+        rows = sorted(
+            (
+                (", ".join(sorted(route.methods or [])), route.path)
+                for route in ROUTES
+                if route.path.startswith("/api")
+            ),
+            key=lambda r: (r[1], r[0]),
+        )
+        body = "".join(f"<tr><td>{m}</td><td><code>{p}</code></td></tr>" for m, p in rows)
+        html = (
+            "<!doctype html><meta charset=utf-8><title>Healdragg API</title>"
+            "<style>body{background:#05070d;color:#e8f0ff;font:14px ui-monospace,monospace;padding:24px}"
+            "td{padding:4px 12px;border-bottom:1px solid #1d2b44}code{color:#22d3ee}</style>"
+            "<h2>Healdragg API</h2><p>Токен: <code>X-Api-Token</code> или <code>?token=</code></p>"
+            f"<table>{body}</table>"
+        )
+        return Response(html, media_type="text/html")
+
+    ROUTES = [
+        Route("/api/health", _route(health)),
+        Route("/api/stats", _route(stats)),
+        Route("/api/sessions", _route(sessions)),
+        Route("/api/targets", _route(targets), methods=["GET"]),
+        Route("/api/targets", _route(add_target), methods=["POST"]),
+        Route("/api/targets/{tg_id:int}", _route(get_target), methods=["GET"]),
+        Route("/api/targets/{tg_id:int}", _route(delete_target), methods=["DELETE"]),
+        Route("/api/targets/{tg_id:int}/groups", _route(target_groups)),
+        Route("/api/targets/{tg_id:int}/links", _route(target_links)),
+        Route("/api/targets/{tg_id:int}/graph", _route(target_graph)),
+        Route("/api/targets/{tg_id:int}/activity", _route(target_activity)),
+        Route("/api/targets/{tg_id:int}/activity/collect", _route(collect_target_activity), methods=["POST"]),
+        Route("/api/targets/{tg_id:int}/scan", _route(start_scan), methods=["POST"]),
+        Route("/api/alerts", _route(alerts)),
+        Route("/api/alerts/read", _route(alerts_read), methods=["POST"]),
+        Route("/api/catalog", _route(catalog)),
+        Route("/api/find", _route(find)),
+        Route("/api/jobs", _route(jobs)),
+        Route("/api/jobs/{key}/cancel", _route(cancel), methods=["POST"]),
+        Route("/api/bootstrap", _route(start_bootstrap), methods=["POST"]),
+        Route("/api/export/{tg_id:int}", _route(export)),
+        Route("/api/docs", _route(docs)),
+        Route("/", _route(index)),
+        Route("/manifest.webmanifest", _route(manifest)),
+        Route("/graph.js", _route(graph_js)),
+        Route("/icon.svg", _route(icon)),
+    ]
+
+    app = Starlette(routes=ROUTES, lifespan=lifespan)
+    app.state.hd = state
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     return app
 
 

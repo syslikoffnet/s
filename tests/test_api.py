@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from healdragg.api import create_app
 from healdragg.config import Settings
@@ -160,3 +160,12 @@ def test_web_panel_markup(client: TestClient) -> None:
     for marker in ('id="linksMore"', 'class="tabbar"', 'name="theme-color"', 'id="tabBell"'):
         assert marker in html
     assert "github.com/syslikoffnet/s.git" not in html
+
+
+def test_api_has_no_pydantic() -> None:
+    """Панель должна ставиться на Termux без сборки pydantic-core."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "healdragg" / "api.py").read_text()
+    for banned in ("fastapi", "pydantic"):
+        assert banned not in source.lower()
