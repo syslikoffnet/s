@@ -85,8 +85,14 @@ android {
 chaquopy {
     defaultConfig {
         version = "3.13"
+        // .pyc обязателен: исходники .py в APK не попадают
+        pyc {
+            src = true
+        }
         pip {
             // весь стек — чистый Python, без нативных сборок
+            // pyaes выходит только исходниками, поэтому лежит готовым wheel'ом
+            install("wheels/pyaes-1.6.1-py3-none-any.whl")
             install("telethon>=1.36,<2")
             install("starlette>=0.37")
             install("uvicorn>=0.27")
