@@ -57,41 +57,6 @@ jobs:
           gradle assembleDebug assembleRelease --no-daemon --stacktrace --console=plain \
             2>&1 | tee "$GITHUB_WORKSPACE/gradle-build.log"
 
-      # Логи Actions недоступны снаружи, поэтому при падении сборки кладём
-      # хвост вывода в комментарий PR — так ошибку видно и без скачивания логов.
-      - name: Отчёт об ошибке сборки
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          LOG="$GITHUB_WORKSPACE/gradle-build.log"
-          BODY="$(awk '/ERROR: Cannot install|^e: |What went wrong/{f=1} f' "$LOG" | head -80 || true)"
-          if [ -z "$BODY" ]; then BODY="$(tail -80 "$LOG" || true)"; fi
-          printf 'Сборка APK упала на %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$BODY" > /tmp/comment.md
-          gh pr comment 1 --body-file /tmp/comment.md || true
-
-      # Проверяем, что в APK лежит именно байткод движка, а исходники .py — нет
-      - name: Проверка содержимого APK
-        run: |
-          set -euo pipefail
-          APK=android/app/build/outputs/apk/release/app-release.apk
-          ls -lh "$APK"
-          python3 - "$APK" <<'PY'
-          import sys, zipfile
-
-          apk = sys.argv[1]
-          names = zipfile.ZipFile(apk).namelist()
-          pyc = [n for n in names if n.endswith(".pyc")]
-          py = [n for n in names if n.endswith(".py") and "chaquopy" in n]
-          print(f"python: {len(pyc)} .pyc, {len(py)} .py")
-          if py:
-              print("\n".join(py[:10]))
-              raise SystemExit("в APK попали .py исходники движка")
-          if not pyc:
-              raise SystemExit("в APK нет .pyc движка")
-          PY
-
       - name: Локальные артефакты
         run: |
           mkdir -p artifacts
@@ -106,6 +71,36 @@ jobs:
           path: artifacts/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      # Проверяем, что в APK лежит именно байткод движка, а исходники .py — нет.
+      # Chaquopy кладёт python-код в assets/chaquopy/*.zip, поэтому смотрим внутрь.
+      - name: Проверка содержимого APK
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          ls -lh "$APK"
+          python3 - "$APK" 2>&1 <<'PY' | tee /tmp/apk-check.txt
+          import io, sys, zipfile
+
+          apk = sys.argv[1]
+          root = zipfile.ZipFile(apk)
+          names = root.namelist()
+          pyc = [n for n in names if n.endswith(".pyc")]
+          py = [n for n in names if n.endswith(".py")]
+          zips = [n for n in names if n.startswith("assets/chaquopy/") and n.endswith(".zip")]
+          for name in zips:
+              inner = zipfile.ZipFile(io.BytesIO(root.read(name)))
+              pyc += [n for n in inner.namelist() if n.endswith(".pyc")]
+              py += [n for n in inner.namelist() if n.endswith(".py")]
+          engine_py = [n for n in py if "healdragg" in n]
+          print("chaquopy zips:", zips)
+          print(f"python: {len(pyc)} .pyc, {len(py)} .py, движок .py: {len(engine_py)}")
+          if engine_py:
+              print("\n".join(engine_py[:10]))
+              raise SystemExit("в APK попали .py исходники движка")
+          if not pyc:
+              raise SystemExit("в APK нет .pyc движка")
+          PY
 
       - name: Приложить к релизу
         if: github.event_name == 'release'
@@ -128,3 +123,18 @@ jobs:
           else
             echo "Релиз $TAG ещё не создан — пропускаю"
           fi
+
+      # Логи Actions недоступны снаружи, поэтому при падении сборки кладём
+      # хвост вывода в комментарий PR — так ошибку видно и без скачивания логов.
+      - name: Отчёт об ошибке сборки
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LOG="$GITHUB_WORKSPACE/gradle-build.log"
+          BODY="$(awk '/ERROR: Cannot install|^e: |What went wrong/{f=1} f' "$LOG" | head -60 || true)"
+          if [ -f /tmp/apk-check.txt ]; then BODY="$BODY\n\n$(tail -20 /tmp/apk-check.txt)"; fi
+          if [ -z "$BODY" ]; then BODY="$(tail -80 "$LOG" || true)"; fi
+          printf 'Сборка APK упала на %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$BODY" > /tmp/comment.md
+          gh pr comment 1 --body-file /tmp/comment.md || true
