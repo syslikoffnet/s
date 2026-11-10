@@ -161,7 +161,7 @@ data class Chat(
             members = o.int("members_count"),
             messagesTotal = o.int("messages_total"),
             lastMessageAt = o.num("last_message_at"),
-            source = o.str("source"),
+            source = o.str("source") ?: o.str("discovered_from"),
         )
     }
 }
@@ -324,6 +324,7 @@ data class Job(
     val error: String?,
     val progress: String?,
     val targetId: Long,
+    val state: JSONObject? = null,
 ) {
     val percent: Float
         get() = if (total <= 0) 0f else (done.toFloat() / total).coerceIn(0f, 1f)
@@ -342,6 +343,7 @@ data class Job(
                 error = o.str("error"),
                 progress = o.str("progress"),
                 targetId = o.num("target_id"),
+                state = state,
             )
         }
     }
@@ -487,3 +489,93 @@ data class GiftPage(
 )
 
 data class PhotoData(val base64: String, val updatedAt: Long)
+
+/** Разбор вставленного списка ссылок — без похода в Telegram. */
+data class ImportItem(
+    val raw: String,
+    val kind: String,
+    val value: String,
+    val link: String?,
+)
+
+data class ImportIssue(val raw: String, val reason: String?)
+
+data class ImportStats(
+    val total: Int = 0,
+    val valid: Int = 0,
+    val invalid: Int = 0,
+    val duplicates: Int = 0,
+    val invalidPercent: Double = 0.0,
+    val usernames: Int = 0,
+    val invites: Int = 0,
+    val ids: Int = 0,
+)
+
+data class ImportPreview(
+    val items: List<ImportItem>,
+    val invalid: List<ImportIssue>,
+    val stats: ImportStats,
+    val sessions: List<String>,
+)
+
+fun importStatsFrom(o: JSONObject?): ImportStats = if (o == null) ImportStats() else ImportStats(
+    total = o.int("total"),
+    valid = o.int("valid"),
+    invalid = o.int("invalid"),
+    duplicates = o.int("duplicates"),
+    invalidPercent = o.dbl("invalid_percent"),
+    usernames = o.int("usernames"),
+    invites = o.int("invites"),
+    ids = o.int("ids"),
+)
+
+/** Итог импорта: сводка и построчные статусы из состояния job. */
+data class ImportOutcome(
+    val added: Int,
+    val existing: Int,
+    val joined: Int,
+    val requested: Int,
+    val needJoin: Int,
+    val private: Int,
+    val channels: Int,
+    val groups: Int,
+    val invalid: Int,
+    val errors: Int,
+    val invalidPercent: Double,
+    val rows: List<ImportRow>,
+)
+
+data class ImportRow(
+    val raw: String,
+    val status: String,
+    val title: String?,
+    val username: String?,
+    val reason: String?,
+)
+
+fun importOutcomeFrom(state: JSONObject?): ImportOutcome? {
+    val summary = state?.obj("summary") ?: return null
+    val rows = jsonObjects(state.arr("rows")).map {
+        ImportRow(
+            raw = it.str("raw").orEmpty(),
+            status = it.str("status").orEmpty(),
+            title = it.str("title"),
+            username = it.str("username"),
+            reason = it.str("reason"),
+        )
+    }
+    return ImportOutcome(
+        added = summary.int("added"),
+        existing = summary.int("existing"),
+        joined = summary.int("joined"),
+        requested = summary.int("requested"),
+        needJoin = summary.int("need_join"),
+        private = summary.int("private"),
+        channels = summary.int("channels"),
+        groups = summary.int("groups"),
+        invalid = summary.int("invalid"),
+        errors = summary.int("errors"),
+        invalidPercent = summary.dbl("invalid_percent"),
+        rows = rows,
+    )
+}

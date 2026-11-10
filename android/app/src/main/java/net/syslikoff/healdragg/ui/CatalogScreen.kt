@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -18,17 +19,27 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -79,6 +90,10 @@ fun CatalogScreen(
     var loadingMore by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var adding by remember { mutableStateOf<Long?>(null) }
+    var showImport by rememberSaveable { mutableStateOf(false) }
+    var editChat by remember { mutableStateOf<Chat?>(null) }
+    var deleteChat by remember { mutableStateOf<Chat?>(null) }
+    var editBusy by remember { mutableStateOf(false) }
 
     suspend fun load(pageToLoad: Int, reset: Boolean) {
         val client = api ?: return
@@ -133,6 +148,68 @@ fun CatalogScreen(
         }
     }
 
+    if (showImport) {
+        ManualImportDialog(
+            vm = vm,
+            onDismiss = { showImport = false },
+            onImported = {
+                scope.launch {
+                    load(1, reset = true)
+                    onToast("База обновлена")
+                }
+            },
+            onToast = onToast,
+        )
+    }
+
+    editChat?.let { chat ->
+        CatalogEditDialog(
+            chat = chat,
+            busy = editBusy,
+            onDismiss = { if (!editBusy) editChat = null },
+            onSave = { title, username ->
+                editBusy = true
+                vm.updateGroup(chat.tgId, title, username) { result ->
+                    editBusy = false
+                    result.onSuccess {
+                        editChat = null
+                        onToast("Карточка обновлена")
+                        scope.launch { load(1, reset = true) }
+                    }.onFailure { onToast(it.message ?: "Не удалось сохранить") }
+                }
+            },
+        )
+    }
+
+    deleteChat?.let { chat ->
+        AlertDialog(
+            onDismissRequest = { deleteChat = null },
+            title = { Text("Удалить чат из базы?") },
+            text = {
+                Text(
+                    "«${chat.title}» исчезнет из каталога вместе с отметками, кто в нём состоит. " +
+                        "Сам чат в Telegram останется.",
+                    color = Hd.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteChat = null
+                    vm.deleteGroup(chat.tgId) { result ->
+                        result.onSuccess {
+                            onToast("Чат удалён из базы")
+                            scope.launch { load(1, reset = true) }
+                        }.onFailure { onToast(it.message ?: "Не удалось удалить") }
+                    }
+                }) { Text("Удалить", color = Hd.Bad) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteChat = null }) { Text("Отмена", color = Hd.Muted) }
+            },
+        )
+    }
+
     RefreshableBox(
         refreshing = loading && rows.isNotEmpty(),
         onRefresh = { scope.launch { load(1, reset = true) } },
@@ -176,6 +253,22 @@ fun CatalogScreen(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { showImport = true },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, tint = Hd.Accent2)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "Добавить вручную",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
             }
 
             if (vm.bootRunning) {
@@ -312,6 +405,8 @@ fun CatalogScreen(
                         }
                     },
                     onTarget = { makeTarget(chat) },
+                    onEdit = { editChat = chat },
+                    onDelete = { deleteChat = chat },
                 )
             }
 
@@ -337,7 +432,10 @@ private fun CatalogCard(
     onOpen: () -> Unit,
     onCopy: () -> Unit,
     onTarget: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    var menu by remember { mutableStateOf(false) }
     HdCard(onClick = onOpen, onLongClick = onCopy, contentPadding = PaddingValues(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -362,6 +460,13 @@ private fun CatalogCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (chat.source == "manual") {
+                    Text(
+                        "добавлен вручную",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Accent,
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         chat.username?.let { "@$it" } ?: "ID ${chat.tgId}",
@@ -380,6 +485,36 @@ private fun CatalogCard(
                     }
                 }
             }
+            Box {
+                IconButton(
+                    onClick = { menu = true },
+                    modifier = Modifier.semantics { contentDescription = "Действия с чатом" },
+                ) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = null, tint = Hd.Muted)
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Переименовать", color = Hd.Text) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Edit, contentDescription = null, tint = Hd.Muted)
+                        },
+                        onClick = {
+                            menu = false
+                            onEdit()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Удалить из базы", color = Hd.Bad) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Delete, contentDescription = null, tint = Hd.Bad)
+                        },
+                        onClick = {
+                            menu = false
+                            onDelete()
+                        },
+                    )
+                }
+            }
             if (adding) {
                 CircularProgressIndicator(
                     color = Hd.Accent,
@@ -396,4 +531,58 @@ private fun CatalogCard(
             }
         }
     }
+}
+
+/** Правка карточки чата: название и публичный @username. */
+@Composable
+private fun CatalogEditDialog(
+    chat: Chat,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (String, String) -> Unit,
+) {
+    var title by remember(chat.tgId) { mutableStateOf(chat.title) }
+    var username by remember(chat.tgId) { mutableStateOf(chat.username.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Карточка чата") },
+        text = {
+            Column {
+                Text(
+                    "ID ${chat.tgId} · ${chat.kind ?: "чат"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                )
+                Spacer(Modifier.height(10.dp))
+                HdTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = "Название",
+                    singleLine = true,
+                )
+                Spacer(Modifier.height(8.dp))
+                HdTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = "Публичный @username",
+                    hint = "оставь пустым для закрытого чата",
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(title.trim(), username.trim()) },
+                enabled = !busy && title.isNotBlank(),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Hd.Accent,
+                    contentColor = Hd.Black,
+                ),
+            ) { Text(if (busy) "Сохраняю…" else "Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Отмена", color = Hd.Muted) }
+        },
+    )
 }

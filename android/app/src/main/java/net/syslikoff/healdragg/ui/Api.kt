@@ -165,6 +165,53 @@ class Api(private val baseUrl: String, private val token: String) {
         return Job.from(obj("api/gifts/crawl", "POST", body))
     }
 
+    // ── ручное пополнение базы ──────────────────────────────────────────────
+
+    suspend fun parseImport(text: String): ImportPreview {
+        val data = obj("api/catalog/parse", "POST", JSONObject().put("text", text))
+        val items = jsonObjects(data.arr("items")).map {
+            ImportItem(
+                raw = it.str("raw").orEmpty(),
+                kind = it.str("kind").orEmpty(),
+                value = it.str("value").orEmpty(),
+                link = it.str("link"),
+            )
+        }
+        val invalid = jsonObjects(data.arr("invalid")).map {
+            ImportIssue(raw = it.str("raw").orEmpty(), reason = it.str("reason"))
+        }
+        val sessions = buildList {
+            val arr = data.arr("sessions")
+            for (index in 0 until arr.length()) add(arr.optString(index))
+        }
+        return ImportPreview(
+            items = items,
+            invalid = invalid,
+            stats = importStatsFrom(data.obj("stats")),
+            sessions = sessions.filter { it.isNotBlank() },
+        )
+    }
+
+    suspend fun importGroups(text: String, join: Boolean, archive: Boolean): Job {
+        val body = JSONObject()
+            .put("text", text)
+            .put("join", join)
+            .put("archive", archive)
+        return Job.from(obj("api/catalog/import", "POST", body))
+    }
+
+    suspend fun updateGroup(tgId: Long, title: String?, username: String?): Chat {
+        val body = JSONObject()
+        if (title != null) body.put("title", title)
+        if (username != null) body.put("username", username)
+        val data = obj("api/catalog/$tgId/edit", "POST", body)
+        return Chat.from(data.obj("group") ?: data)
+    }
+
+    suspend fun deleteGroup(tgId: Long) {
+        obj("api/catalog/$tgId", "DELETE", null)
+    }
+
     suspend fun find(query: String): List<Chat> {
         val data = obj("api/find?q=${URLEncoder.encode(query, "UTF-8")}")
         val rows = data.arr("rows")

@@ -31,6 +31,7 @@ from .gifts import crawl_gifts
 from .graph import build_graph
 from .intel import guess
 from .login import LoginError, LoginManager
+from .manual import import_groups, parse_batch
 from .profile import photo_base64, refresh_profile
 from .scan import bootstrap, resolve_and_store_target, scan_target
 from .textfmt import (
@@ -692,6 +693,117 @@ def create_app(settings: Settings) -> Starlette:
             "text": render_catalog(rows, page=pg),
         }
 
+    async def catalog_parse(request: Request) -> dict[str, Any]:
+        """Локальный разбор вставленного списка: без Telegram и без записи в базу."""
+        guard(request)
+        body = await _body(request)
+        text = str(body.get("text") or "")
+        if not text.strip():
+            raise HTTPException(400, "text: вставь ссылки или @username")
+        if len(text) > 200_000:
+            raise HTTPException(400, "Слишком большой список: максимум 200 000 символов")
+        payload = parse_batch(text)
+        payload["sessions"] = state.store.session_names()
+        return payload
+
+    async def catalog_import(request: Request) -> dict[str, Any]:
+        """Проверяет список через Telegram и добавляет чаты в базу (job)."""
+        guard(request)
+        body = await _body(request)
+        text = str(body.get("text") or "")
+        if not text.strip():
+            raise HTTPException(400, "text: вставь ссылки или @username")
+        preview = parse_batch(text)
+        if not preview["items"]:
+            raise HTTPException(400, "В списке нет валидных чатов — проверь ссылки")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+        if state.running("import"):
+            raise HTTPException(409, "Импорт уже идёт — дождись окончания")
+        join = bool(body.get("join", False))
+        archive = bool(body.get("archive", True))
+        session = body.get("session") if isinstance(body.get("session"), str) else None
+
+        job = Job(key="import", kind="import")
+        job.state = {
+            "phase": "старт",
+            "done": 0,
+            "total": len(preview["items"]),
+            "found": 0,
+            "preview": preview["stats"],
+        }
+        state.jobs["import"] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = {**job.state, **progress}
+
+        async def runner() -> None:
+            try:
+                result = await import_groups(
+                    state.pool,
+                    state.store,
+                    text,
+                    session=session,
+                    join=join,
+                    archive=archive,
+                    reporter=on_progress,
+                )
+                job.state = {
+                    **job.state,
+                    "phase": "готово",
+                    "done": len(preview["items"]),
+                    "found": result["stats"]["added"],
+                    "summary": result["stats"],
+                    "rows": result["rows"],
+                }
+            except asyncio.CancelledError:
+                job.state = {**job.state, "phase": "отменено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("api manual import failed")
+                job.error = str(exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name="import")
+        return job.as_dict()
+
+    async def catalog_update(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = int(request.path_params["tg_id"])
+        row = state.store.get_group(tg_id)
+        if not row:
+            raise HTTPException(404, "Чат не найден в базе")
+        body = await _body(request)
+        title = body.get("title")
+        username = body.get("username")
+        link = body.get("link")
+        members = body.get("members_count")
+        if title is not None and not isinstance(title, str):
+            raise HTTPException(400, "title: нужна строка")
+        if username is not None and not isinstance(username, str):
+            raise HTTPException(400, "username: нужна строка")
+        if link is not None and not isinstance(link, str):
+            raise HTTPException(400, "link: нужна строка")
+        if members is not None and not isinstance(members, int):
+            raise HTTPException(400, "members_count: нужно число")
+        state.store.update_group(
+            tg_id,
+            title=title,
+            username=username,
+            link=link,
+            members_count=members,
+        )
+        return {"ok": True, "group": state.store.get_group(tg_id)}
+
+    async def catalog_delete(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = int(request.path_params["tg_id"])
+        if not state.store.get_group(tg_id):
+            raise HTTPException(404, "Чат не найден в базе")
+        state.store.delete_group(tg_id)
+        return {"ok": True, "deleted": tg_id}
+
     async def find(request: Request) -> dict[str, Any]:
         guard(request)
         q = (request.query_params.get("q") or "").strip()
@@ -827,6 +939,10 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/alerts", _route(alerts)),
         Route("/api/alerts/read", _route(alerts_read), methods=["POST"]),
         Route("/api/catalog", _route(catalog)),
+        Route("/api/catalog/parse", _route(catalog_parse), methods=["POST"]),
+        Route("/api/catalog/import", _route(catalog_import), methods=["POST"]),
+        Route("/api/catalog/{tg_id:int}/edit", _route(catalog_update), methods=["POST"]),
+        Route("/api/catalog/{tg_id:int}", _route(catalog_delete), methods=["DELETE"]),
         Route("/api/find", _route(find)),
         Route("/api/jobs", _route(jobs)),
         Route("/api/jobs/{key}/cancel", _route(cancel), methods=["POST"]),

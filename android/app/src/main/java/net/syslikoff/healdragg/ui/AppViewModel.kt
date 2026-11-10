@@ -368,6 +368,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ── ручное пополнение базы ───────────────────────────────────────────────
+
+    fun parseImport(text: String, onDone: (Result<ImportPreview>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch { onDone(runCatching { client.parseImport(text) }) }
+    }
+
+    fun importGroups(
+        text: String,
+        join: Boolean,
+        archive: Boolean,
+        onDone: (Result<Job>) -> Unit,
+    ) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch { onDone(runCatching { client.importGroups(text, join, archive) }) }
+    }
+
+    fun updateGroup(
+        tgId: Long,
+        title: String?,
+        username: String?,
+        onDone: (Result<Chat>) -> Unit,
+    ) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch { onDone(runCatching { client.updateGroup(tgId, title, username) }) }
+    }
+
+    fun deleteGroup(tgId: Long, onDone: (Result<Unit>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            onDone(
+                runCatching {
+                    client.deleteGroup(tgId)
+                },
+            )
+        }
+    }
+
     // ── подарки ──────────────────────────────────────────────────────────────
 
     fun crawlGifts(

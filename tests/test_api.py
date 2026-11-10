@@ -231,3 +231,60 @@ def test_target_payload_has_profile_fields(client: TestClient) -> None:
     assert (
         client.get(f"/api/targets/{DEMO_TARGET}/photo", headers=HEADERS).status_code == 404
     )
+
+
+def test_catalog_parse_endpoint(client: TestClient) -> None:
+    response = client.post(
+        "/api/catalog/parse",
+        headers=HEADERS,
+        json={"text": "https://t.me/memachh\n@beeeelogvardeyskaya\nне-ссылка"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["stats"]["valid"] == 2
+    assert data["stats"]["invalid"] == 1
+    assert data["stats"]["invalid_percent"] == 33.3
+    assert isinstance(data["sessions"], list)
+    assert data["items"][0]["link"] == "https://t.me/memachh"
+
+
+def test_catalog_parse_and_import_validation(client: TestClient) -> None:
+    assert client.post("/api/catalog/parse", headers=HEADERS, json={}).status_code == 400
+    assert (
+        client.post("/api/catalog/parse", headers=HEADERS, json={"text": "x" * 200_001}).status_code
+        == 400
+    )
+    assert client.post("/api/catalog/import", headers=HEADERS, json={}).status_code == 400
+    bad = client.post(
+        "/api/catalog/import", headers=HEADERS, json={"text": "просто текст без ссылок"}
+    )
+    assert bad.status_code == 400
+    # валидный список без аккаунта-сканера → понятная ошибка про вход
+    assert (
+        client.post("/api/catalog/import", headers=HEADERS, json={"text": "@memachh"}).status_code
+        == 409
+    )
+
+
+def test_catalog_update_and_delete(client: TestClient) -> None:
+    rows = client.get("/api/catalog?size=1", headers=HEADERS).json()["rows"]
+    tg_id = rows[0]["tg_id"]
+    updated = client.post(
+        f"/api/catalog/{tg_id}/edit",
+        headers=HEADERS,
+        json={"title": "Новое имя", "username": "@newlink"},
+    )
+    assert updated.status_code == 200
+    group = updated.json()["group"]
+    assert group["title"] == "Новое имя"
+    assert group["username"] == "newlink"
+    assert group["is_public"] == 1
+    assert group["link"] == "https://t.me/newlink"
+    assert (
+        client.post(
+            "/api/catalog/999999999/edit", headers=HEADERS, json={"title": "x"}
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"/api/catalog/{tg_id}", headers=HEADERS).json()["ok"] is True
+    assert client.delete(f"/api/catalog/{tg_id}", headers=HEADERS).status_code == 404

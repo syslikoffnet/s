@@ -652,6 +652,53 @@ class Store:
         with self.tx() as conn:
             conn.execute("DELETE FROM groups WHERE tg_id = ?", (tg_id,))
 
+    def update_group(
+        self,
+        tg_id: int,
+        *,
+        title: str | None = None,
+        username: str | None = None,
+        link: str | None = None,
+        members_count: int | None = None,
+        kind: str | None = None,
+    ) -> bool:
+        """Правит карточку чата, добавленного вручную.
+
+        ``username=""`` очищает публичный адрес (и снимает ``is_public``),
+        ``None`` оставляет поле без изменений.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title.strip())
+        if username is not None:
+            clean = username.strip().lstrip("@") or None
+            sets.append("username = ?")
+            params.append(clean)
+            sets.append("is_public = ?")
+            params.append(int(bool(clean)))
+            if clean and link is None:
+                sets.append("link = ?")
+                params.append(f"https://t.me/{clean}")
+        if link is not None:
+            sets.append("link = ?")
+            params.append(link.strip() or None)
+        if members_count is not None:
+            sets.append("members_count = ?")
+            params.append(int(members_count))
+        if kind is not None:
+            sets.append("kind = ?")
+            params.append(kind)
+        if not sets:
+            return False
+        sets.append("updated_at = ?")
+        params.append(now_ts())
+        params.append(tg_id)
+        with self.tx() as conn:
+            cur = conn.execute(f"UPDATE groups SET {', '.join(sets)} WHERE tg_id = ?", params)
+        return cur.rowcount > 0
+
     def groups_needing_meta(self, limit: int = 500, ttl_hours: float = 12.0) -> list[dict[str, Any]]:
         cutoff = now_ts() - int(ttl_hours * 3600)
         return self.query(
