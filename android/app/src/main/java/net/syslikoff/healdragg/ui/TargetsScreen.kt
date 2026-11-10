@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Email
@@ -337,6 +338,16 @@ private fun TargetCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                target.bio?.takeIf { it.isNotBlank() }?.let { bio ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = bio,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Hd.Muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             if (target.alertsUnread > 0) {
                 Box(
@@ -386,10 +397,16 @@ private fun TargetCard(
             }
         }
         Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             Chip("${target.groupsCount} чатов", Hd.Accent2, icon = Icons.Filled.ChatBubble)
             Chip(compactNumber(target.activity.messages), Hd.Muted, icon = Icons.Filled.Email)
             Chip(compactNumber(target.activity.peers), Hd.Muted, icon = Icons.Filled.People)
+            if (target.giftsCount > 0) {
+                Chip(target.giftsCount.toString(), Hd.Accent, icon = Icons.Filled.CardGiftcard)
+            }
             Chip(
                 text = target.lastScan ?: "не сканировалась",
                 color = if (target.lastScanAt > 0) Hd.Good else Hd.Dim,
