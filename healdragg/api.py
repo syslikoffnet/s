@@ -293,6 +293,11 @@ def _route(fn: Any) -> Any:
     return wrapper
 
 
+def _auto_backup(store: Store) -> dict[str, Any]:
+    """Копия при старте движка: без неё «ничего не теряется» — просто слова."""
+    return create_backup(store, keep=5, label="auto")
+
+
 def create_app(settings: Settings) -> Starlette:
     token = settings.ensure_api_token()
     state = AppState(settings)
@@ -307,9 +312,7 @@ def create_app(settings: Settings) -> Starlette:
             async def _backup_once() -> None:
                 await asyncio.sleep(8)
                 try:
-                    created = await asyncio.to_thread(
-                        create_backup, state.store, 5, "auto"
-                    )
+                    created = await asyncio.to_thread(_auto_backup, state.store)
                     log.info("авто-копия: %s (%s)", created["name"], created["size"])
                 except Exception:  # noqa: BLE001 — копия не должна ронять сервер
                     log.exception("авто-копия не удалась")

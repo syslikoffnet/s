@@ -140,3 +140,18 @@ def test_store_survives_weird_old_database(tmp_path: Path) -> None:
         assert "on_chain" in columns
     finally:
         store.close()
+
+
+def test_auto_backup_helper_creates_archive(tmp_path: Path) -> None:
+    """Авто-копия при старте движка должна действительно собираться."""
+    from healdragg.api import _auto_backup
+    from healdragg.db import Store
+
+    store = Store(tmp_path / "healdragg.db")
+    try:
+        created = _auto_backup(store)
+        assert created["name"].endswith(".zip")
+        assert created["size"] > 0
+        assert Path(created["path"]).exists()
+    finally:
+        store.close()
