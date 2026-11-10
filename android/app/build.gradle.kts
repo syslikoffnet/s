@@ -31,8 +31,8 @@ android {
         applicationId = "net.syslikoff.healdragg"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10
-        versionName = "1.7.0"
+        versionCode = 11
+        versionName = "1.7.1"
         resourceConfigurations += listOf("ru", "en")
         ndk {
             // Chaquopy: только 64-битные ABI (Python 3.13 их и поддерживает)

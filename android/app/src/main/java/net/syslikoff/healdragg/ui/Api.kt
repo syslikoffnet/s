@@ -214,6 +214,11 @@ class Api(private val baseUrl: String, private val token: String) {
         return jsonObjects(obj(path).arr("rows")).map(NftOwner::from)
     }
 
+    suspend fun startNftProfiles(limit: Int = 200, depth: Int = 2): Job {
+        val body = JSONObject().put("limit", limit).put("depth", depth)
+        return Job.from(obj("api/gifts/nft/profiles", "POST", body))
+    }
+
     suspend fun startNftChain(requests: Int = 2000, discover: Boolean = true): Job {
         val body = JSONObject().put("requests", requests).put("discover", discover)
         return Job.from(obj("api/gifts/chain", "POST", body))

@@ -1339,6 +1339,22 @@ class Store:
             params,
         )
 
+    def nft_owners_fresh(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Владельцы NFT, чьи подарки ещё не читали (для следующего шага обхода)."""
+        return self.query(
+            """
+            SELECT i.owner_tg_id, max(i.owner_username) AS owner_username,
+                   max(i.owner_name) AS owner_name, COUNT(*) AS nft
+              FROM nft_items i
+              LEFT JOIN (SELECT DISTINCT owner_tg_id AS gid FROM gifts) g
+                     ON g.gid = i.owner_tg_id
+             WHERE i.owner_tg_id IS NOT NULL AND g.gid IS NULL
+             GROUP BY i.owner_tg_id
+             ORDER BY nft DESC LIMIT ?
+            """,
+            (max(1, min(20000, limit)),),
+        )
+
     def nft_collections(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.query(
             """

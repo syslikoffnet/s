@@ -320,3 +320,9 @@ def test_gift_chain_requires_session(client: TestClient) -> None:
     response = client.post("/api/gifts/chain", headers=HEADERS, json={"requests": 100})
     assert response.status_code == 409
     assert "аккаунта" in response.text.lower()
+
+
+def test_nft_profiles_requires_session(client: TestClient) -> None:
+    response = client.post("/api/gifts/nft/profiles", headers=HEADERS, json={"limit": 10})
+    assert response.status_code == 409
+    assert "аккаунта" in response.text.lower()

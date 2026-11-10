@@ -27,7 +27,7 @@ from . import __version__
 from .activity import collect_activity
 from .config import Settings
 from .db import Store
-from .gifts import crawl_gifts, crawl_nft_chain, refresh_gifts
+from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts
 from .graph import build_graph
 from .intel import guess
 from .login import LoginError, LoginManager
@@ -773,6 +773,63 @@ def create_app(settings: Settings) -> Starlette:
         job.task = asyncio.create_task(runner(), name="gifts:refresh")
         return job.as_dict()
 
+    async def start_nft_profiles(request: Request) -> dict[str, Any]:
+        """Читает подарки владельцев NFT — база растёт по живой сети дарителей."""
+        guard(request)
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+        if state.running("gifts:nftprofiles"):
+            raise HTTPException(409, "Обход профилей владельцев уже идёт")
+        body = await _body(request)
+        limit = body.get("limit")
+        limit = int(limit) if isinstance(limit, int) else 200
+        limit = max(1, min(20000, limit))
+        depth = body.get("depth")
+        depth = int(depth) if isinstance(depth, int) else 2
+        depth = max(1, min(4, depth))
+        per_profile = body.get("per_profile")
+        per_profile = int(per_profile) if isinstance(per_profile, int) else 100
+        per_profile = max(10, min(1000, per_profile))
+        if not state.store.nft_summary()["owners"]:
+            raise HTTPException(400, "Владельцев NFT ещё нет — сначала соберите NFT-инвентарь")
+
+        job = Job(key="gifts:nftprofiles", kind="giftprofiles")
+        job.state = {"phase": "старт", "done": 0, "total": limit, "found": 0}
+        state.jobs["gifts:nftprofiles"] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = progress
+
+        async def runner() -> None:
+            try:
+                result = await crawl_nft_profiles(
+                    state.pool,
+                    state.store,
+                    settings,
+                    limit=limit,
+                    depth=depth,
+                    per_profile=per_profile,
+                    reporter=on_progress,
+                )
+                job.state = {
+                    "phase": "готово",
+                    "done": int(result.get("owners", 0)),
+                    "total": int(result.get("owners", 0)),
+                    "found": int(result.get("new", 0)),
+                    "result": result,
+                }
+            except asyncio.CancelledError:
+                job.state = {**job.state, "phase": "отменено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("обход профилей владельцев NFT не удался")
+                job.error = str(exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name="gifts:nftprofiles")
+        return job.as_dict()
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -1150,6 +1207,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/nft", _route(gifts_nft)),
         Route("/api/gifts/nft/owners", _route(gifts_nft_owners)),
         Route("/api/gifts/chain", _route(start_nft_chain), methods=["POST"]),
+        Route("/api/gifts/nft/profiles", _route(start_nft_profiles), methods=["POST"]),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
         Route("/api/gifts/refresh", _route(start_gift_refresh), methods=["POST"]),
         Route("/api/intel", _route(intel)),

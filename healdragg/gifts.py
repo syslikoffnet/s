@@ -487,6 +487,82 @@ async def refresh_gifts(
     }
 
 
+async def crawl_nft_profiles(
+    pool: SessionPool,
+    store: Store,
+    settings: Settings,
+    *,
+    limit: int = 200,
+    depth: int = 2,
+    per_profile: int = 100,
+    sessions: list[str] | None = None,
+    reporter: Reporter | None = None,
+) -> dict[str, Any]:
+    """Читает подарки владельцев NFT, которых нашли при обходе коллекций.
+
+    Это второй шаг «собери почти всех»: у каждого владельца NFT есть дарители,
+    у дарителей — свои подарки. Так база растёт по живой сети, без глобального
+    поиска пользователей (его у Telegram нет).
+    """
+    owners = store.nft_owners_fresh(limit)
+    total = len(owners)
+    if not total:
+        return {
+            "owners": 0,
+            "profiles": 0,
+            "gifts": 0,
+            "new": 0,
+            "nft": 0,
+            "errors": 0,
+            "summary": store.gift_summary(),
+            "results": [],
+        }
+    profiles = gifts = new = nft = errors = 0
+    results: list[dict[str, Any]] = []
+    for index, owner in enumerate(owners, 1):
+        owner_id = int(owner["owner_tg_id"])
+        query = owner.get("owner_username") or str(owner_id)
+        try:
+            result = await crawl_gifts(
+                pool,
+                store,
+                settings,
+                query,
+                depth=depth,
+                max_profiles=1,
+                per_profile=per_profile,
+                sessions=sessions,
+            )
+            profiles += int(result.get("profiles", 0))
+            gifts += int(result.get("gifts", 0))
+            new += int(result.get("new", 0))
+            nft += int(result.get("nft", 0))
+            results.append({"owner_tg_id": owner_id, "query": query, "new": result.get("new", 0)})
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            log.info("профиль владельца NFT %s: %s", owner_id, exc)
+            results.append({"owner_tg_id": owner_id, "query": query, "error": str(exc)[:200]})
+        if reporter is not None:
+            await reporter(
+                {
+                    "phase": f"владелец {index}/{total}",
+                    "done": index,
+                    "total": total,
+                    "found": new,
+                }
+            )
+    return {
+        "owners": total,
+        "profiles": profiles,
+        "gifts": gifts,
+        "new": new,
+        "nft": nft,
+        "errors": errors,
+        "summary": store.gift_summary(),
+        "results": results,
+    }
+
+
 async def _discover_collections(
     client: Any,
     limiter: RateLimiter,
@@ -702,4 +778,4 @@ async def crawl_nft_chain(
     }
 
 
-__all__ = ["crawl_gifts", "refresh_gifts", "crawl_nft_chain"]
+__all__ = ["crawl_gifts", "refresh_gifts", "crawl_nft_chain", "crawl_nft_profiles"]

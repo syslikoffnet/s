@@ -80,6 +80,7 @@ fun GiftsScreen(
     var mode by rememberSaveable { mutableStateOf(0) }
     var chain by rememberSaveable { mutableStateOf("") }
     var chainRequests by rememberSaveable { mutableStateOf(2_000) }
+    var profileBudget by rememberSaveable { mutableStateOf(200) }
     var nftRows by remember { mutableStateOf<List<NftItem>>(emptyList()) }
     var nftSummary by remember { mutableStateOf(NftSummary()) }
     var nftOwnersList by remember { mutableStateOf<List<NftOwner>>(emptyList()) }
@@ -169,6 +170,20 @@ fun GiftsScreen(
                 mode = 1
                 onToast("Обход NFT-коллекций запущен")
             }.onFailure { error = it.message ?: "Не удалось запустить обход NFT" }
+        }
+    }
+
+    fun startProfiles() {
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.startNftProfiles(profileBudget) { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                mode = 2
+                onToast("Читаю подарки владельцев NFT…")
+            }.onFailure { error = it.message ?: "Не удалось запустить обход профилей" }
         }
     }
 
@@ -590,6 +605,57 @@ fun GiftsScreen(
             }
 
             if (mode == 2) {
+                item("profilesForm") {
+                    HdCard {
+                        Text(
+                            "Шаг 2: профили владельцев",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Hd.Text,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "У каждого владельца NFT есть дарители. Читаем их подарки — так база " +
+                                "растёт по живой сети и подтягивает новых людей, а не только тех, " +
+                                "кто попал в инвентарь.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf(100, 500, 2_000, 10_000).forEach { value ->
+                                FilterChip(
+                                    selected = profileBudget == value,
+                                    onClick = { profileBudget = value },
+                                    label = { Text("${compactNumber(value)} профилей") },
+                                    colors = giftChipColors(),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { startProfiles() },
+                            enabled = !busy && job == null && nftSummary.owners > 0,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Person,
+                                contentDescription = null,
+                                tint = Hd.Accent2,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (nftSummary.owners > 0) "Собрать профили владельцев" else "Сначала соберите инвентарь",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
                 if (loading && nftOwnersList.isEmpty()) {
                     item("ownersLoading") { LoadingBlock() }
                 }

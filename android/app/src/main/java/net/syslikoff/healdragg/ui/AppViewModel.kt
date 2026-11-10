@@ -434,6 +434,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Читает подарки владельцев NFT: сеть растёт по дарителям. */
+    fun startNftProfiles(limit: Int, onDone: (Result<Job>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            onDone(runCatching { client.startNftProfiles(limit = limit) })
+        }
+    }
+
     /** Массовый обход NFT-коллекций: собираем владельцев почти всех NFT. */
     fun startNftChain(requests: Int, onDone: (Result<Job>) -> Unit) {
         val client = api ?: run {
