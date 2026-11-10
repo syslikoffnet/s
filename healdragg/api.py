@@ -318,6 +318,7 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, "name обязателен")
         if name not in state.store.session_names(only_active=False):
             raise HTTPException(404, "Сессии нет")
+        await state.pool.disconnect(name)
         state.store.remove_session(name)
         session_file = settings.session_file(name)
         try:

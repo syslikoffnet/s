@@ -207,11 +207,21 @@ class SessionPool:
     async def first(self, names: Sequence[str] | None = None) -> Account:
         accounts = await self.connect_many(names)
         if not accounts:
-            raise RuntimeError("Нет доступных сессий. Добавь: healdragg session add main")
+            raise RuntimeError("Нет доступных сессий. Войди в Telegram в приложении")
         return accounts[0]
 
     def connected(self) -> list[Account]:
         return [a for a in self._accounts.values() if a.client.is_connected()]
+
+    async def disconnect(self, name: str) -> None:
+        """Отключить и забыть конкретную сессию (удаление аккаунта из панели)."""
+        account = self._accounts.pop(name, None)
+        self._limiters.pop(name, None)
+        if account is not None:
+            try:
+                await account.client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def close(self) -> None:
         for account in list(self._accounts.values()):
