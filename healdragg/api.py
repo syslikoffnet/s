@@ -27,8 +27,11 @@ from . import __version__
 from .activity import collect_activity
 from .config import Settings
 from .db import Store
+from .gifts import crawl_gifts
 from .graph import build_graph
+from .intel import guess
 from .login import LoginError, LoginManager
+from .profile import photo_base64, refresh_profile
 from .scan import bootstrap, resolve_and_store_target, scan_target
 from .textfmt import (
     render_account_chats,
@@ -117,7 +120,24 @@ class AppState:
 def _target_payload(store: Store, target: dict[str, Any]) -> dict[str, Any]:
     stats = store.target_stats(int(target["id"]))
     return {
-        **{k: v for k, v in target.items() if k != "access_hash"},
+        **{k: v for k, v in target.items() if k not in {"access_hash", "photo_path"}},
+        "photo": {
+            "present": bool(target.get("photo_path")),
+            "updated_at": int(target.get("photo_updated_at") or 0),
+        },
+        "intel": {
+            "gender": target.get("gender"),
+            "gender_confidence": target.get("gender_confidence"),
+            "country": target.get("country"),
+            "country_name": target.get("country_name"),
+            "country_confidence": target.get("country_confidence"),
+            "source": target.get("intel_source"),
+            "updated_at": target.get("intel_updated_at"),
+        },
+        "gifts": {
+            "count": int(target.get("gifts_count") or 0),
+            "updated_at": target.get("gifts_updated_at"),
+        },
         "stats": stats,
         "activity": store.activity_stats(int(target["id"])),
         "alerts_unread": store.count_alerts(),
@@ -490,6 +510,122 @@ def create_app(settings: Settings) -> Starlette:
         job.task = asyncio.create_task(runner(), name=key)
         return job.as_dict()
 
+    async def refresh_target_profile(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = request.path_params["tg_id"]
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+        try:
+            data = await refresh_profile(state.pool, state.store, settings, target)
+        except Exception as exc:  # noqa: BLE001 — сеть Telegram
+            log.exception("профиль цели не обновился")
+            raise HTTPException(502, f"Telegram не ответил: {exc}") from exc
+        return {**data, "target": _target_payload(state.store, state.store.get_target(tg_id) or target)}
+
+    async def target_photo(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = request.path_params["tg_id"]
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        photo = photo_base64(settings, target)
+        if photo is None:
+            raise HTTPException(404, "У цели нет сохранённого фото — обнови профиль")
+        return photo
+
+    async def intel(request: Request) -> dict[str, Any]:
+        guard(request)
+        query = (request.query_params.get("name") or request.query_params.get("q") or "").strip()
+        names = request.query_params.get("names") or ""
+        if not query and not names:
+            raise HTTPException(400, "name: пустой запрос")
+        values = [n.strip() for n in names.split(",") if n.strip()] if names else [query]
+        return {"rows": [guess(value).as_dict() for value in values]}
+
+    async def gifts_list(request: Request) -> dict[str, Any]:
+        guard(request)
+        owner_raw = (request.query_params.get("owner") or "").strip()
+        owner = int(owner_raw) if owner_raw.lstrip("-").isdigit() else 0
+        nft_only = _q_bool(request, "nft")
+        limit = _q_int(request, "limit", 100, 1, 500)
+        offset = _q_int(request, "offset", 0, 0, 100000)
+        rows = state.store.list_gifts(
+            owner or None, nft_only=nft_only, limit=limit, offset=offset
+        )
+        return {
+            "rows": rows,
+            "summary": state.store.gift_summary(),
+            "owners": state.store.gift_owners(20),
+            "total": state.store.gift_summary()["total"],
+        }
+
+    async def gifts_graph(request: Request) -> dict[str, Any]:
+        guard(request)
+        seed_raw = (request.query_params.get("seed") or "").strip()
+        seed = int(seed_raw) if seed_raw.lstrip("-").isdigit() else None
+        return state.store.gift_graph(seed=seed)
+
+    async def start_gifts(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        query = str(body.get("query") or "").strip()
+        if not query:
+            raise HTTPException(400, "query: нужен @username, ссылка или ID")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+        depth = body.get("depth")
+        depth = int(depth) if isinstance(depth, int) else 1
+        max_profiles = body.get("max_profiles")
+        max_profiles = int(max_profiles) if isinstance(max_profiles, int) else 5
+        per_profile = body.get("per_profile")
+        per_profile = int(per_profile) if isinstance(per_profile, int) else 100
+        key = f"gifts:{query}"
+        if state.running(key):
+            raise HTTPException(409, "Сбор подарков по этому профилю уже идёт")
+        job = Job(key=key, kind="gifts")
+        job.state = {"phase": "старт", "done": 0, "total": max(1, max_profiles), "found": 0}
+        state.jobs[key] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = progress
+
+        async def runner() -> None:
+            try:
+                result = await crawl_gifts(
+                    state.pool,
+                    state.store,
+                    settings,
+                    query,
+                    depth=depth,
+                    max_profiles=max_profiles,
+                    per_profile=per_profile,
+                    reporter=on_progress,
+                )
+                job.state = {
+                    "phase": "готово",
+                    "done": result["profiles"],
+                    "total": result["profiles"],
+                    "found": result["gifts"],
+                    "new": result["new"],
+                    "nft": result["nft"],
+                    "nft_new": result["nft_new"],
+                    "errors": result["errors"],
+                }
+            except asyncio.CancelledError:
+                job.state = {**job.state, "phase": "отменено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("сбор подарков не удался")
+                job.error = str(exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name=key)
+        return job.as_dict()
+
     async def start_scan(request: Request) -> dict[str, Any]:
         guard(request)
         tg_id = request.path_params["tg_id"]
@@ -682,6 +818,12 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/activity", _route(target_activity)),
         Route("/api/targets/{tg_id:int}/activity/collect", _route(collect_target_activity), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/scan", _route(start_scan), methods=["POST"]),
+        Route("/api/targets/{tg_id:int}/profile/refresh", _route(refresh_target_profile), methods=["POST"]),
+        Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
+        Route("/api/gifts", _route(gifts_list)),
+        Route("/api/gifts/graph", _route(gifts_graph)),
+        Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
+        Route("/api/intel", _route(intel)),
         Route("/api/alerts", _route(alerts)),
         Route("/api/alerts/read", _route(alerts_read), methods=["POST"]),
         Route("/api/catalog", _route(catalog)),

@@ -1,5 +1,9 @@
 package net.syslikoff.healdragg.ui
 
+import android.graphics.BitmapFactory
+import android.util.Base64
+
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -54,7 +59,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -62,8 +71,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class DetailTab(val title: String) {
     Chats("Чаты"),
@@ -101,6 +112,31 @@ fun TargetDetailScreen(
     var actionBusy by remember { mutableStateOf(false) }
     var linksOpen by remember { mutableStateOf(false) }
     var chatQuery by remember(tgId) { mutableStateOf("") }
+    var photo by remember(tgId) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(tgId, target?.photoUpdatedAt) {
+        val client = api ?: return@LaunchedEffect
+        if (target?.photoPresent != true) {
+            photo = null
+            return@LaunchedEffect
+        }
+        val data = runCatching { client.photo(tgId) }.getOrNull() ?: return@LaunchedEffect
+        photo = withContext(Dispatchers.Default) {
+            runCatching {
+                val bytes = Base64.decode(data.base64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+
+    fun enrichProfile() {
+        vm.refreshProfile(tgId) { result ->
+            result.onSuccess { fresh ->
+                target = fresh
+                onToast("Профиль обновлён")
+            }.onFailure { onToast(it.message ?: "Не удалось обновить профиль") }
+        }
+    }
 
     suspend fun loadTarget() {
         val client = api ?: return
@@ -221,7 +257,17 @@ fun TargetDetailScreen(
                         Icon(Icons.Filled.ArrowBack, contentDescription = "Назад", tint = Hd.Muted)
                     }
                     if (data != null) {
-                        Avatar(data.initials, data.tgId, size = 44)
+                        val bitmap = photo
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "Фото профиля",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.size(46.dp).clip(CircleShape),
+                            )
+                        } else {
+                            Avatar(data.initials, data.tgId, size = 44)
+                        }
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
@@ -273,6 +319,20 @@ fun TargetDetailScreen(
                                 },
                             )
                             DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (vm.profileBusy) "Обновляю профиль…" else "Обновить профиль",
+                                        color = if (vm.profileBusy) Hd.Dim else Hd.Text,
+                                    )
+                                },
+                                leadingIcon = { Text("🪪", fontSize = 16.sp) },
+                                enabled = !vm.profileBusy,
+                                onClick = {
+                                    menu = false
+                                    enrichProfile()
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Глубокий скан", color = Hd.Text) },
                                 onClick = {
                                     menu = false
@@ -307,7 +367,50 @@ fun TargetDetailScreen(
                         Chip("✉️ ${compactNumber(t.activity.messages)}", Hd.Muted)
                         Chip("👥 ${compactNumber(t.activity.peers)}", Hd.Muted)
                         if (t.alertsUnread > 0) Chip("🔔 ${t.alertsUnread}", Hd.Bad)
+                        if (t.giftsCount > 0) Chip("🎁 ${t.giftsCount}", Hd.Accent)
                         Chip(t.lastScan ?: "не сканировалась", if (t.lastScanAt > 0) Hd.Good else Hd.Dim)
+                    }
+                    t.bio?.takeIf { it.isNotBlank() }?.let { bio ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            bio,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    val genderText = genderLabel(t.gender)
+                    if (genderText != null || t.countryName != null || !t.photoPresent) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (genderText != null) {
+                                Chip(
+                                    "${if (t.gender == "male") "♂" else "♀"} $genderText",
+                                    if (t.gender == "male") Hd.Accent2 else Hd.Warn,
+                                )
+                            }
+                            t.countryName?.let { name ->
+                                Chip("${countryFlag(t.country)} $name", Hd.Good)
+                            }
+                            if (!t.photoPresent) {
+                                TextButton(
+                                    onClick = { enrichProfile() },
+                                    enabled = !vm.profileBusy,
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                ) {
+                                    Text(
+                                        if (vm.profileBusy) "обновляю…" else "обогатить профиль",
+                                        color = Hd.Accent2,
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -27,7 +27,7 @@ from typing import Any
 
 from .util import group_link, now_ts
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -173,6 +173,32 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ts     ON alerts(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_unread ON alerts(read, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_alerts_unsent ON alerts(sent_at, ts);
 
+
+CREATE TABLE IF NOT EXISTS gifts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_tg_id   INTEGER NOT NULL,
+    saved_id      INTEGER,
+    gift_id       INTEGER,
+    title         TEXT,
+    kind          TEXT NOT NULL DEFAULT 'regular',
+    stars         INTEGER,
+    from_tg_id    INTEGER,
+    from_username TEXT,
+    from_name     TEXT,
+    owner_username TEXT,
+    owner_name     TEXT,
+    message       TEXT,
+    date          INTEGER,
+    is_nft        INTEGER NOT NULL DEFAULT 0,
+    name_hidden   INTEGER NOT NULL DEFAULT 0,
+    raw           TEXT,
+    seen_at       INTEGER NOT NULL,
+    UNIQUE(owner_tg_id, saved_id, gift_id)
+);
+CREATE INDEX IF NOT EXISTS idx_gifts_owner ON gifts(owner_tg_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_gifts_from  ON gifts(from_tg_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
+
 CREATE TABLE IF NOT EXISTS scans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     target_id   INTEGER,
@@ -305,6 +331,23 @@ class Store:
             "(CASE WHEN tg_id < 0 THEN -tg_id - 1000000000000 ELSE tg_id END) || '/1' "
             "WHERE link IS NULL AND kind IN ('channel', 'supergroup') AND tg_id <> 0"
         )
+        target_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(targets)")}
+        target_additions = {
+            "photo_path": "TEXT",
+            "photo_updated_at": "INTEGER",
+            "gender": "TEXT",
+            "gender_confidence": "REAL",
+            "country": "TEXT",
+            "country_name": "TEXT",
+            "country_confidence": "REAL",
+            "intel_source": "TEXT",
+            "intel_updated_at": "INTEGER",
+            "gifts_count": "INTEGER NOT NULL DEFAULT 0",
+            "gifts_updated_at": "INTEGER",
+        }
+        for column, ddl in target_additions.items():
+            if column not in target_cols:
+                self._conn.execute(f"ALTER TABLE targets ADD COLUMN {column} {ddl}")
         self._conn.commit()
 
     @contextmanager
@@ -785,6 +828,222 @@ class Store:
 
     def count_targets(self) -> int:
         return int(self.scalar("SELECT COUNT(*) FROM targets", (), 0))
+
+    def update_target_profile(self, tg_user_id: int, **fields: Any) -> None:
+        """Обновляет только известные поля профиля цели."""
+        allowed = {
+            "username",
+            "first_name",
+            "last_name",
+            "bio",
+            "photo_path",
+            "photo_updated_at",
+            "gender",
+            "gender_confidence",
+            "country",
+            "country_name",
+            "country_confidence",
+            "intel_source",
+            "intel_updated_at",
+            "gifts_count",
+            "gifts_updated_at",
+        }
+        data = {key: value for key, value in fields.items() if key in allowed}
+        if not data:
+            return
+        data["updated_at"] = now_ts()
+        assignments = ", ".join(f"{key} = ?" for key in data)
+        with self.tx() as conn:
+            conn.execute(
+                f"UPDATE targets SET {assignments} WHERE tg_user_id = ?",
+                (*data.values(), tg_user_id),
+            )
+
+    # ── подарки (star gifts) ────────────────────────────────────────────────
+
+    def add_gift(
+        self,
+        owner_tg_id: int,
+        *,
+        saved_id: int | None = None,
+        gift_id: int | None = None,
+        title: str | None = None,
+        kind: str = "regular",
+        stars: int | None = None,
+        from_tg_id: int | None = None,
+        from_username: str | None = None,
+        from_name: str | None = None,
+        owner_username: str | None = None,
+        owner_name: str | None = None,
+        message: str | None = None,
+        date: int | None = None,
+        is_nft: bool = False,
+        name_hidden: bool = False,
+        raw: str | None = None,
+    ) -> bool:
+        """Сохраняет подарок. True — если он появился в базе впервые."""
+        with self.tx() as conn:
+            existing = conn.execute(
+                "SELECT id FROM gifts WHERE owner_tg_id = ? AND saved_id IS ? AND gift_id IS ?",
+                (owner_tg_id, saved_id, gift_id),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO gifts(owner_tg_id, saved_id, gift_id, title, kind, stars,
+                                      from_tg_id, from_username, from_name, owner_username,
+                                      owner_name, message, date, is_nft, name_hidden, raw, seen_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        owner_tg_id,
+                        saved_id,
+                        gift_id,
+                        title,
+                        kind,
+                        stars,
+                        from_tg_id,
+                        from_username,
+                        from_name,
+                        owner_username,
+                        owner_name,
+                        message,
+                        date,
+                        int(is_nft),
+                        int(name_hidden),
+                        raw,
+                        now_ts(),
+                    ),
+                )
+                return True
+            conn.execute(
+                """
+                UPDATE gifts SET title = coalesce(?, title), stars = coalesce(?, stars),
+                       from_tg_id = coalesce(?, from_tg_id),
+                       from_username = coalesce(?, from_username),
+                       from_name = coalesce(?, from_name),
+                       owner_username = coalesce(?, owner_username),
+                       owner_name = coalesce(?, owner_name),
+                       message = coalesce(?, message), date = coalesce(?, date),
+                       is_nft = ?, name_hidden = ?, raw = coalesce(?, raw),
+                       seen_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    title,
+                    stars,
+                    from_tg_id,
+                    from_username,
+                    from_name,
+                    owner_username,
+                    owner_name,
+                    message,
+                    date,
+                    int(is_nft),
+                    int(name_hidden),
+                    raw,
+                    now_ts(),
+                    existing["id"],
+                ),
+            )
+            return False
+
+    def list_gifts(
+        self,
+        owner_tg_id: int | None = None,
+        *,
+        nft_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if owner_tg_id is not None:
+            where.append("owner_tg_id = ?")
+            params.append(owner_tg_id)
+        if nft_only:
+            where.append("is_nft = 1")
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        params.extend([max(1, min(500, limit)), max(0, offset)])
+        return self.query(
+            f"SELECT * FROM gifts {clause} ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ? OFFSET ?",
+            params,
+        )
+
+    def gift_summary(self) -> dict[str, Any]:
+        row = self.query_one(
+            """
+            SELECT COUNT(*) AS total,
+                   coalesce(SUM(is_nft), 0) AS nft,
+                   COUNT(DISTINCT owner_tg_id) AS owners,
+                   COUNT(DISTINCT from_tg_id) AS senders
+              FROM gifts
+            """
+        ) or {}
+        return {
+            "total": int(row.get("total") or 0),
+            "nft": int(row.get("nft") or 0),
+            "owners": int(row.get("owners") or 0),
+            "senders": int(row.get("senders") or 0),
+        }
+
+    def gift_owners(self, limit: int = 30) -> list[dict[str, Any]]:
+        return self.query(
+            """
+            SELECT owner_tg_id, COUNT(*) AS gifts, coalesce(SUM(is_nft), 0) AS nft,
+                   max(date) AS last_date
+              FROM gifts GROUP BY owner_tg_id
+             ORDER BY nft DESC, gifts DESC LIMIT ?
+            """,
+            (max(1, min(200, limit)),),
+        )
+
+    def gift_graph(self, seed: int | None = None, limit: int = 3000) -> dict[str, Any]:
+        """Паутина подарков: узлы — владельцы и дарители, рёбра — подарки."""
+        rows = self.query(
+            """
+            SELECT from_tg_id, owner_tg_id, COUNT(*) AS gifts,
+                   coalesce(SUM(stars), 0) AS stars, coalesce(SUM(is_nft), 0) AS nft,
+                   max(date) AS last_date
+              FROM gifts
+             WHERE from_tg_id IS NOT NULL AND from_tg_id <> owner_tg_id
+             GROUP BY from_tg_id, owner_tg_id
+             ORDER BY gifts DESC, stars DESC LIMIT ?
+            """,
+            (max(1, min(10000, limit)),),
+        )
+        if seed is not None:
+            rows = [r for r in rows if seed in (r["from_tg_id"], r["owner_tg_id"])]
+        nodes: dict[int, dict[str, Any]] = {}
+        edges: list[dict[str, Any]] = []
+        for row in rows:
+            for tg_id in (row["from_tg_id"], row["owner_tg_id"]):
+                node = nodes.setdefault(
+                    int(tg_id),
+                    {"id": f"u{tg_id}", "tg_id": int(tg_id), "weight": 0, "nft": 0},
+                )
+                node["weight"] += int(row["gifts"] or 0)
+                node["nft"] += int(row["nft"] or 0)
+            edges.append(
+                {
+                    "source": f"u{row['from_tg_id']}",
+                    "target": f"u{row['owner_tg_id']}",
+                    "weight": int(row["gifts"] or 1),
+                    "stars": int(row["stars"] or 0),
+                    "nft": int(row["nft"] or 0),
+                    "last_date": int(row["last_date"] or 0),
+                }
+            )
+        return {"nodes": list(nodes.values()), "edges": edges}
+
+    def touch_gifts(self, tg_user_id: int) -> int:
+        total = int(
+            self.scalar("SELECT COUNT(*) FROM gifts WHERE owner_tg_id = ?", (tg_user_id,), 0)
+        )
+        self.update_target_profile(
+            tg_user_id, gifts_count=total, gifts_updated_at=now_ts()
+        )
+        return total
 
     def delete_target(self, tg_user_id: int) -> None:
         with self.tx() as conn:

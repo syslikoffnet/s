@@ -60,6 +60,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var bootStarting by mutableStateOf(false)
         private set
 
+    var profileBusy by mutableStateOf(false)
+        private set
+
     val bootRunning: Boolean
         get() = bootJob?.let { !it.finished } ?: false
 
@@ -352,6 +355,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val client = api ?: return
         viewModelScope.launch {
             runCatching { client.sessions() }.onSuccess { sessions = it }
+        }
+    }
+
+    // ── подарки ──────────────────────────────────────────────────────────────
+
+    fun crawlGifts(
+        query: String,
+        depth: Int,
+        maxProfiles: Int,
+        onDone: (Result<Job>) -> Unit,
+    ) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            onDone(runCatching { client.crawlGifts(query, depth, maxProfiles) })
+        }
+    }
+
+    // ── профиль цели ─────────────────────────────────────────────────────────
+
+    fun refreshProfile(tgId: Long, onDone: (Result<Target>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        if (profileBusy) return
+        profileBusy = true
+        viewModelScope.launch {
+            val result = runCatching { client.refreshProfile(tgId) }
+            result.onSuccess { fresh ->
+                targets = targets.map { if (it.tgId == tgId) fresh else it }
+            }
+            profileBusy = false
+            onDone(result)
         }
     }
 

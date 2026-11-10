@@ -18,6 +18,9 @@ internal fun JSONObject.int(key: String): Int = num(key).toInt()
 
 internal fun JSONObject.bool(key: String): Boolean = has(key) && !isNull(key) && optBoolean(key)
 
+internal fun JSONObject.dbl(key: String): Double =
+    if (has(key) && !isNull(key)) optDouble(key, 0.0) else 0.0
+
 internal fun JSONObject.obj(key: String): JSONObject? =
     if (has(key) && !isNull(key)) optJSONObject(key) else null
 
@@ -79,6 +82,14 @@ data class Target(
     val stats: TargetStats,
     val activity: ActivityStats,
     val lastScan: String?,
+    val photoPresent: Boolean = false,
+    val photoUpdatedAt: Long = 0,
+    val gender: String? = null,
+    val genderConfidence: Double = 0.0,
+    val country: String? = null,
+    val countryName: String? = null,
+    val countryConfidence: Double = 0.0,
+    val giftsCount: Int = 0,
 ) {
     val displayName: String
         get() {
@@ -113,6 +124,14 @@ data class Target(
             stats = TargetStats.from(o.obj("stats")),
             activity = ActivityStats.from(o.obj("activity")),
             lastScan = o.str("last_scan"),
+            photoPresent = o.obj("photo")?.bool("present") == true,
+            photoUpdatedAt = o.obj("photo")?.num("updated_at") ?: 0L,
+            gender = o.obj("intel")?.str("gender"),
+            genderConfidence = o.obj("intel")?.dbl("gender_confidence") ?: 0.0,
+            country = o.obj("intel")?.str("country"),
+            countryName = o.obj("intel")?.str("country_name"),
+            countryConfidence = o.obj("intel")?.dbl("country_confidence") ?: 0.0,
+            giftsCount = o.obj("gifts")?.int("count") ?: 0,
         )
     }
 }
@@ -397,3 +416,74 @@ data class CatalogPage(
         }
     }
 }
+
+/** Подарок из профиля Telegram (обычный или NFT). */
+data class GiftItem(
+    val id: Long,
+    val ownerTgId: Long,
+    val ownerUsername: String?,
+    val ownerName: String?,
+    val title: String,
+    val kind: String,
+    val stars: Int,
+    val fromTgId: Long,
+    val fromUsername: String?,
+    val fromName: String?,
+    val message: String?,
+    val date: Long,
+    val isNft: Boolean,
+    val nameHidden: Boolean,
+) {
+    val ownerHandle: String
+        get() = ownerUsername?.let { "@$it" } ?: "id $ownerTgId"
+
+    companion object {
+        fun from(o: JSONObject): GiftItem = GiftItem(
+            id = o.num("id"),
+            ownerTgId = o.num("owner_tg_id"),
+            ownerUsername = o.str("owner_username"),
+            ownerName = o.str("owner_name"),
+            title = o.str("title") ?: "Подарок",
+            kind = o.str("kind") ?: "regular",
+            stars = o.int("stars"),
+            fromTgId = o.num("from_tg_id"),
+            fromUsername = o.str("from_username"),
+            fromName = o.str("from_name"),
+            message = o.str("message"),
+            date = o.num("date"),
+            isNft = o.bool("is_nft"),
+            nameHidden = o.bool("name_hidden"),
+        )
+    }
+}
+
+data class GiftSummary(
+    val total: Int = 0,
+    val nft: Int = 0,
+    val owners: Int = 0,
+    val senders: Int = 0,
+) {
+    companion object {
+        fun from(o: JSONObject?): GiftSummary = if (o == null) GiftSummary() else GiftSummary(
+            total = o.int("total"),
+            nft = o.int("nft"),
+            owners = o.int("owners"),
+            senders = o.int("senders"),
+        )
+    }
+}
+
+data class GiftOwner(
+    val tgId: Long,
+    val gifts: Int,
+    val nft: Int,
+    val lastDate: Long,
+)
+
+data class GiftPage(
+    val rows: List<GiftItem>,
+    val summary: GiftSummary,
+    val owners: List<GiftOwner>,
+)
+
+data class PhotoData(val base64: String, val updatedAt: Long)

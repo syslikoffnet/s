@@ -126,6 +126,45 @@ class Api(private val baseUrl: String, private val token: String) {
         return obj("api/jobs/$safe/cancel", "POST").bool("ok")
     }
 
+    suspend fun refreshProfile(tgId: Long): Target {
+        val data = obj("api/targets/$tgId/profile/refresh", "POST", null, PROFILE_TIMEOUT)
+        return Target.from(data.obj("target") ?: data)
+    }
+
+    suspend fun photo(tgId: Long): PhotoData? = try {
+        val data = obj("api/targets/$tgId/photo")
+        PhotoData(base64 = data.str("b64").orEmpty(), updatedAt = data.num("updated_at"))
+    } catch (exc: ApiException) {
+        if (exc.code == 404) null else throw exc
+    }
+
+    suspend fun gifts(owner: Long? = null, nftOnly: Boolean = false, limit: Int = 100): GiftPage {
+        val path = buildString {
+            append("api/gifts?limit=$limit")
+            if (owner != null) append("&owner=$owner")
+            if (nftOnly) append("&nft=true")
+        }
+        val data = obj(path)
+        val rows = jsonObjects(data.arr("rows")).map(GiftItem::from)
+        val owners = jsonObjects(data.arr("owners")).map {
+            GiftOwner(
+                tgId = it.num("owner_tg_id"),
+                gifts = it.int("gifts"),
+                nft = it.int("nft"),
+                lastDate = it.num("last_date"),
+            )
+        }
+        return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners)
+    }
+
+    suspend fun crawlGifts(query: String, depth: Int = 1, maxProfiles: Int = 5): Job {
+        val body = JSONObject()
+            .put("query", query)
+            .put("depth", depth)
+            .put("max_profiles", maxProfiles)
+        return Job.from(obj("api/gifts/crawl", "POST", body))
+    }
+
     suspend fun find(query: String): List<Chat> {
         val data = obj("api/find?q=${URLEncoder.encode(query, "UTF-8")}")
         val rows = data.arr("rows")
@@ -211,6 +250,8 @@ class Api(private val baseUrl: String, private val token: String) {
         const val READ_TIMEOUT = 12_000
         // Telegram может думать дольше: отправка кода и проверка 2FA — сетевые запросы.
         const val LOGIN_TIMEOUT = 40_000
+        // Загрузка профиля: get_entity + full user + скачивание фото.
+        const val PROFILE_TIMEOUT = 60_000
     }
 
     private fun humanError(code: Int, raw: String): String {

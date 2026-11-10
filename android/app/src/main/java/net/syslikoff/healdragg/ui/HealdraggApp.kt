@@ -64,6 +64,7 @@ private enum class Tab(val title: String, val emoji: String) {
     Targets("Цели", "🎯"),
     Alerts("Алерты", "🔔"),
     Catalog("База", "🗂"),
+    Gifts("Подарки", "🎁"),
     Settings("Настройки", "⚙"),
 }
 
@@ -184,6 +185,11 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                     }
                                 }
                             }
+                            Tab.Gifts -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                                Box(Modifier.widthIn(max = 820.dp).fillMaxWidth()) {
+                                    GiftsScreen(vm = vm, onToast = toast)
+                                }
+                            }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                 Box(Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
                                     SettingsScreen(
@@ -282,6 +288,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             onToast = toast,
                             onOpenAccounts = { showAccounts = true },
                         )
+                        tab == Tab.Gifts -> GiftsScreen(vm = vm, onToast = toast)
                         else -> SettingsScreen(
                             vm = vm,
                             onOpenBattery = onOpenBattery,

@@ -199,3 +199,35 @@ def test_delete_session(client: TestClient) -> None:
     store.add_session("main", "/tmp/main.session", username="main_user", status="active")
     assert client.delete("/api/sessions/main", headers=HEADERS).status_code == 200
     assert "main" not in store.session_names(only_active=False)
+
+
+def test_intel_endpoint(client: TestClient) -> None:
+    assert client.get("/api/intel?name=Анна").status_code == 401
+    row = client.get("/api/intel?name=Анна", headers=HEADERS).json()["rows"][0]
+    assert row["gender"] == "female"
+    assert row["country"] == "RU"
+    rows = client.get("/api/intel?names=Mehmet,张伟", headers=HEADERS).json()["rows"]
+    assert [r["country"] for r in rows] == ["TR", "CN"]
+    assert client.get("/api/intel", headers=HEADERS).status_code == 400
+
+
+def test_gifts_empty_and_bad_requests(client: TestClient) -> None:
+    data = client.get("/api/gifts", headers=HEADERS).json()
+    assert data["rows"] == []
+    assert data["summary"]["total"] == 0
+    graph = client.get("/api/gifts/graph", headers=HEADERS).json()
+    assert graph["nodes"] == [] and graph["edges"] == []
+    assert (
+        client.post("/api/gifts/crawl", json={}, headers=HEADERS).status_code == 400
+    )
+    assert client.get("/api/gifts", headers=HEADERS).status_code == 200
+
+
+def test_target_payload_has_profile_fields(client: TestClient) -> None:
+    target = client.get("/api/targets", headers=HEADERS).json()[0]
+    assert "photo" in target and target["photo"]["present"] is False
+    assert "intel" in target and "gender" in target["intel"]
+    assert "gifts" in target
+    assert (
+        client.get(f"/api/targets/{DEMO_TARGET}/photo", headers=HEADERS).status_code == 404
+    )

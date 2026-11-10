@@ -95,3 +95,20 @@ fun openLink(context: Context, url: String?): Boolean {
 
 fun telegramLink(username: String?): String? =
     username?.takeIf { it.isNotBlank() }?.let { "https://t.me/$it" }
+
+/** Флаг страны по ISO-коду. Для обобщённых регионов (арабский мир) — глобус. */
+fun countryFlag(code: String?): String {
+    if (code.isNullOrBlank() || code.length != 2) return "🌍"
+    if (code.uppercase() == "AR") return "🌍"
+    val upper = code.uppercase()
+    val first = if (upper[0] in 'A'..'Z') upper[0].code - 'A'.code + 0x1F1E6 else return "🌍"
+    val second = if (upper[1] in 'A'..'Z') upper[1].code - 'A'.code + 0x1F1E6 else return "🌍"
+    return String(Character.toChars(first)) + String(Character.toChars(second))
+}
+
+/** Человеческая подпись пола из ответа движка. */
+fun genderLabel(value: String?): String? = when (value) {
+    "male" -> "мужской"
+    "female" -> "женский"
+    else -> null
+}
