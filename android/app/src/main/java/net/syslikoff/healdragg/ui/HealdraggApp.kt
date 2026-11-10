@@ -386,25 +386,33 @@ private fun EngineDot(state: EngineState) {
 
 @Composable
 private fun EngineBanner(vm: AppViewModel) {
+    // Движок считается живым, но панель не ответила: это не «выключено», а сбой связи.
+    val unreachable = vm.engine == EngineState.Ready
     HdCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                when (vm.engine) {
-                    EngineState.Starting -> "⏳ Движок запускается…"
-                    EngineState.Error -> "⚠️ Движок не запустился"
-                    EngineState.Stopped -> "⚪ Движок остановлен"
-                    else -> "⚠️ Нет связи с движком"
+                if (unreachable) {
+                    "⚠️ Панель не отвечает"
+                } else {
+                    when (vm.engine) {
+                        EngineState.Starting -> "⏳ Движок запускается…"
+                        EngineState.Error -> "⚠️ Движок не запустился"
+                        EngineState.Stopped -> "⚪ Движок остановлен"
+                        else -> "⚠️ Нет связи с движком"
+                    }
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = Hd.Muted,
                 modifier = Modifier.weight(1f),
             )
             Text(
-                "Запустить",
+                if (unreachable) "Проверить" else "Запустить",
                 color = Hd.Accent2,
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier
-                    .clickable { vm.startEngine() }
+                    .clickable {
+                        if (unreachable) vm.refresh(force = true) else vm.startEngine()
+                    }
                     .padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
