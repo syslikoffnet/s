@@ -87,6 +87,18 @@ fun SettingsScreen(
     var pendingBackup by remember { mutableStateOf<ByteArray?>(null) }
     var backupList by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
 
+    fun reloadBackups() {
+        scope.launch {
+            val client = vm.api ?: return@launch
+            runCatching { client.backups() }.onSuccess { page ->
+                backupList = page.rows
+                page.latest?.let { latest ->
+                    backupLabel = "Последняя копия: ${latest.name} · ${latest.sizeLabel}"
+                }
+            }
+        }
+    }
+
     val saveBackup = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri ->
@@ -124,18 +136,6 @@ fun SettingsScreen(
                 vm.refreshSessions()
                 reloadBackups()
             }.onFailure { onToast(it.message ?: "Не удалось восстановить копию") }
-        }
-    }
-
-    fun reloadBackups() {
-        scope.launch {
-            val client = vm.api ?: return@launch
-            runCatching { client.backups() }.onSuccess { page ->
-                backupList = page.rows
-                page.latest?.let { latest ->
-                    backupLabel = "Последняя копия: ${latest.name} · ${latest.sizeLabel}"
-                }
-            }
         }
     }
 
