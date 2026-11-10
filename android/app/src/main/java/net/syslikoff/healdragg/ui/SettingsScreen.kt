@@ -222,8 +222,20 @@ fun SettingsScreen(
                 Spacer(Modifier.height(10.dp))
                 Button(
                     onClick = {
+                        val changed = apiId.trim() != vm.apiId || apiHash.trim() != vm.apiHash
                         vm.saveCredentials(apiId, apiHash)
-                        onToast(if (vm.engine == EngineState.Ready) "Сохранено. Перезапусти движок" else "Сохранено")
+                        when {
+                            !changed -> onToast("Ключи без изменений")
+                            vm.engine == EngineState.Ready -> {
+                                vm.restartEngine()
+                                onToast("Ключи сохранены — движок перезапускается")
+                            }
+                            vm.isLocal -> {
+                                vm.startEngine()
+                                onToast("Ключи сохранены — запускаю движок")
+                            }
+                            else -> onToast("Ключи сохранены")
+                        }
                     },
                     enabled = apiId.isNotBlank() && apiHash.length >= 16,
                     shape = RoundedCornerShape(12.dp),
