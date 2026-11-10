@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 from telethon import functions, types
 from telethon.errors import (
+    ChannelPrivateError,
     ChannelsTooMuchError,
     FloodWaitError,
     InviteHashExpiredError,
@@ -29,6 +30,7 @@ from telethon.errors import (
     InviteRequestSentError,
     RPCError,
     UserAlreadyParticipantError,
+    UserNotParticipantError,
 )
 from telethon.tl.functions.messages import CheckChatInviteRequest, ImportChatInviteRequest
 
@@ -217,6 +219,17 @@ async def _silence(client: Any, entity: Any, limiter: RateLimiter) -> None:
         log.debug("mute %s: %s", entity, exc)
 
 
+async def _live_membership(client: Any, entity: Any, limiter: RateLimiter) -> bool | None:
+    """Спрашивает у Telegram, состоим ли мы в чате. ``None`` — не знаем."""
+    try:
+        permissions = await limiter.call(lambda: client.get_permissions(entity))
+        return permissions is not None
+    except UserNotParticipantError:
+        return False
+    except (ChannelPrivateError, RPCError):
+        return None
+
+
 def _membership(entity: Any, member_ids: set[int]) -> bool:
     """Участие определяем по кэшу диалогов и флагам сущности.
 
@@ -398,7 +411,11 @@ async def import_groups(
             )
 
             if not member:
-                member = tg_id in member_ids or _membership(entity, member_ids)
+                member = _membership(entity, member_ids)
+            if not member:
+                live = await _live_membership(client, entity, limiter)
+                if live is not None:
+                    member = live
 
             if join and not member:
                 entity, status = await _join(
