@@ -87,6 +87,8 @@
 
   .search{display:flex;gap:8px}
   .hint{font-size:13px;line-height:1.5;color:var(--muted);margin:0 0 12px}
+  a:focus-visible,button:focus-visible,input:focus-visible,[tabindex]:focus-visible{
+    outline:2px solid var(--accent-2);outline-offset:2px}
   input[type=text],input[type=password]{flex:1;min-width:0;background:rgba(4,8,16,.72);
     border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px 14px;
     font-size:15px;outline:none;transition:border-color .16s,box-shadow .16s}
@@ -203,7 +205,9 @@
   .linksList{display:flex;flex-direction:column;gap:6px}
   .linkRow{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;
     background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.045)}
-  .linkRow .lt{flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .linkRow .lt{flex:1;min-width:0;display:flex;align-items:center;gap:6px;font-size:13px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .linkRow .lt .tag{flex:none}
   .linkRow .lu{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;
     color:var(--accent-2);opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .linkRow .cp{flex:none;padding:7px 10px;font-size:12px;font-weight:600;color:var(--muted)}
@@ -293,7 +297,7 @@
       <div class="sub">карта публичных чатов Telegram</div>
     </div>
     <div class="spacer"></div>
-    <button class="bell quiet" id="bellBtn" title="алерты">🔔<span id="bellCount">0</span></button>
+    <button class="bell quiet" id="bellBtn" title="алерты" aria-label="алерты">🔔<span id="bellCount">0</span></button>
     <div class="pill" id="status"><span class="dot"></span>live</div>
   </header>
 
@@ -380,7 +384,7 @@
     </footer>
   </main>
 </div>
-<section id="graphOverlay" class="overlay hidden">
+<section id="graphOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Паутина связей">
   <canvas id="graphCanvas"></canvas>
   <div class="ov-top">
     <div class="ov-title">🕸 сеть связей <span id="graphSub"></span></div>
@@ -400,7 +404,7 @@
   <div id="stats"></div>
 </section>
 
-<section id="feedOverlay" class="overlay hidden">
+<section id="feedOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Что пишет цель">
   <div class="feedWrap">
     <div class="ov-top" style="position:static">
       <div class="ov-title" id="feedTitle">📜 что пишет</div>
@@ -410,7 +414,7 @@
   </div>
 </section>
 
-<section id="alertsOverlay" class="overlay hidden">
+<section id="alertsOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Алерты">
   <div class="feedWrap">
     <div class="ov-top" style="position:static">
       <div class="ov-title">🔔 алерты <span id="alertsSub"></span></div>
@@ -423,13 +427,16 @@
   </div>
 </section>
 
-<section id="linksOverlay" class="overlay hidden">
+<section id="linksOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Ссылки на чаты">
   <div class="feedWrap">
     <div class="ov-top" style="position:static">
       <div class="ov-title">🔗 ссылки <span id="linksSub"></span></div>
       <div class="actions"><button class="btn ghost small" id="linksClose">✕ Закрыть</button></div>
     </div>
     <div class="feedList linksList" id="linksList"></div>
+    <div class="actions" style="justify-content:center">
+      <button class="btn ghost small hidden" id="linksMore">Показать ещё</button>
+    </div>
   </div>
 </section>
 
@@ -440,7 +447,7 @@
   <button data-tab="base">🗂<span>База</span></button>
 </nav>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 (() => {
@@ -604,7 +611,8 @@
     const name = [t.first_name, t.last_name].filter(Boolean).join(' ') || (t.username ? '@' + t.username : String(t.tg_user_id));
     $('tName').textContent = name;
     $('tAvatar').textContent = (name[0] || '?').toUpperCase();
-    $('tMeta').textContent = (t.username ? '@' + t.username + ' · ' : '') + t.tg_user_id + ' · обновлено ' + (t.last_scan || '—');
+    const seen = t.last_scan_at ? fmtDt(t.last_scan_at) : (t.last_scan || '—');
+    $('tMeta').textContent = (t.username ? '@' + t.username + ' · ' : '') + t.tg_user_id + ' · обновлено ' + seen;
     $('tTags').innerHTML = `
       <span class="tag acc">💬 ${num(t.stats.total)} чатов</span>
       ${t.stats.admin ? `<span class="tag warn">👮 ${num(t.stats.admin)}</span>` : ''}
@@ -881,27 +889,52 @@
   }
 
   // ── ссылки ──────────────────────────────────────────────────────────────
-  async function openLinks() {
+  const linksState = { offset: 0, total: 0, hasMore: false, loading: false };
+
+  function linkRow(row) {
+    const label = esc(row.title || 'чат');
+    const link = row.link
+      ? '<a href="' + esc(row.link) + '" target="_blank" rel="noopener">' + esc(row.link) + '</a>'
+      : '<span style="color:var(--dim)">нет публичной ссылки</span>';
+    const badge = row.status === 'left' ? '<span class="tag warn">вышел</span>'
+      : (row.status === 'admin' || row.status === 'creator') ? '<span class="tag acc">админ</span>' : '';
+    const copy = row.link
+      ? '<button class="qbtn cp" data-link="' + esc(row.link) + '" title="Скопировать ссылку" aria-label="Скопировать ссылку">⧉</button>'
+      : '';
+    return '<div class="linkRow"><div class="lt">' + label + badge + '</div><div class="lu">' + link + '</div>' + copy + '</div>';
+  }
+
+  async function loadLinks(reset) {
     if (!state.target) return toast('Сначала выбери цель');
+    if (linksState.loading) return;
+    if (reset) {
+      linksState.offset = 0;
+      linksState.total = 0;
+      linksState.hasMore = false;
+      $('linksList').innerHTML = '';
+    }
+    linksState.loading = true;
     try {
-      const data = await api('/api/targets/' + state.target.tg_user_id + '/links');
+      const data = await api('/api/targets/' + state.target.tg_user_id + '/links?limit=100&offset=' + linksState.offset);
       const rows = data.rows || [];
-      $('linksSub').textContent = 'всего ' + num(data.total);
-      $('linksList').innerHTML = rows.map(row => {
-        const label = esc(row.title || 'чат');
-        const link = row.link
-          ? '<a href="' + esc(row.link) + '" target="_blank" rel="noopener">' + esc(row.link) + '</a>'
-          : '<span style="color:var(--dim)">нет публичной ссылки</span>';
-        const copy = row.link
-          ? '<button class="qbtn cp" data-link="' + esc(row.link) + '" title="Скопировать ссылку">⧉</button>'
-          : '';
-        return '<div class="linkRow"><div class="lt">' + label + '</div><div class="lu">' + link + '</div>' + copy + '</div>';
-      }).join('') || '<div class="empty">Пока нет чатов.</div>';
-      document.querySelectorAll('#linksList .cp').forEach(btn => {
-        btn.addEventListener('click', () => copyText(btn.dataset.link));
-      });
+      linksState.total = data.total || 0;
+      linksState.offset += rows.length;
+      linksState.hasMore = !!data.has_more;
+      $('linksList').insertAdjacentHTML('beforeend', rows.map(linkRow).join('')
+        || '<div class="empty">Пока нет чатов.</div>');
+      $('linksSub').textContent = 'показано ' + num(linksState.offset) + ' из ' + num(linksState.total);
+      $('linksMore').classList.toggle('hidden', !linksState.hasMore);
       $('linksOverlay').classList.remove('hidden');
-    } catch (e) { toast(e.message); }
+      if (reset) $('linksClose').focus();
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      linksState.loading = false;
+    }
+  }
+
+  async function openLinks() {
+    await loadLinks(true);
   }
 
   // ── нижняя навигация ────────────────────────────────────────────────────
@@ -945,6 +978,11 @@
   $('bootBtn').addEventListener('click', () => startJob('/api/bootstrap', 'boot'));
   $('linksBtn').addEventListener('click', openLinks);
   $('linksClose').addEventListener('click', () => $('linksOverlay').classList.add('hidden'));
+  $('linksMore').addEventListener('click', () => loadLinks(false));
+  $('linksList').addEventListener('click', ev => {
+    const btn = ev.target.closest('.cp');
+    if (btn) copyText(btn.dataset.link);
+  });
   $('activityBtn').addEventListener('click', collectActivity);
   document.querySelectorAll('.tabbar button').forEach(el => {
     el.addEventListener('click', () => {
@@ -965,6 +1003,11 @@
     });
   });
   document.addEventListener('keydown', ev => {
+    if (ev.key === '/' && !/^(input|textarea|select)$/i.test(ev.target.tagName)) {
+      ev.preventDefault();
+      $('query').focus();
+      return;
+    }
     if (ev.key === 'Escape') {
       closeAllOverlays();
       $('linksOverlay').classList.add('hidden');

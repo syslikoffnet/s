@@ -590,7 +590,23 @@ class MainActivity : AppCompatActivity() {
         refresh.visibility = View.VISIBLE
         progress.visibility = View.VISIBLE
         settingsBtn.visibility = View.VISIBLE
+        AlertsWork.schedule(this)
+        maybeAskNotifications()
         web.loadUrl(url)
+    }
+
+    private fun maybeAskNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) return
+        if (prefs.getBoolean(KEY_NOTIFY_ASKED, false)) return
+        prefs.edit().putBoolean(KEY_NOTIFY_ASKED, true).apply()
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQ_NOTIFY,
+        )
     }
 
     private fun normalize(raw: String): String {
@@ -653,5 +669,7 @@ class MainActivity : AppCompatActivity() {
         private const val TERMUX_HOME = "/data/data/com.termux/files/home"
         private const val TERMUX_URL = "https://f-droid.org/packages/com.termux/"
         private const val REQ_STORAGE = 41
+        private const val REQ_NOTIFY = 42
+        private const val KEY_NOTIFY_ASKED = "notify_asked"
     }
 }

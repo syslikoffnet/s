@@ -67,7 +67,14 @@ def test_targets_and_groups(client: TestClient) -> None:
 
     links = client.get(f"/api/targets/{DEMO_TARGET}/links", headers=HEADERS).json()
     assert links["total"] == 40
+    assert links["offset"] == 0 and links["has_more"] is False
     assert any(row["link"] for row in links["rows"])
+
+    first = client.get(f"/api/targets/{DEMO_TARGET}/links?limit=5", headers=HEADERS).json()
+    second = client.get(f"/api/targets/{DEMO_TARGET}/links?limit=5&offset=5", headers=HEADERS).json()
+    assert len(first["rows"]) == 5 and len(second["rows"]) == 5
+    assert first["has_more"] and second["offset"] == 5
+    assert {row["title"] for row in first["rows"]}.isdisjoint({row["title"] for row in second["rows"]})
 
 
 def test_catalog_and_find(client: TestClient) -> None:
@@ -146,3 +153,10 @@ def test_alerts_endpoints(client: TestClient) -> None:
     assert "rows" in data and "unread" in data
     read = client.post("/api/alerts/read", json={}, headers=HEADERS).json()
     assert read["ok"] is True
+
+
+def test_web_panel_markup(client: TestClient) -> None:
+    html = client.get("/").text
+    for marker in ('id="linksMore"', 'class="tabbar"', 'name="theme-color"', 'id="tabBell"'):
+        assert marker in html
+    assert "github.com/syslikoffnet/s.git" not in html

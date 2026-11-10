@@ -307,13 +307,20 @@ def create_app(settings: Settings) -> FastAPI:
         return {"ok": True, "changed": changed, "unread": state.store.count_alerts()}
 
     @app.get("/api/targets/{tg_id}/links", dependencies=[Depends(guard)])
-    async def target_links(tg_id: int, limit: int = Query(300, ge=1, le=2000)) -> dict[str, Any]:
+    async def target_links(
+        tg_id: int,
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+    ) -> dict[str, Any]:
         target = state.store.get_target(tg_id)
         if not target:
             raise HTTPException(404, "Цель не найдена")
         rows = state.store.all_target_groups(int(target["id"]))
+        chunk = rows[offset : offset + limit]
         return {
             "total": len(rows),
+            "offset": offset,
+            "has_more": offset + len(chunk) < len(rows),
             "rows": [
                 {
                     "title": row.get("title"),
@@ -322,7 +329,7 @@ def create_app(settings: Settings) -> FastAPI:
                     "tg_id": row.get("tg_id"),
                     "status": row.get("status"),
                 }
-                for row in rows[:limit]
+                for row in chunk
             ],
         }
 
