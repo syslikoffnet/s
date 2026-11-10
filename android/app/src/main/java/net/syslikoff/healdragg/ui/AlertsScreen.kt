@@ -107,6 +107,12 @@ fun AlertsScreen(
                 Spacer(Modifier.height(10.dp))
             }
 
+            vm.lastError?.let { message ->
+                item("error") {
+                    ErrorBanner(message = message, onRetry = { vm.refresh(force = true) })
+                }
+            }
+
             if (rows.isEmpty()) {
                 item("empty") {
                     EmptyState(

@@ -1,19 +1,20 @@
 package net.syslikoff.healdragg.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,7 +31,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,12 +39,12 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,12 +53,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -69,12 +67,11 @@ private enum class Tab(val title: String, val emoji: String) {
 }
 
 /**
- * Корень приложения: адаптивный каркас, вкладки, шторка движка и навигация.
- * На телефоне — нижняя панель и push-переходы, на планшете — rail и две колонки.
+ * Корень приложения: адаптивный каркас (телефон — табы, планшет — rail и две
+ * колонки), вкладки, статус движка и общий snackbar.
  */
 @Composable
 fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val toast: (String) -> Unit = { message ->
@@ -83,9 +80,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
 
     var tab by rememberSaveable { mutableStateOf(Tab.Targets) }
     var openTarget by rememberSaveable { mutableStateOf<Long?>(null) }
-    var showSetup by rememberSaveable {
-        mutableStateOf(vm.isLocal && !vm.hasCredentials)
-    }
+    var showSetup by rememberSaveable { mutableStateOf(vm.isLocal && !vm.hasCredentials) }
 
     BackHandler(enabled = openTarget != null) { openTarget = null }
     BackHandler(enabled = openTarget == null && showSetup && !vm.isLocal) { showSetup = false }
@@ -100,19 +95,18 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                 vm.refresh(force = true)
             },
         )
-        SnackbarHost(hostState = snackbar)
+        Box(Modifier.fillMaxSize().background(Hd.Bg)) {
+            SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+        }
         return
     }
 
     BoxWithConstraints(Modifier.fillMaxSize().background(Hd.Bg)) {
-        val wide = maxWidth >= 760.dp
+        val wide = maxWidth >= 800.dp
 
         if (wide) {
-            Row(Modifier.fillMaxSize()) {
-                NavigationRail(
-                    containerColor = Hd.Surface,
-                    header = { RailHeader(vm) },
-                ) {
+            Row(Modifier.fillMaxSize().navigationBarsPadding()) {
+                NavigationRail(containerColor = Hd.Surface, header = { RailHeader() }) {
                     Spacer(Modifier.height(12.dp))
                     Tab.entries.forEach { item ->
                         NavigationRailItem(
@@ -122,37 +116,64 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                 tab = item
                             },
                             icon = { TabIcon(item, vm) },
-                            label = {
-                                Text(
-                                    item.title,
-                                    style = MaterialTheme.typography.labelMedium,
-                                )
-                            },
-                            colors = railColors(),
+                            label = { Text(item.title, style = MaterialTheme.typography.labelMedium) },
+                            colors = NavigationRailItemDefaults.colors(
+                                selectedIconColor = Hd.Accent,
+                                selectedTextColor = Hd.Accent,
+                                indicatorColor = Hd.Accent.copy(alpha = 0.16f),
+                                unselectedIconColor = Hd.Muted,
+                                unselectedTextColor = Hd.Muted,
+                            ),
                         )
                     }
                 }
-                Column(Modifier.weight(1f).fillMaxSize()) {
+                Column(Modifier.weight(1f).fillMaxHeight()) {
                     HdTopBar(
                         vm = vm,
                         title = when {
                             openTarget != null -> "Цель"
                             else -> tab.title
                         },
-                        onRefresh = { vm.refresh(force = true) },
+                        onRefresh = {
+                            if (openTarget == null) vm.refresh(force = true) else vm.refresh()
+                        },
                         onSettings = { showSetup = true },
                     )
                     Box(Modifier.weight(1f)) {
-                        TabContent(
-                            vm = vm,
-                            tab = tab,
-                            openTarget = openTarget,
-                            onOpenTarget = { openTarget = it },
-                            onCloseTarget = { openTarget = null },
-                            onToast = toast,
-                            onOpenBattery = onOpenBattery,
-                            onBackToSetup = { showSetup = true },
-                        )
+                        when (tab) {
+                            Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                                Box(Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
+                                    SettingsScreen(
+                                        vm = vm,
+                                        onOpenBattery = onOpenBattery,
+                                        onToast = toast,
+                                        onEditServer = { showSetup = true },
+                                    )
+                                }
+                            }
+                            else -> Row(Modifier.fillMaxSize()) {
+                                Box(Modifier.width(410.dp).fillMaxHeight()) {
+                                    if (tab == Tab.Targets) {
+                                        TargetsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                                    } else {
+                                        AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                                    }
+                                }
+                                Box(Modifier.width(1.dp).fillMaxHeight().background(Hd.Stroke))
+                                Box(Modifier.weight(1f).fillMaxHeight()) {
+                                    if (openTarget != null) {
+                                        TargetDetailScreen(
+                                            vm = vm,
+                                            tgId = openTarget!!,
+                                            onBack = { openTarget = null },
+                                            onToast = toast,
+                                        )
+                                    } else {
+                                        EmptyDetailHint(tab)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -177,9 +198,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                     selected = tab == item,
                                     onClick = { tab = item },
                                     icon = { TabIcon(item, vm) },
-                                    label = {
-                                        Text(item.title, style = MaterialTheme.typography.labelMedium)
-                                    },
+                                    label = { Text(item.title, style = MaterialTheme.typography.labelMedium) },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = Hd.Accent,
                                         selectedTextColor = Hd.Accent,
@@ -194,16 +213,22 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                 },
             ) { inner ->
                 Box(Modifier.padding(inner)) {
-                    TabContent(
-                        vm = vm,
-                        tab = tab,
-                        openTarget = openTarget,
-                        onOpenTarget = { openTarget = it },
-                        onCloseTarget = { openTarget = null },
-                        onToast = toast,
-                        onOpenBattery = onOpenBattery,
-                        onBackToSetup = { showSetup = true },
-                    )
+                    when {
+                        openTarget != null -> TargetDetailScreen(
+                            vm = vm,
+                            tgId = openTarget!!,
+                            onBack = { openTarget = null },
+                            onToast = toast,
+                        )
+                        tab == Tab.Targets -> TargetsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                        tab == Tab.Alerts -> AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                        else -> SettingsScreen(
+                            vm = vm,
+                            onOpenBattery = onOpenBattery,
+                            onToast = toast,
+                            onEditServer = { showSetup = true },
+                        )
+                    }
                 }
             }
         }
@@ -212,46 +237,32 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
 }
 
 @Composable
-private fun TabContent(
-    vm: AppViewModel,
-    tab: Tab,
-    openTarget: Long?,
-    onOpenTarget: (Long) -> Unit,
-    onCloseTarget: () -> Unit,
-    onToast: (String) -> Unit,
-    onOpenBattery: () -> Unit,
-    onBackToSetup: () -> Unit,
-) {
-    Crossfade(targetState = openTarget to tab, label = "screen") { (target, currentTab) ->
-        when {
-            target != null -> TargetDetailScreen(
-                vm = vm,
-                tgId = target,
-                onBack = onCloseTarget,
-                onToast = onToast,
-            )
-            currentTab == Tab.Targets -> TargetsScreen(
-                vm = vm,
-                onOpenTarget = onOpenTarget,
-                onToast = onToast,
-            )
-            currentTab == Tab.Alerts -> AlertsScreen(
-                vm = vm,
-                onOpenTarget = onOpenTarget,
-                onToast = onToast,
-            )
-            else -> SettingsScreen(
-                vm = vm,
-                onOpenBattery = onOpenBattery,
-                onToast = onToast,
-                onEditServer = onBackToSetup,
-            )
-        }
+private fun EmptyDetailHint(tab: Tab) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(if (tab == Tab.Alerts) "🔔" else "🎯", fontSize = 42.sp)
+        Spacer(Modifier.height(10.dp))
+        Text(
+            if (tab == Tab.Alerts) "Выбери алерт слева" else "Выбери цель слева",
+            style = MaterialTheme.typography.titleMedium,
+            color = Hd.Text,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Здесь откроется карточка: чаты, лента и паутина связей.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Hd.Muted,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
 @Composable
-private fun RailHeader(vm: AppViewModel) {
+private fun RailHeader() {
     Column(
         Modifier.statusBarsPadding().padding(top = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -262,8 +273,6 @@ private fun RailHeader(vm: AppViewModel) {
                 .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center,
         ) { Text("🩺", fontSize = 20.sp) }
-        Spacer(Modifier.height(6.dp))
-        EngineDot(vm.engine)
     }
 }
 
@@ -281,15 +290,6 @@ private fun TabIcon(item: Tab, vm: AppViewModel) {
         Text(item.emoji, fontSize = 19.sp)
     }
 }
-
-@Composable
-private fun railColors() = androidx.compose.material3.NavigationRailItemDefaults.colors(
-    selectedIconColor = Hd.Accent,
-    selectedTextColor = Hd.Accent,
-    indicatorColor = Hd.Accent.copy(alpha = 0.16f),
-    unselectedIconColor = Hd.Muted,
-    unselectedTextColor = Hd.Muted,
-)
 
 @Composable
 private fun HdTopBar(
@@ -322,16 +322,11 @@ private fun HdTopBar(
                 )
             }
             IconButton(onClick = onSettings) {
-                Icon(
-                    Icons.Filled.Settings,
-                    contentDescription = "Настройки",
-                    tint = Hd.Muted,
-                )
+                Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = Hd.Muted)
             }
         }
         if (vm.offline && vm.engine != EngineState.Ready) {
-            Spacer(Modifier.height(4.dp))
-            EngineBanner(vm, onRefresh)
+            EngineBanner(vm)
         }
     }
 }
@@ -361,7 +356,7 @@ private fun EngineDot(state: EngineState) {
 }
 
 @Composable
-private fun EngineBanner(vm: AppViewModel, onRetry: () -> Unit) {
+private fun EngineBanner(vm: AppViewModel) {
     HdCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -376,14 +371,12 @@ private fun EngineBanner(vm: AppViewModel, onRetry: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = "Повторить",
+                "Запустить",
                 color = Hd.Accent2,
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier
-                    .padding(start = 8.dp)
-                    .semantics { contentDescription = "Перезапустить движок" }
-                    .then(Modifier)
-                    .padding(6.dp),
+                    .clickable { vm.startEngine() }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
         vm.engineError?.let { error ->

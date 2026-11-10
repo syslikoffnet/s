@@ -96,6 +96,8 @@ fun TargetDetailScreen(
 
     var job by remember(tgId) { mutableStateOf<Job?>(null) }
     var actionBusy by remember { mutableStateOf(false) }
+    var linksOpen by remember { mutableStateOf(false) }
+    var chatQuery by remember(tgId) { mutableStateOf("") }
 
     suspend fun loadTarget() {
         val client = api ?: return
@@ -256,6 +258,27 @@ fun TargetDetailScreen(
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text("Ссылки на все чаты", color = Hd.Text) },
+                                onClick = {
+                                    menu = false
+                                    linksOpen = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Глубокий скан", color = Hd.Text) },
+                                onClick = {
+                                    menu = false
+                                    actionBusy = true
+                                    vm.startScan(tgId, deep = true) { result ->
+                                        actionBusy = false
+                                        result.onSuccess {
+                                            job = it
+                                            onToast("Глубокий скан запущен")
+                                        }.onFailure { onToast(it.message ?: "Не удалось запустить скан") }
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Удалить цель", color = Hd.Bad) },
                                 leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = Hd.Bad) },
                                 onClick = {
@@ -302,6 +325,9 @@ fun TargetDetailScreen(
                     modifier = Modifier.weight(1f).heightIn(min = 46.dp),
                 ) {
                     Text("Собрать ленту", color = Hd.Accent2, maxLines = 1, fontSize = 12.sp)
+                }
+                IconButton(onClick = { linksOpen = true }) {
+                    Text("🔗", fontSize = 18.sp)
                 }
                 IconButton(onClick = { scope.launch { loadTarget(); loadChats(reset = true); loadFeed() } }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Обновить цель", tint = Hd.Muted)
@@ -379,6 +405,14 @@ fun TargetDetailScreen(
 
         when (tab) {
             DetailTab.Chats -> {
+                item("chat-filter") {
+                    HdTextField(
+                        value = chatQuery,
+                        onValueChange = { chatQuery = it },
+                        label = "Поиск по чатам",
+                        singleLine = true,
+                    )
+                }
                 item("orders") {
                     Row(
                         Modifier.horizontalScroll(rememberScrollState()),
@@ -413,7 +447,13 @@ fun TargetDetailScreen(
                         )
                     }
                 }
-                items(chats, key = { it.tgId }) { chat ->
+                items(
+                    if (chatQuery.isBlank()) chats else chats.filter {
+                        it.title.contains(chatQuery, ignoreCase = true) ||
+                            (it.username?.contains(chatQuery, ignoreCase = true) == true)
+                    },
+                    key = { it.tgId },
+                ) { chat ->
                     ChatCard(chat = chat, onToast = onToast)
                 }
                 if (chatsLoading) {
@@ -443,6 +483,15 @@ fun TargetDetailScreen(
                 GraphTab(api = api, tgId = tgId, onToast = onToast)
             }
         }
+    }
+
+    if (linksOpen) {
+        LinksDialog(
+            api = api,
+            tgId = tgId,
+            onDismiss = { linksOpen = false },
+            onToast = onToast,
+        )
     }
 
     if (confirmDelete) {
@@ -584,4 +633,66 @@ private fun MessageCard(message: Message, onToast: (String) -> Unit) {
             )
         }
     }
+}
+
+
+@Composable
+private fun LinksDialog(api: Api?, tgId: Long, onDismiss: () -> Unit, onToast: (String) -> Unit) {
+    val context = LocalContext.current
+    var rows by remember { mutableStateOf<List<ChatRow>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(tgId) {
+        rows = api?.links(tgId, offset = 0, limit = 500)?.rows.orEmpty()
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Ссылки на чаты · ${rows.size}") },
+        text = {
+            if (loading) {
+                LoadingBlock()
+            } else if (rows.isEmpty()) {
+                Text("Ссылок пока нет — сначала просканируй цель.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                LazyColumn(Modifier.heightIn(max = 430.dp)) {
+                    items(rows, key = { it.tgId }) { row ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    row.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Hd.Text,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    row.username?.let { "@$it" } ?: "приватный · ID ${row.tgId}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Hd.Dim,
+                                    maxLines = 1,
+                                )
+                            }
+                            TextButton(onClick = {
+                                if (row.link != null) {
+                                    copyText(context, "link", row.link!!)
+                                    onToast("Ссылка скопирована")
+                                } else onToast("У чата нет ссылки")
+                            }) { Text("⧉", color = Hd.Accent2, fontSize = 16.sp) }
+                            TextButton(onClick = {
+                                if (!openLink(context, row.link)) onToast("Нет ссылки")
+                            }) { Text("↗", color = Hd.Muted, fontSize = 16.sp) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть", color = Hd.Accent) } },
+        containerColor = Hd.Surface,
+        titleContentColor = Hd.Text,
+    )
 }

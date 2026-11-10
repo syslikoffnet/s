@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -60,6 +62,8 @@ fun SettingsScreen(
     var url by remember(vm.baseUrl) { mutableStateOf(vm.baseUrl) }
     var token by remember(vm.token) { mutableStateOf(vm.token) }
     var probeResult by remember { mutableStateOf<String?>(null) }
+    var probing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -201,30 +205,31 @@ fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            vm.saveServer(url, token)
-                            probeResult = "Проверяю…"
+                            scope.launch {
+                                probing = true
+                                probeResult = null
+                                vm.saveServer(url, token)
+                                kotlinx.coroutines.delay(400)
+                                probeResult = if (vm.api?.health() == true) "Связь есть ✓" else "Нет связи ✗"
+                                probing = false
+                            }
                         },
+                        enabled = !probing,
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Hd.Accent, contentColor = Hd.Black),
                         modifier = Modifier.heightIn(min = 44.dp),
-                    ) { Text("Применить") }
+                    ) { Text(if (probing) "Проверяю…" else "Применить") }
                     OutlinedButton(
                         onClick = { onEditServer() },
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.heightIn(min = 44.dp),
                     ) { Text("Мастер настройки", color = Hd.Accent2) }
                 }
-                LaunchedEffect(url, token) {
-                    if (probeResult == "Проверяю…") {
-                        kotlinx.coroutines.delay(700)
-                        probeResult = if (vm.api?.health() == true) "Связь есть ✓" else "Нет связи ✗"
-                    }
-                }
                 probeResult?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(
                         it,
-                        color = if (it.startsWith("Связь есть")) Hd.Good else if (it == "Проверяю…") Hd.Muted else Hd.Bad,
+                        color = if (it.startsWith("Связь есть")) Hd.Good else Hd.Bad,
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }
@@ -329,8 +334,10 @@ fun SetupScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Hd.Bg)
+            .statusBarsPadding()
+            .navigationBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 28.dp),
+            .padding(horizontal = 20.dp, vertical = 22.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(Modifier.height(12.dp))
