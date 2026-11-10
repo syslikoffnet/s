@@ -31,10 +31,11 @@ from .backup import create_backup, list_backups, recover_from_latest, restore_ba
 from .config import Settings
 from .db import Store
 from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts
-from .graph import build_graph
+from .graph import build_global_graph, build_graph
 from .intel import guess
 from .login import LoginError, LoginManager
 from .manual import import_groups, parse_batch
+from .money import read_display, write_display
 from .profile import photo_base64, refresh_profile
 from .scan import bootstrap, resolve_and_store_target, scan_target
 from .session_import import decode_payload, import_upload_async
@@ -418,6 +419,26 @@ def create_app(settings: Settings) -> Starlette:
             },
             "db_bytes": state.store.path.stat().st_size if state.store.path.exists() else 0,
         }
+
+    async def graph_global(request: Request) -> dict[str, Any]:
+        """Общая карта OSINT: цели ↔ чаты ↔ собеседники одним графом."""
+        guard(request)
+        return build_global_graph(
+            state.store,
+            max_targets=_q_int(request, "targets", 60, 1, 500),
+            max_groups=_q_int(request, "chats", 120, 1, 2000),
+            max_peers=_q_int(request, "peers", 200, 1, 2000),
+        )
+
+    async def display_get(request: Request) -> dict[str, Any]:
+        """Валюта приложения и курсы — карточки показывают цены в ней."""
+        guard(request)
+        return read_display(state.store)
+
+    async def display_post(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        return write_display(state.store, body)
 
     async def backup_create(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1385,6 +1406,9 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/stats", _route(stats)),
         Route("/api/sessions", _route(sessions)),
         Route("/api/sessions/import", _route(session_import), methods=["POST"]),
+        Route("/api/graph/global", _route(graph_global)),
+        Route("/api/settings/display", _route(display_get)),
+        Route("/api/settings/display", _route(display_post), methods=["POST"]),
         Route("/api/backup", _route(backup_list)),
         Route("/api/backup/create", _route(backup_create), methods=["POST"]),
         Route("/api/backup/download", _route(backup_download)),

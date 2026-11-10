@@ -51,8 +51,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -160,7 +164,7 @@ fun GiftsScreen(
             .onSuccess {
                 nftSummary = it.summary
                 collections = it.collections
-                nftRows = if (reset) it.rows else nftRows + it.rows
+                nftRows = if (reset) it.rows else (nftRows + it.rows).distinctBy { row -> row.slug }
                 nftTotal = it.total
                 nftHasMore = (if (reset) it.rows.size else nftRows.size) < it.total
                 nftOwnersList = it.owners
@@ -222,6 +226,11 @@ fun GiftsScreen(
                 break
             }
             job = fresh
+            if (!fresh.finished) {
+                // real-time: пока идёт обход, показываем уже найденное
+                if (mode != 0) loadNft(reset = true)
+                reload()
+            }
             if (fresh.finished) {
                 if (fresh.error != null) {
                     error = fresh.error
@@ -332,7 +341,7 @@ fun GiftsScreen(
                     Spacer(Modifier.height(10.dp))
                     Text("Глубина по сети", style = MaterialTheme.typography.labelMedium, color = Hd.Dim)
                     Row(
-                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         listOf(1, 2, 3, 4, 5, 6, 7, 8).forEach { value ->
@@ -363,7 +372,7 @@ fun GiftsScreen(
                         color = Hd.Dim,
                     )
                     Row(
-                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         listOf(5, 50, 250, 1_000, 5_000).forEach { value ->
@@ -681,7 +690,7 @@ fun GiftsScreen(
                             color = Hd.Dim,
                         )
                         Row(
-                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             listOf(500, 2_000, 10_000, 50_000, 200_000).forEach { value ->
@@ -996,6 +1005,51 @@ private fun giftChipColors() = FilterChipDefaults.filterChipColors(
     containerColor = Hd.Surface,
 )
 
+
+/**
+ * Плашка подарка вместо общей иконки: цвет и узор зависят от коллекции,
+ * внутри — первые буквы названия. Узнаётся с первого взгляда, как в Telegram.
+ */
+@Composable
+private fun GiftBadge(
+    title: String,
+    token: String,
+    size: Dp = 42.dp,
+) {
+    val palette = listOf(
+        Color(0xFF8E7BFF) to Color(0xFF5B8CFF),
+        Color(0xFFFF9A6C) to Color(0xFFFFD166),
+        Color(0xFF4DD0E1) to Color(0xFF7C9BFF),
+        Color(0xFFF56CA0) to Color(0xFFB98CFF),
+        Color(0xFF7BD88F) to Color(0xFFCBE86B),
+        Color(0xFFFFB74D) to Color(0xFFF06292),
+        Color(0xFF64B5F6) to Color(0xFF4DB6AC),
+    )
+    val seed = (token.ifBlank { title }).hashCode()
+    val pair = palette[((seed % palette.size) + palette.size) % palette.size]
+    val letters = title.trim()
+        .split(" ")
+        .filter { it.isNotBlank() }
+        .take(2)
+        .map { it.first().uppercaseChar() }
+        .joinToString("")
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Brush.linearGradient(listOf(pair.first, pair.second))),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            letters.ifBlank { "★" },
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
 @Composable
 private fun GiftCard(
     gift: GiftItem,
@@ -1028,22 +1082,7 @@ private fun GiftCard(
         contentPadding = PaddingValues(14.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .background(
-                        if (gift.isNft) Hd.Accent.copy(alpha = 0.16f) else Hd.Accent2.copy(alpha = 0.14f),
-                        RoundedCornerShape(12.dp),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = if (gift.isNft) Icons.Filled.AutoAwesome else Icons.Outlined.CardGiftcard,
-                    contentDescription = null,
-                    tint = if (gift.isNft) Hd.Accent else Hd.Accent2,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+            GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 42.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1198,19 +1237,7 @@ private fun NftItemCard(
         contentPadding = PaddingValues(14.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            Box(
-                Modifier
-                    .size(40.dp)
-                    .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.AutoAwesome,
-                    contentDescription = null,
-                    tint = Hd.Accent,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+            GiftBadge(title = item.title, token = item.slug, size = 42.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

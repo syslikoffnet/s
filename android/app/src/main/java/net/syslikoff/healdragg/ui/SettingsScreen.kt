@@ -34,6 +34,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +61,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -86,6 +90,11 @@ fun SettingsScreen(
     var backupLabel by remember { mutableStateOf<String?>(null) }
     var pendingBackup by remember { mutableStateOf<ByteArray?>(null) }
     var backupList by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
+    var chosenCurrency by remember { mutableStateOf(vm.currency) }
+    var usdRub by remember { mutableStateOf(Money.usdRub.toString()) }
+    var tonUsd by remember { mutableStateOf(Money.tonUsd.toString()) }
+    var starUsd by remember { mutableStateOf(Money.starUsd.toString()) }
+    var currencyBusy by remember { mutableStateOf(false) }
 
     fun reloadBackups() {
         scope.launch {
@@ -360,6 +369,104 @@ fun SettingsScreen(
                             uncheckedBorderColor = Hd.Stroke,
                         ),
                     )
+                }
+            }
+        }
+
+        item("label-money") { SectionLabel("Валюта и курсы") }
+        item("money") {
+            HdCard {
+                Text(
+                    "Показывать цены в",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Hd.Text,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Telegram отдаёт цену подарка в TON или звёздах. Карточки и NFT " +
+                        "пересчитываются в выбранную валюту по курсам ниже.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Hd.Muted,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf(
+                        "RUB" to "₽ рубли",
+                        "USD" to "$ доллары",
+                        "EUR" to "€ евро",
+                        "TON" to "TON",
+                        "STARS" to "★ звёзды",
+                    ).forEach { (code, label) ->
+                        FilterChip(
+                            selected = chosenCurrency == code,
+                            onClick = { chosenCurrency = code },
+                            label = { Text(label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Hd.Accent.copy(alpha = 0.18f),
+                                selectedLabelColor = Hd.Accent,
+                                labelColor = Hd.Muted,
+                                containerColor = Hd.Surface2,
+                            ),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Курсы (можно поправить под себя)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Hd.Dim,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HdTextField(
+                        value = usdRub,
+                        onValueChange = { usdRub = it.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }.take(8) },
+                        label = "₽ за 1 $",
+                        keyboard = KeyboardType.Decimal,
+                        modifier = Modifier.weight(1f),
+                    )
+                    HdTextField(
+                        value = tonUsd,
+                        onValueChange = { tonUsd = it.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }.take(8) },
+                        label = "$ за 1 TON",
+                        keyboard = KeyboardType.Decimal,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                HdTextField(
+                    value = starUsd,
+                    onValueChange = { starUsd = it.filter { ch -> ch.isDigit() || ch == '.' || ch == ',' }.take(8) },
+                    label = "$ за 1 звезду",
+                    keyboard = KeyboardType.Decimal,
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = {
+                        if (currencyBusy) return@Button
+                        currencyBusy = true
+                        vm.saveDisplay(
+                            chosenCurrency,
+                            usdRub.replace(',', '.').toDoubleOrNull() ?: Money.usdRub,
+                            tonUsd.replace(',', '.').toDoubleOrNull() ?: Money.tonUsd,
+                            starUsd.replace(',', '.').toDoubleOrNull() ?: Money.starUsd,
+                        ) { result ->
+                            currencyBusy = false
+                            result.onSuccess {
+                                chosenCurrency = it
+                                onToast("Цены показываем в $it")
+                            }.onFailure { onToast(it.message ?: "Не удалось сохранить валюту") }
+                        }
+                    },
+                    enabled = !currencyBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Hd.Accent, contentColor = Hd.Black),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                ) {
+                    Text(if (currencyBusy) "Сохраняю…" else "Сохранить валюту")
                 }
             }
         }

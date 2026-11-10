@@ -238,6 +238,22 @@ class Api(private val baseUrl: String, private val token: String) {
         return raw(path, "GET", null, "text/csv")
     }
 
+    /** Валюта приложения и курсы — цены на карточках считаются в ней. */
+    suspend fun displaySettings(): JSONObject = obj("api/settings/display")
+
+    suspend fun saveDisplay(currency: String, usdRub: Double, tonUsd: Double, starUsd: Double): JSONObject {
+        val body = JSONObject()
+            .put("currency", currency)
+            .put(
+                "rates",
+                JSONObject()
+                    .put("usd_rub", usdRub)
+                    .put("ton_usd", tonUsd)
+                    .put("star_usd", starUsd),
+            )
+        return obj("api/settings/display", "POST", body)
+    }
+
     // ── аккаунты и резервные копии ──────────────────────────────────────────
 
     suspend fun importSession(filename: String, payload: ByteArray): SessionImportResult {

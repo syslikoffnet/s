@@ -423,3 +423,42 @@ def test_session_import_api(client: TestClient) -> None:
     )
     assert bad.status_code == 400
     assert "сесси" in bad.text.lower()
+
+
+def test_display_currency(client: TestClient) -> None:
+    base = client.get("/api/settings/display", headers=HEADERS).json()
+    assert base["currency"] == "RUB"
+    assert base["rates"]["usd_rub"] > 0
+
+    changed = client.post(
+        "/api/settings/display",
+        headers=HEADERS,
+        json={"currency": "USD", "rates": {"usd_rub": 100, "ton_usd": 6}},
+    ).json()
+    assert changed["currency"] == "USD"
+    assert changed["rates"]["usd_rub"] == 100
+    assert changed["rates"]["ton_usd"] == 6
+    assert changed["rates"]["star_usd"] > 0  # остальное не сбрасывается
+
+    bad = client.post("/api/settings/display", headers=HEADERS, json={"currency": "BTC"})
+    assert bad.status_code == 400
+    assert "валюта" in bad.text.lower()
+
+
+def test_graph_global(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    target = store.upsert_target(555111, username="global_demo", access_hash=1)
+    group_pk = store.upsert_group(999888, title="Общий чат", username="common")
+    store.upsert_target_group(int(target["id"]), group_pk, status="unknown", source="search")
+    store.add_message(int(target["id"]), group_pk, 1, date=1700000000, text="привет")
+    peer_pk = store.upsert_peer(424242)
+    store.bump_edge(int(target["id"]), peer_pk, replies=2, ts=1700000000)
+
+    payload = client.get("/api/graph/global?targets=100&chats=100&peers=100", headers=HEADERS).json()
+    ids = {node["id"] for node in payload["nodes"]}
+    assert f"t{int(target['id'])}" in ids
+    assert f"g{group_pk}" in ids
+    assert f"p{peer_pk}" in ids
+    kinds = {link["kind"] for link in payload["links"]}
+    assert {"writes", "talks"} <= kinds
+    assert payload["stats"]["targets"] >= 1

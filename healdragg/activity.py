@@ -130,6 +130,182 @@ def _peer_from_sender(sender: Any) -> dict[str, Any] | None:
     }
 
 
+
+async def _dialog_chats(
+    pool: SessionPool,
+    store: Store,
+    target: dict[str, Any],
+    coverage: dict[str, dict[int, int]],
+    limit: int = 150,
+) -> list[dict[str, Any]]:
+    """Чаты из диалогов наших аккаунтов — работают без предварительного скана.
+
+    Ключевой сценарий: цель и наш аккаунт сидят в одной группе, но участники
+    скрыты и скан ничего не записал. Диалоги видны всегда, а сообщения цели мы
+    фильтруем сами — membership для этого не нужен.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    target_pk = int(target["id"])
+    for name in store.session_names():
+        try:
+            account = await pool.connect(name)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("dialog sweep: сессия %s: %s", name, exc)
+            continue
+        try:
+            async for dialog in account.client.iter_dialogs(limit=max(20, int(limit))):
+                entity = getattr(dialog, "entity", None)
+                tg_id = int(getattr(entity, "id", 0) or 0)
+                if not tg_id or not (dialog.is_group or dialog.is_channel):
+                    continue
+                access_hash = getattr(entity, "access_hash", None)
+                coverage.setdefault(name, {})[tg_id] = access_hash
+                if tg_id in seen:
+                    continue
+                seen.add(tg_id)
+                megagroup = bool(getattr(entity, "megagroup", False))
+                kind = "supergroup" if megagroup else ("channel" if dialog.is_channel else "group")
+                group_pk = store.upsert_group(
+                    tg_id,
+                    title=str(getattr(entity, "title", "") or ""),
+                    access_hash=access_hash,
+                    username=getattr(entity, "username", None),
+                    kind=kind,
+                    is_megagroup=megagroup,
+                    members_count=getattr(entity, "participants_count", None),
+                    discovered_from="dialogs",
+                    discovered_by=name,
+                )
+                store.upsert_target_group(target_pk, group_pk, status="unknown", source="dialogs", session=name)
+                out.append(
+                    {
+                        "group_id": group_pk,
+                        "id": group_pk,
+                        "tg_id": tg_id,
+                        "title": str(getattr(entity, "title", "") or ""),
+                        "kind": kind,
+                        "access_hash": access_hash,
+                        "status": "unknown",
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dialog sweep %s: %s", name, exc)
+    return out
+
+
+async def _global_target_messages(
+    pool: SessionPool,
+    store: Store,
+    target: dict[str, Any],
+    cutoff: int,
+    *,
+    limit: int = 100,
+) -> dict[str, int]:
+    """Глобальный поиск сообщений цели по всем чатам Telegram.
+
+    ``messages.search`` с пустым peer'ом отдаёт сообщения автора где угодно —
+    это единственный способ увидеть активность в чатах, где наших аккаунтов нет
+    и где участники скрыты. Ничего не перебираем вручную: один запрос.
+    """
+    stats = {"found": 0, "chats": 0, "stored": 0}
+    names = store.session_names()
+    if not names:
+        return stats
+    from telethon.tl.functions.messages import SearchRequest
+    from telethon.tl.types import InputMessagesFilterEmpty, InputPeerEmpty, InputUser
+
+    target_tg_id = int(target["tg_user_id"])
+    target_pk = int(target["id"])
+    try:
+        account = await pool.connect(names[0])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("global search: сессия: %s", exc)
+        return stats
+    limiter = account.limiter or RateLimiter()
+    try:
+        entity = await limiter.call(
+            lambda: account.client.get_entity(target.get("username") or target_tg_id)
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.info("global search: цель не резолвится (%s)", exc)
+        return stats
+    access_hash = getattr(entity, "access_hash", None)
+    if not access_hash:
+        return stats
+    try:
+        result = await limiter.call(
+            lambda: account.client(
+                SearchRequest(
+                    peer=InputPeerEmpty(),
+                    q="",
+                    from_id=InputUser(target_tg_id, int(access_hash)),
+                    filter=InputMessagesFilterEmpty(),
+                    min_date=None,
+                    max_date=None,
+                    offset_id=0,
+                    add_offset=0,
+                    limit=max(10, min(200, int(limit))),
+                    max_id=0,
+                    min_id=0,
+                    hash=0,
+                )
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.info("global search недоступен: %s", exc)
+        return stats
+
+    chats = {int(c.id): c for c in getattr(result, "chats", []) or []}
+    seen_chats: set[int] = set()
+    for message in getattr(result, "messages", []) or []:
+        if isinstance(message, types.MessageEmpty):
+            continue
+        peer = getattr(message, "peer_id", None)
+        chat_id = None
+        for attr in ("channel_id", "chat_id"):
+            value = getattr(peer, attr, None)
+            if value:
+                chat_id = int(value)
+                break
+        if not chat_id or chat_id not in chats:
+            continue
+        chat = chats[chat_id]
+        date = int(message.date.timestamp()) if getattr(message, "date", None) else 0
+        if date and date < cutoff:
+            continue
+        seen_chats.add(chat_id)
+        megagroup = bool(getattr(chat, "megagroup", False))
+        kind = "supergroup" if megagroup else ("channel" if getattr(chat, "broadcast", False) else "group")
+        group_pk = store.upsert_group(
+            chat_id,
+            title=str(getattr(chat, "title", "") or ""),
+            access_hash=getattr(chat, "access_hash", None),
+            username=getattr(chat, "username", None),
+            kind=kind,
+            is_megagroup=megagroup,
+            members_count=getattr(chat, "participants_count", None),
+            discovered_from="search",
+        )
+        store.upsert_target_group(target_pk, group_pk, status="unknown", source="search")
+        text = (getattr(message, "message", "") or "").strip()[:MEDIA_LIMIT]
+        inserted = store.add_message(
+            target_pk,
+            group_pk,
+            int(message.id),
+            date=date or now_ts(),
+            text=text,
+            reply_to_msg=getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
+            mentions=",".join(str(i) for i in _mention_ids(message)) or None,
+            media=_media_kind(message),
+            views=getattr(message, "views", None),
+        )
+        stats["found"] += 1
+        stats["stored"] += int(inserted)
+    stats["chats"] = len(seen_chats)
+    return stats
+
+
 async def collect_activity(
     pool: SessionPool,
     store: Store,
@@ -169,6 +345,24 @@ async def collect_activity(
         max_replies = 0
         cutoff = now_ts() - 2 * 86400
     groups = _chat_candidates(store, target_pk, max(1, int(max_chats)))
+    # Скан мог не успеть записать session_groups — тогда чаты берём прямо из
+    # диалогов аккаунта. Без этого на экране цели было «0 групп».
+    if len(groups) < max(1, int(max_chats)):
+        known = {int(g.get("tg_id") or 0) for g in groups}
+        extra = await _dialog_chats(
+            pool,
+            store,
+            target,
+            coverage,
+            limit=250 if not incremental else 120,
+        )
+        for row in extra:
+            if int(row["tg_id"]) in known:
+                continue
+            known.add(int(row["tg_id"]))
+            groups.append(row)
+            if len(groups) >= max(1, int(max_chats)):
+                break
 
     stats: dict[str, Any] = {
         "chats": 0,
@@ -179,9 +373,25 @@ async def collect_activity(
         "mentions": 0,
         "skipped": 0,
         "errors": 0,
+        "global_found": 0,
+        "global_chats": 0,
     }
     started = time.time()
     replies_left = max(0, int(max_replies))
+
+    # Один запрос глобального поиска: сообщения цели в любых чатах, даже там,
+    # где наших аккаунтов нет и где участники скрыты.
+    try:
+        global_stats = await _global_target_messages(
+            pool, store, target, cutoff, limit=100 if not incremental else 60
+        )
+        stats["global_found"] = global_stats["found"]
+        stats["global_chats"] = global_stats["chats"]
+        stats["messages"] += global_stats["stored"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("глобальный поиск: %s", exc)
+        stats["global_found"] = 0
+        stats["global_chats"] = 0
 
     try:
         for index, group in enumerate(groups, start=1):

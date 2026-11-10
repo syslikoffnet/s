@@ -218,3 +218,205 @@ def render_html(graph: dict[str, Any], *, title: str = "Healdragg · сеть с
 </body>
 </html>
 """
+
+
+def build_global_graph(
+    store: Store,
+    *,
+    max_targets: int = 60,
+    max_groups: int = 120,
+    max_peers: int = 200,
+) -> dict[str, Any]:
+    """Общая карта: цели, их чаты и собеседники — всё в одном графе.
+
+    Нужна, чтобы видеть картину целиком: кто с кем в одних чатах, кто кому
+    отвечает, где пересекаются разные цели. Строится только по локальной базе.
+    """
+    targets = store.query(
+        """
+        SELECT t.*, coalesce(s.messages, 0) AS msg_count, s.last_date
+          FROM targets t
+          LEFT JOIN (
+              SELECT target_id, COUNT(*) AS messages, MAX(date) AS last_date
+                FROM messages GROUP BY target_id
+          ) s ON s.target_id = t.id
+         ORDER BY coalesce(s.messages, 0) DESC, coalesce(s.last_date, 0) DESC
+         LIMIT ?
+        """,
+        (max(1, int(max_targets)),),
+    )
+    target_pks = [int(row["id"]) for row in targets]
+    if not target_pks:
+        return {"nodes": [], "links": [], "stats": {"targets": 0, "chats": 0, "peers": 0, "links": 0}}
+
+    marks = ",".join("?" for _ in target_pks)
+    groups = store.query(
+        f"""
+        SELECT m.group_id, COUNT(*) AS n, COUNT(DISTINCT m.target_id) AS targets,
+               g.tg_id, g.title, g.kind, g.username, g.members_count
+          FROM messages m JOIN groups g ON g.id = m.group_id
+         WHERE m.target_id IN ({marks})
+         GROUP BY m.group_id
+         ORDER BY n DESC, targets DESC
+         LIMIT ?
+        """,
+        (*target_pks, max(1, int(max_groups))),
+    )
+    group_pks = [int(row["group_id"]) for row in groups]
+
+    peers: list[dict[str, Any]] = []
+    if group_pks:
+        peers = store.query(
+            f"""
+            SELECT e.peer_id, SUM(e.weight) AS weight, SUM(e.replies) AS replies,
+                   SUM(e.mentions) AS mentions, max(p.tg_id) AS tg_id,
+                   max(p.username) AS username, max(p.first_name) AS first_name,
+                   max(p.last_name) AS last_name
+              FROM edges e JOIN peers p ON p.id = e.peer_id
+             WHERE e.target_id IN ({marks})
+             GROUP BY e.peer_id
+             ORDER BY weight DESC
+             LIMIT ?
+            """,
+            (*target_pks, max(1, int(max_peers))),
+        )
+
+    nodes: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
+
+    for row in targets:
+        node_id = f"t{int(row['id'])}"
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "target",
+                "label": _person_name(row),
+                "tg_id": int(row["tg_user_id"]),
+                "weight": max(1, int(row.get("msg_count") or 0)),
+                "meta": {
+                    "username": row.get("username"),
+                    "messages": int(row.get("msg_count") or 0),
+                    "last": row.get("last_date"),
+                },
+            }
+        )
+
+    group_index: dict[int, str] = {}
+    for row in groups:
+        node_id = f"g{int(row['group_id'])}"
+        group_index[int(row["group_id"])] = node_id
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "chat",
+                "label": row.get("title") or "чат",
+                "tg_id": int(row["tg_id"] or 0),
+                "weight": max(1, int(row["n"] or 0)),
+                "meta": {
+                    "kind": row.get("kind"),
+                    "username": row.get("username"),
+                    "members": row.get("members_count"),
+                    "targets": int(row["targets"] or 0),
+                },
+            }
+        )
+
+    peer_index: dict[int, str] = {}
+    for row in peers:
+        node_id = f"p{int(row['peer_id'])}"
+        peer_index[int(row["peer_id"])] = node_id
+        nodes.append(
+            {
+                "id": node_id,
+                "type": "peer",
+                "label": _person_name(row),
+                "tg_id": int(row["tg_id"] or 0),
+                "weight": max(1, int(row.get("weight") or 0)),
+                "meta": {
+                    "username": row.get("username"),
+                    "replies": int(row.get("replies") or 0),
+                    "mentions": int(row.get("mentions") or 0),
+                },
+            }
+        )
+
+    # цель → чат (сколько сообщений) и цель → собеседник (вес связи)
+    for row in store.query(
+        f"""
+        SELECT target_id, group_id, COUNT(*) AS n, MAX(date) AS last
+          FROM messages WHERE target_id IN ({marks})
+         GROUP BY target_id, group_id
+        """,
+        tuple(target_pks),
+    ):
+        group_node = group_index.get(int(row["group_id"]))
+        if not group_node:
+            continue
+        links.append(
+            {
+                "source": f"t{int(row['target_id'])}",
+                "target": group_node,
+                "kind": "writes",
+                "weight": max(1, int(row["n"] or 0)),
+                "last": row.get("last"),
+            }
+        )
+
+    for row in store.query(
+        f"""
+        SELECT target_id, peer_id, weight, replies, mentions, last_seen
+          FROM edges WHERE target_id IN ({marks})
+        """,
+        tuple(target_pks),
+    ):
+        peer_node = peer_index.get(int(row["peer_id"]))
+        if not peer_node:
+            continue
+        links.append(
+            {
+                "source": f"t{int(row['target_id'])}",
+                "target": peer_node,
+                "kind": "talks",
+                "weight": max(1, int(row["weight"] or 0)),
+                "replies": int(row["replies"] or 0),
+                "mentions": int(row["mentions"] or 0),
+                "last": row.get("last_seen"),
+            }
+        )
+
+    if group_pks:
+        group_marks = ",".join("?" for _ in group_pks)
+        for row in store.query(
+            f"""
+            SELECT group_id, reply_to_peer AS peer_id, COUNT(*) AS n
+              FROM messages
+             WHERE target_id IN ({marks}) AND group_id IN ({group_marks})
+               AND reply_to_peer IS NOT NULL
+             GROUP BY group_id, reply_to_peer
+            """,
+            (*target_pks, *group_pks),
+        ):
+            group_node = group_index.get(int(row["group_id"]))
+            peer_node = peer_index.get(int(row["peer_id"]))
+            if not group_node or not peer_node:
+                continue
+            links.append(
+                {
+                    "source": group_node,
+                    "target": peer_node,
+                    "kind": "in_chat",
+                    "weight": max(1, int(row["n"] or 0)),
+                }
+            )
+
+    return {
+        "nodes": nodes,
+        "links": links,
+        "stats": {
+            "targets": len(targets),
+            "chats": len(groups),
+            "peers": len(peers),
+            "links": len(links),
+            "built_at": now_ts(),
+        },
+    }

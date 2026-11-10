@@ -57,6 +57,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var sessions by mutableStateOf<List<SessionInfo>>(emptyList())
         private set
 
+    /** Успели хотя бы раз прочитать список аккаунтов с движка. */
+    var sessionsLoaded by mutableStateOf(false)
+        private set
+
     /** Сбор базы: текущий (или последний) job и его ошибка. */
     var bootJob by mutableStateOf<Job?>(null)
         private set
@@ -81,6 +85,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     var api: Api? = null
+        private set
+
+    /** Валюта карточек и курсы: приходят с сервера, можно менять в настройках. */
+    var currency by mutableStateOf(prefs.getString(KEY_CURRENCY, "RUB").orEmpty())
+        private set
+    var displayLoaded = false
         private set
 
     val hasCredentials: Boolean
@@ -217,6 +227,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return manager.isIgnoringBatteryOptimizations(app.packageName)
     }
 
+    suspend fun loadDisplay() {
+        val client = api ?: return
+        val payload = runCatching { client.displaySettings() }.getOrNull() ?: return
+        Money.apply(payload)
+        displayLoaded = true
+        currency = Money.currency
+        prefs.edit().putString(KEY_CURRENCY, Money.currency).apply()
+    }
+
+    fun saveDisplay(
+        chosen: String,
+        usdRub: Double,
+        tonUsd: Double,
+        starUsd: Double,
+        onDone: (Result<String>) -> Unit,
+    ) {
+        val client = api
+        if (client == null) {
+            onDone(Result.failure(IllegalStateException("Движок ещё не готов")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { client.saveDisplay(chosen, usdRub, tonUsd, starUsd) }
+            result.onSuccess { payload ->
+                Money.apply(payload)
+                currency = Money.currency
+                prefs.edit().putString(KEY_CURRENCY, Money.currency).apply()
+                onDone(Result.success(Money.currency))
+            }.onFailure { onDone(Result.failure(it)) }
+        }
+    }
+
     private fun startPolling() {
         pollJob?.cancel()
         pollJob = viewModelScope.launch {
@@ -234,8 +276,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (engine != EngineState.Ready) {
                 engine = EngineState.Ready
                 engineBusy = false
-                if (firstLoad) refresh(force = true)
+                // всегда перечитываем состояние: иначе после старта движка
+                // список аккаунтов оставался пустым и «аккаунт добавлен» пропадал
+                refresh(force = true)
             }
+            if (!displayLoaded) loadDisplay()
         } else {
             val state = prefs.getString(KEY_ENGINE_STATE, "").orEmpty()
             engine = when {
@@ -269,6 +314,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 alerts = freshAlerts
                 unread = freshUnread
                 sessions = freshSessions
+                sessionsLoaded = true
                 lastError = null
                 offline = false
             } catch (exc: Exception) {
@@ -365,7 +411,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshSessions() {
         val client = api ?: return
         viewModelScope.launch {
-            runCatching { client.sessions() }.onSuccess { sessions = it }
+            runCatching { client.sessions() }.onSuccess {
+                sessions = it
+                sessionsLoaded = true
+            }
         }
     }
 
@@ -661,6 +710,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_ENGINE_STATE = "engine_state"
         const val KEY_ENGINE_ERROR = "engine_error"
         const val KEY_MD3 = "material3"
+        const val KEY_CURRENCY = "display_currency"
         const val LOCAL_URL = "http://127.0.0.1:8080/"
         const val LOCAL_HOST = "http://127.0.0.1"
     }

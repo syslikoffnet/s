@@ -455,11 +455,7 @@ data class GiftItem(
         get() = slug?.takeIf { it.isNotBlank() }?.let { "https://t.me/nft/$it" }
 
     val priceLabel: String?
-        get() = if (valueAmount > 0) {
-            "${compactNumber(valueAmount.toInt())} ${valueCurrency ?: "TON"}"
-        } else {
-            null
-        }
+        get() = Money.both(valueAmount, valueCurrency ?: "TON")
 
     companion object {
         fun from(o: JSONObject): GiftItem = GiftItem(
@@ -570,8 +566,8 @@ data class NftItem(
         get() = ownerUsername?.let { "@$it" } ?: ownerName ?: "id $ownerTgId"
     val priceLabel: String?
         get() = when {
-            resellAmount > 0 -> "${compactNumber(resellAmount.toInt())}★ ресейл"
-            valueAmount > 0 -> "${compactNumber(valueAmount.toInt())} ${valueCurrency ?: "TON"}"
+            resellAmount > 0 -> Money.both(resellAmount, "STARS")?.let { "$it · ресейл" }
+            valueAmount > 0 -> Money.both(valueAmount, valueCurrency ?: "TON")
             else -> null
         }
     val chainLabel: String

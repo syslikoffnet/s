@@ -306,7 +306,31 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                 }
             }
 
-            if (vm.sessions.isEmpty()) {
+            if (vm.sessions.isEmpty() && !vm.sessionsLoaded) {
+                // Движок мог ещё не отдать список — не показываем «аккаунт не
+                // подключён», иначе кажется, что добавленный аккаунт слетел.
+                item("sessions-loading") {
+                    HdCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Hd.Accent2,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                if (vm.engine == EngineState.Ready) {
+                                    "Читаю список аккаунтов…"
+                                } else {
+                                    "Жду запуска движка…"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Hd.Muted,
+                            )
+                        }
+                    }
+                }
+            } else if (vm.sessions.isEmpty()) {
                 item("sessions-empty") {
                     EmptyState(
                         emoji = "",
