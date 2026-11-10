@@ -303,7 +303,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteTarget(tgId: Long, onDone: (Boolean) -> Unit = {}) {
-        val client = api ?: return
+        val client = api ?: run {
+            onDone(false)
+            return
+        }
         viewModelScope.launch {
             val ok = runCatching { client.deleteTarget(tgId) }.isSuccess
             if (ok) {
@@ -315,14 +318,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startScan(tgId: Long, deep: Boolean, onDone: (Result<Job>) -> Unit) {
-        val client = api ?: return
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
         viewModelScope.launch {
             onDone(runCatching { client.scan(tgId, deep) })
         }
     }
 
     fun startCollect(tgId: Long, onDone: (Result<Job>) -> Unit) {
-        val client = api ?: return
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
         viewModelScope.launch {
             onDone(runCatching { client.collect(tgId) })
         }

@@ -457,13 +457,20 @@ fun TargetDetailScreen(
                         )
                     }
                 }
-                items(
-                    if (chatQuery.isBlank()) chats else chats.filter {
-                        it.title.contains(chatQuery, ignoreCase = true) ||
-                            (it.username?.contains(chatQuery, ignoreCase = true) == true)
-                    },
-                    key = { it.tgId },
-                ) { chat ->
+                val shownChats = if (chatQuery.isBlank()) chats else chats.filter {
+                    it.title.contains(chatQuery, ignoreCase = true) ||
+                        (it.username?.contains(chatQuery, ignoreCase = true) == true)
+                }
+                if (shownChats.isEmpty() && chats.isNotEmpty()) {
+                    item("chats-no-match") {
+                        EmptyState(
+                            emoji = "🔍",
+                            title = "Ничего не найдено",
+                            text = "Попробуй часть названия или @username. Поиск идёт по загруженным чатам.",
+                        )
+                    }
+                }
+                items(shownChats, key = { it.tgId }) { chat ->
                     ChatCard(chat = chat, onToast = onToast)
                 }
                 if (chatsLoading) {
@@ -671,7 +678,9 @@ private fun LinksDialog(api: Api?, tgId: Long, onDismiss: () -> Unit, onToast: (
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(tgId) {
-        rows = api?.links(tgId, offset = 0, limit = 500)?.rows.orEmpty()
+        runCatching { api?.links(tgId, offset = 0, limit = 500) }
+            .onSuccess { rows = it?.rows.orEmpty() }
+            .onFailure { onToast(it.message ?: "Не удалось загрузить ссылки") }
         loading = false
     }
 
@@ -705,15 +714,21 @@ private fun LinksDialog(api: Api?, tgId: Long, onDismiss: () -> Unit, onToast: (
                                     maxLines = 1,
                                 )
                             }
-                            TextButton(onClick = {
-                                if (row.link != null) {
-                                    copyText(context, "link", row.link!!)
-                                    onToast("Ссылка скопирована")
-                                } else onToast("У чата нет ссылки")
-                            }) { Text("⧉", color = Hd.Accent2, fontSize = 16.sp) }
-                            TextButton(onClick = {
-                                if (!openLink(context, row.link)) onToast("Нет ссылки")
-                            }) { Text("↗", color = Hd.Muted, fontSize = 16.sp) }
+                            TextButton(
+                                onClick = {
+                                    if (row.link != null) {
+                                        copyText(context, "link", row.link!!)
+                                        onToast("Ссылка скопирована")
+                                    } else onToast("У чата нет ссылки")
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Скопировать ссылку" },
+                            ) { Text("⧉", color = Hd.Accent2, fontSize = 16.sp) }
+                            TextButton(
+                                onClick = {
+                                    if (!openLink(context, row.link)) onToast("Нет ссылки")
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Открыть ссылку" },
+                            ) { Text("↗", color = Hd.Muted, fontSize = 16.sp) }
                         }
                     }
                 }
