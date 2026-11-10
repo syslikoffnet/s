@@ -1,9 +1,16 @@
 """OSINT по подаркам Telegram (star gifts).
 
-Берём профиль пользователя, читаем его сохранённые подарки, записываем
-«кто → кому → что → когда → с каким текстом», а затем по желанию спускаемся
-по дарителям на заданную глубину. NFT-подарки (StarGiftUnique) попадают в
-алерты и отдельный список.
+Три направления:
+
+1. **Профиль** — читаем сохранённые подарки пользователя, пишем «кто → кому →
+   что → когда → с каким текстом» и спускаемся по дарителям на глубину.
+2. **NFT-инвентарь** — уникальные подарки (StarGiftUnique) попадают в отдельную
+   таблицу: у каждой вещи ровно один владелец, поэтому инвентарь удобно
+   фильтровать по тому, где лежит NFT — в кошельке TON (``on_chain``) или
+   внутри аккаунта Telegram.
+3. **Сеть коллекций** — перебираем коллекции уникальных подарков по номерам
+   (``slug`` = ``<коллекция>-<номер>``) и добираем владельцев: так база
+   наполняется почти всеми пользователями, у кого есть NFT.
 """
 
 from __future__ import annotations
@@ -15,7 +22,12 @@ from datetime import datetime
 from typing import Any
 
 from telethon import utils
-from telethon.tl.functions.payments import GetSavedStarGiftsRequest
+from telethon.tl.functions.payments import (
+    GetResaleStarGiftsRequest,
+    GetSavedStarGiftsRequest,
+    GetStarGiftsRequest,
+    GetUniqueStarGiftRequest,
+)
 from telethon.tl.types import PeerUser, StarGiftUnique, User
 
 from .config import Settings
@@ -26,12 +38,42 @@ log = logging.getLogger("healdragg.gifts")
 
 Reporter = Callable[[dict[str, Any]], Awaitable[None]]
 
+MAX_DEPTH = 8
+MAX_PROFILES = 5000
+MAX_PER_PROFILE = 5000
+
+
+def _as_int(value: Any) -> int | None:
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _stars_amount(value: Any) -> int | None:
+    """Цена бывает числом, а бывает списком StarsAmount — сводим к числу."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    total = None
+    for item in value or []:
+        amount = getattr(item, "amount", None)
+        if isinstance(amount, int):
+            total = (total or 0) + amount
+    return total
+
 
 def _gift_title(gift: Any, gift_id: int | None) -> str:
     title = getattr(gift, "title", None)
     if title:
         return str(title)
     return f"Подарок #{gift_id}" if gift_id else "Подарок"
+
+
+def _slug_base(slug: Any) -> str | None:
+    """``PlushPepe-123`` → ``PlushPepe`` (по этой базе перебираем номера)."""
+    if not isinstance(slug, str):
+        return None
+    base, sep, tail = slug.rpartition("-")
+    if not sep or not tail.isdigit():
+        return None
+    return base.strip() or None
 
 
 def _sender_id(peer: Any) -> int | None:
@@ -58,6 +100,114 @@ def _user_label(user: User | None, fallback_id: int | None = None) -> str:
     return f"id {fallback_id}" if fallback_id else "неизвестно"
 
 
+def _unique_meta(gift: Any) -> dict[str, Any]:
+    """Разбирает StarGiftUnique, включая признак «на кошельке».
+
+    ``gift_address`` / ``owner_address`` означают, что вещь выпущена в TON и
+    лежит в кошельке (чейнутая). Если адресов нет — NFT живёт в аккаунте
+    Telegram (не чейнута), её и показываем отдельным фильтром.
+    """
+    slug = getattr(gift, "slug", None)
+    owner_address = getattr(gift, "owner_address", None)
+    gift_address = getattr(gift, "gift_address", None)
+    owner_id = getattr(gift, "owner_id", None)
+    owner_peer_id = _sender_id(owner_id)
+    owner_name = getattr(gift, "owner_name", None)
+    if not owner_name and owner_peer_id:
+        owner_name = f"id {owner_peer_id}"
+    return {
+        "slug": str(slug) if slug else None,
+        "num": _as_int(getattr(gift, "num", None)),
+        "title": str(getattr(gift, "title", "") or "") or None,
+        "gift_id": _as_int(getattr(gift, "gift_id", None))
+        or _as_int(getattr(gift, "id", None)),
+        "owner_tg_id": owner_peer_id,
+        "owner_name": str(owner_name) if owner_name else None,
+        "owner_address": str(owner_address) if owner_address else None,
+        "gift_address": str(gift_address) if gift_address else None,
+        "on_chain": bool(owner_address or gift_address),
+        "burned": bool(getattr(gift, "burned", False)),
+        "crafted": _as_int(getattr(gift, "crafted", None)),
+        "value_amount": _as_int(getattr(gift, "value_amount", None)),
+        "value_currency": getattr(gift, "value_currency", None),
+        "value_usd": _as_int(getattr(gift, "value_usd_amount", None)),
+        "resell_amount": _stars_amount(getattr(gift, "resell_amount", None)),
+        "availability_issued": _as_int(getattr(gift, "availability_issued", None)),
+        "availability_total": _as_int(getattr(gift, "availability_total", None)),
+    }
+
+
+def _remember_meta(
+    store: Store,
+    meta: dict[str, Any],
+    *,
+    owner_tg_id: int | None,
+    owner_username: str | None,
+    owner_name: str | None,
+) -> bool:
+    """Пишет уникальную вещь в инвентарь и заводит её коллекцию."""
+    slug = meta.get("slug")
+    if not slug:
+        return False
+    base = _slug_base(slug)
+    if base:
+        store.upsert_nft_collection(
+            base,
+            gift_id=meta.get("gift_id"),
+            title=meta.get("title"),
+            total=meta.get("availability_total"),
+        )
+    return store.upsert_nft_item(
+        slug,
+        gift_id=meta.get("gift_id"),
+        num=meta.get("num"),
+        title=meta.get("title"),
+        owner_tg_id=meta.get("owner_tg_id") or owner_tg_id,
+        owner_username=owner_username,
+        owner_name=meta.get("owner_name") or owner_name,
+        owner_address=meta.get("owner_address"),
+        gift_address=meta.get("gift_address"),
+        on_chain=meta.get("on_chain"),
+        burned=meta.get("burned"),
+        crafted=meta.get("crafted"),
+        value_amount=meta.get("value_amount"),
+        value_currency=meta.get("value_currency"),
+        value_usd=meta.get("value_usd"),
+        resell_amount=meta.get("resell_amount"),
+        availability_issued=meta.get("availability_issued"),
+        availability_total=meta.get("availability_total"),
+    )
+
+
+async def _saved_gifts(
+    client: Any,
+    limiter: RateLimiter,
+    peer: Any,
+    per_profile: int,
+) -> tuple[list[Any], dict[int, User]]:
+    """Читает сохранённые подарки страницами по 100, пока не упрёмся в лимит."""
+    saved: list[Any] = []
+    users: dict[int, User] = {}
+    offset = ""
+    while len(saved) < per_profile:
+        limit = min(100, per_profile - len(saved))
+        page = await limiter.call(
+            lambda offset=offset, limit=limit: client(
+                GetSavedStarGiftsRequest(peer=peer, offset=offset, limit=limit)
+            )
+        )
+        gifts = list(getattr(page, "gifts", None) or [])
+        for user in getattr(page, "users", None) or []:
+            if isinstance(user, User):
+                users[int(user.id)] = user
+        saved.extend(gifts)
+        next_offset = getattr(page, "next_offset", None)
+        if not gifts or not next_offset or next_offset == offset:
+            break
+        offset = next_offset
+    return saved, users
+
+
 async def crawl_gifts(
     pool: SessionPool,
     store: Store,
@@ -74,9 +224,9 @@ async def crawl_gifts(
     query = (query or "").strip()
     if not query:
         raise ValueError("нужен @username, ссылка или ID пользователя")
-    depth = max(1, min(6, int(depth)))
-    max_profiles = max(1, min(300, int(max_profiles)))
-    per_profile = max(10, min(100, int(per_profile)))
+    depth = max(1, min(MAX_DEPTH, int(depth)))
+    max_profiles = max(1, min(MAX_PROFILES, int(max_profiles)))
+    per_profile = max(10, min(MAX_PER_PROFILE, int(per_profile)))
 
     account = await pool.first(sessions)
     client = account.client
@@ -94,6 +244,7 @@ async def crawl_gifts(
     seen: set[int] = {int(seed_user.id)}
     results: list[dict[str, Any]] = []
     scanned = gifts_found = new_count = nft_seen = nft_new = errors = 0
+    nft_chain = nft_hosted = 0
 
     while queue and scanned < max_profiles:
         user, level = queue.popleft()
@@ -102,45 +253,36 @@ async def crawl_gifts(
         display = _user_label(user, owner_id)
         profile_gifts = profile_nft = profile_new = 0
         error: str | None = None
+        response = None
         try:
             peer = utils.get_input_peer(user)
-            response = await limiter.call(
-                lambda peer=peer: client(
-                    GetSavedStarGiftsRequest(peer=peer, offset="", limit=per_profile)
-                )
-            )
+            saved, users = await _saved_gifts(client, limiter, peer, per_profile)
+            response = (saved, users)
         except Exception as exc:  # noqa: BLE001 — скрытые подарки не должны ронять обход
             log.warning("подарки %s недоступны: %s", owner_id, exc)
             error = str(exc)[:300]
             errors += 1
-            response = None
 
         if response is not None:
-            users = {int(u.id): u for u in response.users if isinstance(u, User)}
-            for saved in response.gifts:
-                gift = getattr(saved, "gift", None)
+            saved, users = response
+            for item in saved:
+                gift = getattr(item, "gift", None)
                 if gift is None:
                     continue
                 gift_id = getattr(gift, "id", None)
                 is_nft = isinstance(gift, StarGiftUnique)
+                meta = _unique_meta(gift) if is_nft else {}
                 title = _gift_title(gift, gift_id)
                 stars = getattr(gift, "stars", None)
                 if stars is None:
                     stars = getattr(gift, "value_amount", None)
-                slug = getattr(gift, "slug", None)
-                num = getattr(gift, "num", None)
-                value_amount = getattr(gift, "value_amount", None)
-                value_currency = getattr(gift, "value_currency", None)
-                resell_amount = getattr(gift, "resell_amount", None)
-                availability_issued = getattr(gift, "availability_issued", None)
-                availability_total = getattr(gift, "availability_total", None)
-                sender_peer = getattr(saved, "from_id", None)
-                name_hidden = bool(getattr(saved, "name_hidden", False))
+                sender_peer = getattr(item, "from_id", None)
+                name_hidden = bool(getattr(item, "name_hidden", False))
                 sender_id = None if name_hidden else _sender_id(sender_peer)
                 sender = users.get(sender_id) if sender_id else None
-                message = getattr(saved, "message", None)
+                message = getattr(item, "message", None)
                 text = getattr(message, "text", None) if message is not None else None
-                saved_id = getattr(saved, "saved_id", None) or getattr(saved, "msg_id", None)
+                saved_id = getattr(item, "saved_id", None) or getattr(item, "msg_id", None)
                 created = store.add_gift(
                     owner_id,
                     saved_id=int(saved_id) if saved_id else None,
@@ -154,20 +296,22 @@ async def crawl_gifts(
                     owner_username=username,
                     owner_name=display,
                     message=(str(text)[:1000] if text else None),
-                    date=_timestamp(getattr(saved, "date", None)),
+                    date=_timestamp(getattr(item, "date", None)),
                     is_nft=is_nft,
                     name_hidden=name_hidden,
-                    slug=str(slug) if slug else None,
-                    num=int(num) if isinstance(num, int) else None,
-                    value_amount=int(value_amount) if isinstance(value_amount, int) else None,
-                    value_currency=str(value_currency) if value_currency else None,
-                    resell_amount=int(resell_amount) if isinstance(resell_amount, int) else None,
-                    availability_issued=(
-                        int(availability_issued) if isinstance(availability_issued, int) else None
-                    ),
-                    availability_total=(
-                        int(availability_total) if isinstance(availability_total, int) else None
-                    ),
+                    slug=meta.get("slug"),
+                    num=meta.get("num"),
+                    value_amount=meta.get("value_amount"),
+                    value_currency=meta.get("value_currency"),
+                    resell_amount=meta.get("resell_amount"),
+                    availability_issued=meta.get("availability_issued"),
+                    availability_total=meta.get("availability_total"),
+                    on_chain=bool(meta.get("on_chain")),
+                    gift_address=meta.get("gift_address"),
+                    owner_address=meta.get("owner_address"),
+                    value_usd=meta.get("value_usd"),
+                    burned=bool(meta.get("burned")),
+                    crafted=meta.get("crafted"),
                 )
                 profile_gifts += 1
                 gifts_found += 1
@@ -177,6 +321,18 @@ async def crawl_gifts(
                 if is_nft:
                     nft_seen += 1
                     profile_nft += 1
+                    if meta.get("on_chain"):
+                        nft_chain += 1
+                    else:
+                        nft_hosted += 1
+                    # инвентарь: владелец — тот, в чьём профиле лежит вещь
+                    _remember_meta(
+                        store,
+                        meta,
+                        owner_tg_id=owner_id,
+                        owner_username=username,
+                        owner_name=display,
+                    )
                     if created:
                         nft_new += 1
                         target_row = store.get_target(owner_id)
@@ -185,13 +341,14 @@ async def crawl_gifts(
                             f"NFT-подарок: {title}",
                             body=(
                                 f"{display} ← {_user_label(sender, sender_id)}"
-                                + (f" · #{num}" if isinstance(num, int) else "")
+                                + (f" · #{meta['num']}" if meta.get("num") else "")
                                 + (
-                                    f" · {value_amount} {value_currency}"
-                                    if isinstance(value_amount, int) and value_currency
+                                    f" · {meta['value_amount']} {meta['value_currency']}"
+                                    if meta.get("value_amount") and meta.get("value_currency")
                                     else ""
                                 )
                                 + (f" · {stars}★" if isinstance(stars, int) else "")
+                                + (" · в кошельке" if meta.get("on_chain") else " · в Telegram")
                                 + (f" · «{str(text)[:120]}»" if text else "")
                             ),
                             target_pk=target_row["id"] if target_row else None,
@@ -236,11 +393,14 @@ async def crawl_gifts(
         },
         "depth": depth,
         "max_profiles": max_profiles,
+        "per_profile": per_profile,
         "profiles": scanned,
         "gifts": gifts_found,
         "new": new_count,
         "nft": nft_seen,
         "nft_new": nft_new,
+        "nft_chain": nft_chain,
+        "nft_hosted": nft_hosted,
         "errors": errors,
         "results": results,
         "summary": summary,
@@ -258,10 +418,9 @@ async def refresh_gifts(
     sessions: list[str] | None = None,
     reporter: Reporter | None = None,
 ) -> dict[str, Any]:
-    """Обновляет только уже известные профили: новые чаты и подарки.
+    """Обновляет только уже известные профили: новые подарки и свежие цены NFT.
 
-    Полезно, когда база собрана: не нужно заново обходить всю сеть, чтобы
-    увидеть свежие NFT и изменившиеся цены.
+    Полезно, когда база собрана: не нужно заново обходить всю сеть.
     """
     owners = store.gift_owners(limit)
     total = len(owners)
@@ -272,11 +431,13 @@ async def refresh_gifts(
             "gifts": 0,
             "new": 0,
             "nft": 0,
+            "nft_chain": 0,
+            "nft_hosted": 0,
             "errors": 0,
             "summary": store.gift_summary(),
             "results": [],
         }
-    refreshed = gifts = new = nft = errors = 0
+    refreshed = gifts = new = nft = nft_chain = nft_hosted = errors = 0
     results: list[dict[str, Any]] = []
     for index, owner in enumerate(owners, 1):
         owner_id = int(owner["owner_tg_id"])
@@ -295,6 +456,8 @@ async def refresh_gifts(
             gifts += int(result.get("gifts", 0))
             new += int(result.get("new", 0))
             nft += int(result.get("nft", 0))
+            nft_chain += int(result.get("nft_chain", 0))
+            nft_hosted += int(result.get("nft_hosted", 0))
             refreshed += 1
             results.append({"owner_tg_id": owner_id, "query": query, "new": result.get("new", 0)})
         except Exception as exc:  # noqa: BLE001
@@ -316,10 +479,227 @@ async def refresh_gifts(
         "gifts": gifts,
         "new": new,
         "nft": nft,
+        "nft_chain": nft_chain,
+        "nft_hosted": nft_hosted,
         "errors": errors,
         "summary": store.gift_summary(),
         "results": results,
     }
 
 
-__all__ = ["crawl_gifts", "refresh_gifts"]
+async def _discover_collections(
+    client: Any,
+    limiter: RateLimiter,
+    store: Store,
+    budget: int,
+) -> dict[str, Any]:
+    """Каталог подарков → одна страница ресейла на коллекцию → база slug'ов."""
+    used = 0
+    found = 0
+    errors = 0
+    try:
+        catalog = await limiter.call(lambda: client(GetStarGiftsRequest(hash=0)))
+        used += 1
+    except Exception as exc:  # noqa: BLE001
+        log.info("каталог подарков недоступен: %s", exc)
+        return {"requests": used, "collections": 0, "errors": 1}
+    for gift in getattr(catalog, "gifts", None) or []:
+        if used >= budget:
+            break
+        if not getattr(gift, "upgrade_stars", None) and not getattr(gift, "availability_total", None):
+            continue
+        gift_id = _as_int(getattr(gift, "id", None))
+        if not gift_id:
+            continue
+        try:
+            resale = await limiter.call(
+                lambda gift_id=gift_id: client(
+                    GetResaleStarGiftsRequest(gift_id=gift_id, offset="", limit=1)
+                )
+            )
+            used += 1
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            log.info("ресейл коллекции %s: %s", gift_id, exc)
+            continue
+        for item in getattr(resale, "gifts", None) or []:
+            if not isinstance(item, StarGiftUnique):
+                continue
+            meta = _unique_meta(item)
+            base = _slug_base(meta.get("slug"))
+            if not base:
+                continue
+            store.upsert_nft_collection(
+                base,
+                gift_id=gift_id,
+                title=meta.get("title") or getattr(gift, "title", None),
+                total=(
+                    meta.get("availability_total")
+                    or _as_int(getattr(gift, "availability_total", None))
+                ),
+            )
+            found += 1
+            break
+    return {"requests": used, "collections": found, "errors": errors}
+
+
+async def crawl_nft_chain(
+    pool: SessionPool,
+    store: Store,
+    settings: Settings,
+    *,
+    requests: int = 500,
+    sessions: list[str] | None = None,
+    reporter: Reporter | None = None,
+    discover: bool = True,
+    slug: str | None = None,
+    total: int | None = None,
+) -> dict[str, Any]:
+    """Перебирает коллекции уникальных подарков и добирает их владельцев.
+
+    Каждый запрос — одна вещь по ``slug``: получаем владельца (id, @username,
+    адрес кошелька), признак «на кошельке или в Telegram», цену и тираж.
+    Прогресс лежит в базе, так что обход можно останавливать и продолжать.
+    """
+    budget = max(1, min(200_000, int(requests)))
+    if slug:
+        base = slug.strip()
+        if base:
+            store.upsert_nft_collection(base, total=max(1, int(total or 0)))
+
+    account = await pool.first(sessions)
+    client = account.client
+    limiter = account.limiter or RateLimiter()
+
+    used = 0
+    discovery: dict[str, Any] = {"requests": 0, "collections": 0, "errors": 0}
+    if discover:
+        discovery = await _discover_collections(
+            client, limiter, store, max(1, min(80, budget // 4 or 1))
+        )
+        used += int(discovery["requests"])
+
+    items = new_items = owners = on_chain = hosted = errors = 0
+    collections_done = 0
+    last_error: str | None = None
+
+    while used < budget:
+        collection = store.next_nft_collection()
+        if collection is None:
+            break
+        base = str(collection["slug_base"])
+        total = int(collection["total"] or 0)
+        cursor = max(1, int(collection["cursor"] or 1))
+        if total <= 0 or cursor > total:
+            store.mark_nft_collection_done(base)
+            continue
+
+        num = cursor
+        batch_scanned = batch_owners = batch_chain = 0
+        batch_error: str | None = None
+        while num <= total and used < budget:
+            item_slug = f"{base}-{num}"
+            try:
+                gift = await limiter.call(
+                    lambda item_slug=item_slug: client(GetUniqueStarGiftRequest(slug=item_slug))
+                )
+                used += 1
+            except Exception as exc:  # noqa: BLE001 — номер мог не выпускаться
+                used += 1
+                errors += 1
+                batch_error = str(exc)[:200]
+                last_error = batch_error
+                num += 1
+                batch_scanned += 1
+                continue
+
+            items += 1
+            batch_scanned += 1
+            if isinstance(gift, StarGiftUnique):
+                meta = _unique_meta(gift)
+                owner_tg_id = meta.get("owner_tg_id")
+                username = None
+                if owner_tg_id:
+                    existing = store.get_target(owner_tg_id)
+                    username = existing.get("username") if existing else None
+                created = _remember_meta(
+                    store,
+                    meta,
+                    owner_tg_id=owner_tg_id,
+                    owner_username=username,
+                    owner_name=meta.get("owner_name"),
+                )
+                if created:
+                    new_items += 1
+                if owner_tg_id:
+                    owners += 1
+                    batch_owners += 1
+                if meta.get("on_chain"):
+                    on_chain += 1
+                    batch_chain += 1
+                else:
+                    hosted += 1
+            num += 1
+
+            if batch_scanned and batch_scanned % 25 == 0:
+                store.advance_nft_collection(
+                    base,
+                    cursor=num,
+                    scanned=batch_scanned,
+                    owners=batch_owners,
+                    on_chain=batch_chain,
+                    error=batch_error,
+                )
+                batch_scanned = batch_owners = batch_chain = 0
+                if reporter is not None:
+                    await reporter(
+                        {
+                            "phase": f"{base}: {num - 1} из {total}",
+                            "done": num - 1,
+                            "total": total,
+                            "found": new_items,
+                        }
+                    )
+
+        store.advance_nft_collection(
+            base,
+            cursor=num,
+            scanned=batch_scanned,
+            owners=batch_owners,
+            on_chain=batch_chain,
+            error=batch_error,
+        )
+        if num > total:
+            store.mark_nft_collection_done(base)
+            collections_done += 1
+        if reporter is not None:
+            await reporter(
+                {
+                    "phase": f"{base}: {min(num - 1, total)} из {total}",
+                    "done": min(num - 1, total),
+                    "total": total,
+                    "found": new_items,
+                }
+            )
+
+    summary = store.gift_summary()
+    return {
+        "requests": used,
+        "budget": budget,
+        "discovery": discovery,
+        "collections": collections_done,
+        "collections_known": len(store.nft_collections(500)),
+        "items": items,
+        "new": new_items,
+        "owners": owners,
+        "on_chain": on_chain,
+        "hosted": hosted,
+        "errors": errors,
+        "last_error": last_error,
+        "summary": summary,
+        "inventory": store.nft_summary(),
+        "progress": store.nft_collections(50),
+    }
+
+
+__all__ = ["crawl_gifts", "refresh_gifts", "crawl_nft_chain"]

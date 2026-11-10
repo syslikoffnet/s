@@ -146,11 +146,20 @@ class Api(private val baseUrl: String, private val token: String) {
         if (exc.code == 404) null else throw exc
     }
 
-    suspend fun gifts(owner: Long? = null, nftOnly: Boolean = false, limit: Int = 100): GiftPage {
+    suspend fun gifts(
+        owner: Long? = null,
+        nftOnly: Boolean = false,
+        chain: String? = null,
+        q: String? = null,
+        limit: Int = 100,
+        offset: Int = 0,
+    ): GiftPage {
         val path = buildString {
-            append("api/gifts?limit=$limit")
+            append("api/gifts?limit=$limit&offset=$offset")
             if (owner != null) append("&owner=$owner")
             if (nftOnly) append("&nft=true")
+            if (!chain.isNullOrBlank()) append("&chain=$chain")
+            if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
         }
         val data = obj(path)
         val rows = jsonObjects(data.arr("rows")).map(GiftItem::from)
@@ -160,9 +169,54 @@ class Api(private val baseUrl: String, private val token: String) {
                 gifts = it.int("gifts"),
                 nft = it.int("nft"),
                 lastDate = it.num("last_date"),
+                username = it.str("owner_username"),
+                name = it.str("owner_name"),
+                onChain = it.int("on_chain"),
+                hosted = it.int("hosted"),
             )
         }
         return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners)
+    }
+
+    /** NFT-инвентарь: `chain` = wallet (на кошельке) | telegram (в аккаунте). */
+    suspend fun giftsNft(
+        chain: String? = null,
+        q: String? = null,
+        sort: String = "value",
+        limit: Int = 100,
+        offset: Int = 0,
+    ): NftPage {
+        val path = buildString {
+            append("api/gifts/nft?limit=$limit&offset=$offset&sort=$sort")
+            if (!chain.isNullOrBlank()) append("&chain=$chain")
+            if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
+        }
+        val data = obj(path)
+        return NftPage(
+            rows = jsonObjects(data.arr("rows")).map(NftItem::from),
+            summary = NftSummary.from(data.obj("summary")),
+            owners = jsonObjects(data.arr("owners")).map(NftOwner::from),
+            collections = jsonObjects(data.arr("collections")).map(NftCollection::from),
+        )
+    }
+
+    suspend fun nftOwners(
+        chain: String? = null,
+        q: String? = null,
+        limit: Int = 100,
+        offset: Int = 0,
+    ): List<NftOwner> {
+        val path = buildString {
+            append("api/gifts/nft/owners?limit=$limit&offset=$offset")
+            if (!chain.isNullOrBlank()) append("&chain=$chain")
+            if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
+        }
+        return jsonObjects(obj(path).arr("rows")).map(NftOwner::from)
+    }
+
+    suspend fun startNftChain(requests: Int = 2000, discover: Boolean = true): Job {
+        val body = JSONObject().put("requests", requests).put("discover", discover)
+        return Job.from(obj("api/gifts/chain", "POST", body))
     }
 
     suspend fun refreshGifts(limit: Int = 60, perProfile: Int = 100): Job {
@@ -170,11 +224,17 @@ class Api(private val baseUrl: String, private val token: String) {
         return Job.from(obj("api/gifts/refresh", "POST", body))
     }
 
-    suspend fun crawlGifts(query: String, depth: Int = 1, maxProfiles: Int = 5): Job {
+    suspend fun crawlGifts(
+        query: String,
+        depth: Int = 1,
+        maxProfiles: Int = 5,
+        perProfile: Int = 100,
+    ): Job {
         val body = JSONObject()
             .put("query", query)
             .put("depth", depth)
             .put("max_profiles", maxProfiles)
+            .put("per_profile", perProfile)
         return Job.from(obj("api/gifts/crawl", "POST", body))
     }
 

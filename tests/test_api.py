@@ -302,3 +302,21 @@ def test_live_activity_without_session(client: TestClient) -> None:
     data = response.json()
     assert "rows" in data and "stats" in data
     assert data.get("skipped")
+
+
+def test_nft_inventory_endpoints(client: TestClient) -> None:
+    data = client.get("/api/gifts/nft?chain=wallet&limit=20", headers=HEADERS).json()
+    assert set(data) >= {"rows", "summary", "owners", "collections", "chain"}
+    assert data["chain"] == "wallet"
+    assert {"total", "on_chain", "hosted", "owners", "capacity", "scanned"} <= set(
+        data["summary"]
+    )
+    owners = client.get("/api/gifts/nft/owners?chain=telegram", headers=HEADERS).json()
+    assert "rows" in owners and "summary" in owners
+    assert client.get("/api/gifts/nft").status_code == 401
+
+
+def test_gift_chain_requires_session(client: TestClient) -> None:
+    response = client.post("/api/gifts/chain", headers=HEADERS, json={"requests": 100})
+    assert response.status_code == 409
+    assert "аккаунта" in response.text.lower()

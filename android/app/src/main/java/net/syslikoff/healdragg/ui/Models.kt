@@ -442,6 +442,11 @@ data class GiftItem(
     val resellAmount: Long = 0,
     val availabilityIssued: Int = 0,
     val availabilityTotal: Int = 0,
+    val onChain: Boolean = false,
+    val giftAddress: String? = null,
+    val ownerAddress: String? = null,
+    val valueUsd: Long = 0,
+    val burned: Boolean = false,
 ) {
     val ownerHandle: String
         get() = ownerUsername?.let { "@$it" } ?: "id $ownerTgId"
@@ -479,6 +484,11 @@ data class GiftItem(
             resellAmount = o.num("resell_amount"),
             availabilityIssued = o.int("availability_issued"),
             availabilityTotal = o.int("availability_total"),
+            onChain = o.optInt("on_chain") == 1,
+            giftAddress = o.str("gift_address"),
+            ownerAddress = o.str("owner_address"),
+            valueUsd = o.num("value_usd"),
+            burned = o.optInt("burned") == 1,
         )
     }
 }
@@ -488,6 +498,11 @@ data class GiftSummary(
     val nft: Int = 0,
     val owners: Int = 0,
     val senders: Int = 0,
+    val nftChain: Int = 0,
+    val nftHosted: Int = 0,
+    val inventory: Int = 0,
+    val inventoryChain: Int = 0,
+    val inventoryHosted: Int = 0,
 ) {
     companion object {
         fun from(o: JSONObject?): GiftSummary = if (o == null) GiftSummary() else GiftSummary(
@@ -495,15 +510,168 @@ data class GiftSummary(
             nft = o.int("nft"),
             owners = o.int("owners"),
             senders = o.int("senders"),
+            nftChain = o.int("nft_chain"),
+            nftHosted = o.int("nft_hosted"),
+            inventory = o.int("inventory"),
+            inventoryChain = o.int("inventory_chain"),
+            inventoryHosted = o.int("inventory_hosted"),
         )
     }
 }
+
+/** Сводка NFT-инвентаря: что уже собрано по коллекциям и где лежит. */
+data class NftSummary(
+    val total: Int = 0,
+    val onChain: Int = 0,
+    val hosted: Int = 0,
+    val owners: Int = 0,
+    val burned: Int = 0,
+    val collections: Int = 0,
+    val capacity: Int = 0,
+    val scanned: Int = 0,
+) {
+    companion object {
+        fun from(o: JSONObject?): NftSummary = if (o == null) NftSummary() else NftSummary(
+            total = o.int("total"),
+            onChain = o.int("on_chain"),
+            hosted = o.int("hosted"),
+            owners = o.int("owners"),
+            burned = o.int("burned"),
+            collections = o.int("collections"),
+            capacity = o.int("capacity"),
+            scanned = o.int("scanned"),
+        )
+    }
+}
+
+/** Уникальный подарок из инвентаря (одна вещь = один slug). */
+data class NftItem(
+    val slug: String,
+    val giftId: Long,
+    val num: Int,
+    val title: String,
+    val ownerTgId: Long,
+    val ownerUsername: String?,
+    val ownerName: String?,
+    val ownerAddress: String?,
+    val giftAddress: String?,
+    val onChain: Boolean,
+    val burned: Boolean,
+    val valueAmount: Long,
+    val valueCurrency: String?,
+    val valueUsd: Long,
+    val resellAmount: Long,
+    val availabilityIssued: Int,
+    val availabilityTotal: Int,
+    val seenAt: Long,
+) {
+    val nftLink: String get() = "https://t.me/nft/$slug"
+    val ownerHandle: String
+        get() = ownerUsername?.let { "@$it" } ?: ownerName ?: "id $ownerTgId"
+    val priceLabel: String?
+        get() = when {
+            resellAmount > 0 -> "${compactNumber(resellAmount.toInt())}★ ресейл"
+            valueAmount > 0 -> "${compactNumber(valueAmount.toInt())} ${valueCurrency ?: "TON"}"
+            else -> null
+        }
+    val chainLabel: String
+        get() = when {
+            burned -> "сожжён"
+            onChain -> "на кошельке"
+            else -> "в Telegram"
+        }
+
+    companion object {
+        fun from(o: JSONObject): NftItem = NftItem(
+            slug = o.str("slug").orEmpty(),
+            giftId = o.num("gift_id"),
+            num = o.int("num"),
+            title = o.str("title") ?: "NFT",
+            ownerTgId = o.num("owner_tg_id"),
+            ownerUsername = o.str("owner_username"),
+            ownerName = o.str("owner_name"),
+            ownerAddress = o.str("owner_address"),
+            giftAddress = o.str("gift_address"),
+            onChain = o.optInt("on_chain") == 1,
+            burned = o.optInt("burned") == 1,
+            valueAmount = o.num("value_amount"),
+            valueCurrency = o.str("value_currency"),
+            valueUsd = o.num("value_usd"),
+            resellAmount = o.num("resell_amount"),
+            availabilityIssued = o.int("availability_issued"),
+            availabilityTotal = o.int("availability_total"),
+            seenAt = o.num("seen_at"),
+        )
+    }
+}
+
+/** Владелец NFT: почти любой пользователь, встреченный при обходе сети. */
+data class NftOwner(
+    val tgId: Long,
+    val username: String?,
+    val name: String?,
+    val nft: Int,
+    val onChain: Int,
+    val hosted: Int,
+    val seenAt: Long,
+) {
+    val handle: String
+        get() = username?.let { "@$it" } ?: name ?: "id $tgId"
+
+    companion object {
+        fun from(o: JSONObject): NftOwner = NftOwner(
+            tgId = o.num("owner_tg_id"),
+            username = o.str("owner_username"),
+            name = o.str("owner_name"),
+            nft = o.int("nft"),
+            onChain = o.int("on_chain"),
+            hosted = o.int("hosted"),
+            seenAt = o.num("seen_at"),
+        )
+    }
+}
+
+data class NftCollection(
+    val slugBase: String,
+    val title: String?,
+    val total: Int,
+    val cursor: Int,
+    val scanned: Int,
+    val owners: Int,
+    val updatedAt: Long,
+) {
+    val percent: Float
+        get() = if (total <= 0) 0f else (scanned.coerceAtMost(total).toFloat() / total)
+
+    companion object {
+        fun from(o: JSONObject): NftCollection = NftCollection(
+            slugBase = o.str("slug_base").orEmpty(),
+            title = o.str("title"),
+            total = o.int("total"),
+            cursor = o.int("cursor"),
+            scanned = o.int("scanned"),
+            owners = o.int("owners"),
+            updatedAt = o.num("updated_at"),
+        )
+    }
+}
+
+data class NftPage(
+    val rows: List<NftItem>,
+    val summary: NftSummary,
+    val owners: List<NftOwner>,
+    val collections: List<NftCollection>,
+)
 
 data class GiftOwner(
     val tgId: Long,
     val gifts: Int,
     val nft: Int,
     val lastDate: Long,
+    val username: String? = null,
+    val name: String? = null,
+    val onChain: Int = 0,
+    val hosted: Int = 0,
 )
 
 data class GiftPage(

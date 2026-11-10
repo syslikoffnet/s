@@ -420,12 +420,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── подарки ──────────────────────────────────────────────────────────────
 
-    fun refreshGifts(onDone: (Result<Job>) -> Unit) {
+    fun refreshGifts(
+        limit: Int = 60,
+        perProfile: Int = 100,
+        onDone: (Result<Job>) -> Unit,
+    ) {
         val client = api ?: run {
             onDone(Result.failure(ApiException(0, "Движок не запущен")))
             return
         }
-        viewModelScope.launch { onDone(runCatching { client.refreshGifts() }) }
+        viewModelScope.launch {
+            onDone(runCatching { client.refreshGifts(limit = limit, perProfile = perProfile) })
+        }
+    }
+
+    /** Массовый обход NFT-коллекций: собираем владельцев почти всех NFT. */
+    fun startNftChain(requests: Int, onDone: (Result<Job>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            onDone(runCatching { client.startNftChain(requests = requests) })
+        }
     }
 
     fun crawlGifts(

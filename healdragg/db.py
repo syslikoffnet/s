@@ -27,7 +27,7 @@ from typing import Any
 
 from .util import group_link, now_ts
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -198,6 +198,12 @@ CREATE TABLE IF NOT EXISTS gifts (
     resell_amount INTEGER,
     availability_issued INTEGER,
     availability_total  INTEGER,
+    on_chain      INTEGER NOT NULL DEFAULT 0,
+    gift_address  TEXT,
+    owner_address TEXT,
+    value_usd     INTEGER,
+    burned        INTEGER NOT NULL DEFAULT 0,
+    crafted       INTEGER,
     raw           TEXT,
     seen_at       INTEGER NOT NULL,
     UNIQUE(owner_tg_id, saved_id, gift_id)
@@ -205,6 +211,48 @@ CREATE TABLE IF NOT EXISTS gifts (
 CREATE INDEX IF NOT EXISTS idx_gifts_owner ON gifts(owner_tg_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_from  ON gifts(from_tg_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
+CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
+
+-- NFT-инвентарь: каждая уникальная вещь ровно один раз (slug = <коллекция>-<num>).
+CREATE TABLE IF NOT EXISTS nft_items (
+    slug          TEXT PRIMARY KEY,
+    gift_id       INTEGER,
+    num           INTEGER,
+    title         TEXT,
+    owner_tg_id   INTEGER,
+    owner_username TEXT,
+    owner_name    TEXT,
+    owner_address TEXT,
+    gift_address  TEXT,
+    on_chain      INTEGER NOT NULL DEFAULT 0,
+    burned        INTEGER NOT NULL DEFAULT 0,
+    crafted       INTEGER,
+    value_amount  INTEGER,
+    value_currency TEXT,
+    value_usd     INTEGER,
+    resell_amount INTEGER,
+    availability_issued INTEGER,
+    availability_total  INTEGER,
+    seen_at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nft_chain  ON nft_items(on_chain, seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nft_owner  ON nft_items(owner_tg_id, seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nft_gift   ON nft_items(gift_id);
+
+-- Коллекции уникальных подарков: перебираем slug'и по номерам и добираем владельцев.
+CREATE TABLE IF NOT EXISTS nft_collections (
+    slug_base     TEXT PRIMARY KEY,
+    gift_id       INTEGER,
+    title         TEXT,
+    total         INTEGER NOT NULL DEFAULT 0,
+    cursor        INTEGER NOT NULL DEFAULT 1,
+    scanned       INTEGER NOT NULL DEFAULT 0,
+    owners        INTEGER NOT NULL DEFAULT 0,
+    on_chain      INTEGER NOT NULL DEFAULT 0,
+    errors        INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    updated_at    INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS scans (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -364,6 +412,12 @@ class Store:
             "resell_amount": "INTEGER",
             "availability_issued": "INTEGER",
             "availability_total": "INTEGER",
+            "on_chain": "INTEGER NOT NULL DEFAULT 0",
+            "gift_address": "TEXT",
+            "owner_address": "TEXT",
+            "value_usd": "INTEGER",
+            "burned": "INTEGER NOT NULL DEFAULT 0",
+            "crafted": "INTEGER",
         }
         for column, ddl in gift_additions.items():
             if column not in gift_cols:
@@ -953,6 +1007,12 @@ class Store:
         resell_amount: int | None = None,
         availability_issued: int | None = None,
         availability_total: int | None = None,
+        on_chain: bool = False,
+        gift_address: str | None = None,
+        owner_address: str | None = None,
+        value_usd: int | None = None,
+        burned: bool = False,
+        crafted: int | None = None,
         raw: str | None = None,
     ) -> bool:
         """Сохраняет подарок. True — если он появился в базе впервые."""
@@ -968,8 +1028,10 @@ class Store:
                                       from_tg_id, from_username, from_name, owner_username,
                                       owner_name, message, date, is_nft, name_hidden,
                                       slug, num, value_amount, value_currency, resell_amount,
-                                      availability_issued, availability_total, raw, seen_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                      availability_issued, availability_total, on_chain,
+                                      gift_address, owner_address, value_usd, burned, crafted,
+                                      raw, seen_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         owner_tg_id,
@@ -994,6 +1056,12 @@ class Store:
                         resell_amount,
                         availability_issued,
                         availability_total,
+                        int(on_chain),
+                        gift_address,
+                        owner_address,
+                        value_usd,
+                        int(burned),
+                        crafted,
                         raw,
                         now_ts(),
                     ),
@@ -1015,6 +1083,11 @@ class Store:
                        resell_amount = coalesce(?, resell_amount),
                        availability_issued = coalesce(?, availability_issued),
                        availability_total = coalesce(?, availability_total),
+                       on_chain = max(on_chain, ?),
+                       gift_address = coalesce(?, gift_address),
+                       owner_address = coalesce(?, owner_address),
+                       value_usd = coalesce(?, value_usd), burned = max(burned, ?),
+                       crafted = coalesce(?, crafted),
                        seen_at = ?
                  WHERE id = ?
                 """,
@@ -1038,6 +1111,12 @@ class Store:
                     resell_amount,
                     availability_issued,
                     availability_total,
+                    int(on_chain),
+                    gift_address,
+                    owner_address,
+                    value_usd,
+                    int(burned),
+                    crafted,
                     now_ts(),
                     existing["id"],
                 ),
@@ -1049,9 +1128,12 @@ class Store:
         owner_tg_id: int | None = None,
         *,
         nft_only: bool = False,
+        chain: str | None = None,
+        q: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
+        """``chain``: ``wallet`` — NFT на TON-кошельке, ``telegram`` — внутри TG."""
         where: list[str] = []
         params: list[Any] = []
         if owner_tg_id is not None:
@@ -1059,8 +1141,19 @@ class Store:
             params.append(owner_tg_id)
         if nft_only:
             where.append("is_nft = 1")
+        if chain == "wallet":
+            where.append("on_chain = 1")
+        elif chain == "telegram":
+            where.append("on_chain = 0")
+        if q:
+            needle = f"%{q.strip()}%"
+            where.append(
+                "(owner_username LIKE ? OR owner_name LIKE ? OR from_username LIKE ? "
+                "OR title LIKE ? OR slug LIKE ?)"
+            )
+            params.extend([needle] * 5)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
-        params.extend([max(1, min(500, limit)), max(0, offset)])
+        params.extend([max(1, min(1000, limit)), max(0, offset)])
         return self.query(
             f"SELECT * FROM gifts {clause} ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ? OFFSET ?",
             params,
@@ -1071,17 +1164,263 @@ class Store:
             """
             SELECT COUNT(*) AS total,
                    coalesce(SUM(is_nft), 0) AS nft,
+                   coalesce(SUM(CASE WHEN is_nft = 1 AND on_chain = 1 THEN 1 ELSE 0 END), 0)
+                       AS nft_chain,
+                   coalesce(SUM(CASE WHEN is_nft = 1 AND on_chain = 0 THEN 1 ELSE 0 END), 0)
+                       AS nft_hosted,
                    COUNT(DISTINCT owner_tg_id) AS owners,
                    COUNT(DISTINCT from_tg_id) AS senders
               FROM gifts
             """
         ) or {}
+        inventory = self.nft_summary()
         return {
             "total": int(row.get("total") or 0),
             "nft": int(row.get("nft") or 0),
+            "nft_chain": int(row.get("nft_chain") or 0),
+            "nft_hosted": int(row.get("nft_hosted") or 0),
             "owners": int(row.get("owners") or 0),
             "senders": int(row.get("senders") or 0),
+            "inventory": inventory["total"],
+            "inventory_chain": inventory["on_chain"],
+            "inventory_hosted": inventory["hosted"],
+            "inventory_owners": inventory["owners"],
         }
+
+    # ── NFT-инвентарь (уникальные подарки) ──────────────────────────────────
+
+    def upsert_nft_item(self, slug: str, **fields: Any) -> bool:
+        """Пишет уникальную вещь в инвентарь. True — если она новая."""
+        slug = (slug or "").strip()
+        if not slug:
+            return False
+        columns = {
+            "gift_id": fields.get("gift_id"),
+            "num": fields.get("num"),
+            "title": fields.get("title"),
+            "owner_tg_id": fields.get("owner_tg_id"),
+            "owner_username": fields.get("owner_username"),
+            "owner_name": fields.get("owner_name"),
+            "owner_address": fields.get("owner_address"),
+            "gift_address": fields.get("gift_address"),
+            "on_chain": int(bool(fields.get("on_chain"))),
+            "burned": int(bool(fields.get("burned"))),
+            "crafted": fields.get("crafted"),
+            "value_amount": fields.get("value_amount"),
+            "value_currency": fields.get("value_currency"),
+            "value_usd": fields.get("value_usd"),
+            "resell_amount": fields.get("resell_amount"),
+            "availability_issued": fields.get("availability_issued"),
+            "availability_total": fields.get("availability_total"),
+        }
+        with self.tx() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM nft_items WHERE slug = ?", (slug,)
+            ).fetchone()
+            if exists is None:
+                names = ", ".join(("slug", *columns.keys(), "seen_at"))
+                marks = ", ".join("?" for _ in range(len(columns) + 2))
+                conn.execute(
+                    f"INSERT INTO nft_items({names}) VALUES({marks})",
+                    (slug, *columns.values(), now_ts()),
+                )
+                return True
+            assignments = ", ".join(
+                (f"{name} = max({name}, ?)" if name in ("on_chain", "burned")
+                 else f"{name} = coalesce(?, {name})")
+                for name in columns
+            )
+            conn.execute(
+                f"UPDATE nft_items SET {assignments}, seen_at = ? WHERE slug = ?",
+                (*columns.values(), now_ts(), slug),
+            )
+            return False
+
+    def nft_items(
+        self,
+        *,
+        chain: str | None = None,
+        q: str | None = None,
+        sort: str = "value",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        where: list[str] = []
+        params: list[Any] = []
+        if chain == "wallet":
+            where.append("on_chain = 1")
+        elif chain == "telegram":
+            where.append("on_chain = 0")
+        if q:
+            needle = f"%{q.strip()}%"
+            where.append(
+                "(slug LIKE ? OR title LIKE ? OR owner_username LIKE ? OR owner_name LIKE ? "
+                "OR owner_address LIKE ? OR CAST(owner_tg_id AS TEXT) LIKE ?)"
+            )
+            params.extend([needle] * 6)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        order = {
+            "value": "coalesce(value_usd, value_amount, 0) DESC, seen_at DESC",
+            "resell": "coalesce(resell_amount, 0) DESC, seen_at DESC",
+            "recent": "seen_at DESC",
+            "num": "num ASC",
+        }.get(sort, "seen_at DESC")
+        params.extend([max(1, min(1000, limit)), max(0, offset)])
+        return self.query(
+            f"SELECT * FROM nft_items {clause} ORDER BY {order} LIMIT ? OFFSET ?", params
+        )
+
+    def nft_summary(self) -> dict[str, Any]:
+        row = self.query_one(
+            """
+            SELECT COUNT(*) AS total,
+                   coalesce(SUM(on_chain), 0) AS on_chain,
+                   COUNT(DISTINCT CASE WHEN owner_tg_id IS NOT NULL THEN owner_tg_id END)
+                       AS owners,
+                   coalesce(SUM(burned), 0) AS burned
+              FROM nft_items
+            """
+        ) or {}
+        total = int(row.get("total") or 0)
+        on_chain = int(row.get("on_chain") or 0)
+        collections = self.query_one(
+            """
+            SELECT COUNT(*) AS collections,
+                   coalesce(SUM(total), 0) AS capacity,
+                   coalesce(SUM(scanned), 0) AS scanned
+              FROM nft_collections
+            """
+        ) or {}
+        return {
+            "total": total,
+            "on_chain": on_chain,
+            "hosted": max(0, total - on_chain),
+            "owners": int(row.get("owners") or 0),
+            "burned": int(row.get("burned") or 0),
+            "collections": int(collections.get("collections") or 0),
+            "capacity": int(collections.get("capacity") or 0),
+            "scanned": int(collections.get("scanned") or 0),
+        }
+
+    def nft_owners(
+        self,
+        *,
+        chain: str | None = None,
+        q: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Владельцы NFT по инвентарю + по собранным подаркам."""
+        where = ["owner_tg_id IS NOT NULL"]
+        params: list[Any] = []
+        if chain == "wallet":
+            where.append("on_chain = 1")
+        elif chain == "telegram":
+            where.append("on_chain = 0")
+        if q:
+            needle = f"%{q.strip()}%"
+            where.append(
+                "(owner_username LIKE ? OR owner_name LIKE ? OR CAST(owner_tg_id AS TEXT) LIKE ?)"
+            )
+            params.extend([needle, needle, needle])
+        params.extend([max(1, min(1000, limit)), max(0, offset)])
+        return self.query(
+            f"""
+            SELECT owner_tg_id, max(owner_username) AS owner_username,
+                   max(owner_name) AS owner_name, COUNT(*) AS nft,
+                   coalesce(SUM(on_chain), 0) AS on_chain,
+                   coalesce(SUM(CASE WHEN on_chain = 0 THEN 1 ELSE 0 END), 0) AS hosted,
+                   max(seen_at) AS seen_at
+              FROM nft_items
+             WHERE {' AND '.join(where)}
+             GROUP BY owner_tg_id
+             ORDER BY nft DESC, seen_at DESC LIMIT ? OFFSET ?
+            """,
+            params,
+        )
+
+    def nft_collections(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self.query(
+            """
+            SELECT * FROM nft_collections
+             ORDER BY (scanned < total) DESC, total DESC LIMIT ?
+            """,
+            (max(1, min(500, limit)),),
+        )
+
+    def upsert_nft_collection(
+        self,
+        slug_base: str,
+        *,
+        gift_id: int | None = None,
+        title: str | None = None,
+        total: int | None = None,
+    ) -> None:
+        slug_base = (slug_base or "").strip()
+        if not slug_base:
+            return
+        with self.tx() as conn:
+            conn.execute(
+                """
+                INSERT INTO nft_collections(slug_base, gift_id, title, total, cursor,
+                                            scanned, updated_at)
+                VALUES(?,?,?,?,1,0,?)
+                ON CONFLICT(slug_base) DO UPDATE SET
+                    gift_id = coalesce(excluded.gift_id, gift_id),
+                    title = coalesce(excluded.title, title),
+                    total = max(total, coalesce(excluded.total, 0))
+                """,
+                (slug_base, gift_id, title, max(0, int(total or 0)), now_ts()),
+            )
+
+    def next_nft_collection(self) -> dict[str, Any] | None:
+        row = self.query_one(
+            """
+            SELECT * FROM nft_collections
+             WHERE total > 0 AND cursor <= total
+             ORDER BY (scanned < total) DESC, updated_at ASC LIMIT 1
+            """
+        )
+        return row
+
+    def mark_nft_collection_done(self, slug_base: str) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE nft_collections SET cursor = max(cursor, total + 1), updated_at = ? "
+                "WHERE slug_base = ?",
+                (now_ts(), slug_base),
+            )
+
+    def advance_nft_collection(
+        self,
+        slug_base: str,
+        *,
+        cursor: int,
+        scanned: int,
+        owners: int = 0,
+        on_chain: int = 0,
+        error: str | None = None,
+    ) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                """
+                UPDATE nft_collections SET cursor = ?, scanned = ?,
+                       owners = owners + ?, on_chain = on_chain + ?,
+                       errors = errors + ?, last_error = coalesce(?, last_error),
+                       updated_at = ?
+                 WHERE slug_base = ?
+                """,
+                (
+                    int(cursor),
+                    int(scanned),
+                    int(owners),
+                    int(on_chain),
+                    1 if error else 0,
+                    error,
+                    now_ts(),
+                    slug_base,
+                ),
+            )
 
     def gift_owners(self, limit: int = 30) -> list[dict[str, Any]]:
         return self.query(
@@ -1092,7 +1431,7 @@ class Store:
               FROM gifts GROUP BY owner_tg_id
              ORDER BY nft DESC, gifts DESC LIMIT ?
             """,
-            (max(1, min(200, limit)),),
+            (max(1, min(10000, limit)),),
         )
 
     def gift_graph(self, seed: int | None = None, limit: int = 3000) -> dict[str, Any]:

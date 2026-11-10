@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.CardGiftcard
 import androidx.compose.material3.Button
@@ -76,6 +77,13 @@ fun GiftsScreen(
     var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
     var summary by remember { mutableStateOf(GiftSummary()) }
     var loading by remember { mutableStateOf(true) }
+    var mode by rememberSaveable { mutableStateOf(0) }
+    var chain by rememberSaveable { mutableStateOf("") }
+    var chainRequests by rememberSaveable { mutableStateOf(2_000) }
+    var nftRows by remember { mutableStateOf<List<NftItem>>(emptyList()) }
+    var nftSummary by remember { mutableStateOf(NftSummary()) }
+    var nftOwnersList by remember { mutableStateOf<List<NftOwner>>(emptyList()) }
+    var collections by remember { mutableStateOf<List<NftCollection>>(emptyList()) }
 
     suspend fun reload() {
         val client = api ?: run {
@@ -83,17 +91,33 @@ fun GiftsScreen(
             return
         }
         loading = true
-        runCatching { client.gifts(nftOnly = nftOnly) }
+        val chainArg = chain.ifBlank { null }
+        runCatching { client.gifts(nftOnly = nftOnly, chain = chainArg) }
             .onSuccess {
                 rows = it.rows
                 summary = it.summary
                 error = null
             }
             .onFailure { error = it.message ?: "Не удалось прочитать подарки" }
+        if (mode != 0) {
+            runCatching { client.giftsNft(chain = chainArg, limit = 200) }
+                .onSuccess {
+                    nftRows = it.rows
+                    nftSummary = it.summary
+                    collections = it.collections
+                    if (mode != 2) nftOwnersList = it.owners
+                }
+                .onFailure { error = it.message ?: "Не удалось прочитать NFT-инвентарь" }
+        }
+        if (mode == 2) {
+            runCatching { client.nftOwners(chain = chainArg, limit = 200) }
+                .onSuccess { nftOwnersList = it }
+                .onFailure { error = it.message ?: "Не удалось прочитать владельцев" }
+        }
         loading = false
     }
 
-    LaunchedEffect(nftOnly) { reload() }
+    LaunchedEffect(mode, chain, nftOnly) { reload() }
 
     LaunchedEffect(job?.key) {
         val key = job?.key ?: return@LaunchedEffect
@@ -125,12 +149,26 @@ fun GiftsScreen(
         if (busy || job != null) return
         busy = true
         error = null
-        vm.refreshGifts { result ->
+        vm.refreshGifts(limit = 500, perProfile = 200) { result ->
             busy = false
             result.onSuccess {
                 job = it
                 onToast("Обновляю уже известные профили…")
             }.onFailure { error = it.message ?: "Не удалось запустить обновление" }
+        }
+    }
+
+    fun startChain() {
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.startNftChain(chainRequests) { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                mode = 1
+                onToast("Обход NFT-коллекций запущен")
+            }.onFailure { error = it.message ?: "Не удалось запустить обход NFT" }
         }
     }
 
@@ -190,11 +228,11 @@ fun GiftsScreen(
                         Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        listOf(1, 2, 3, 4, 5, 6).forEach { value ->
+                        listOf(1, 2, 3, 4, 5, 6, 7, 8).forEach { value ->
                             FilterChip(
                                 selected = depth == value,
                                 onClick = { depth = value },
-                                label = { Text(if (value == 6) "вся" else value.toString()) },
+                                label = { Text(if (value == 8) "вся" else value.toString()) },
                                 colors = giftChipColors(),
                             )
                         }
@@ -205,7 +243,7 @@ fun GiftsScreen(
                             1 -> "1 — только этот профиль"
                             2 -> "2 — профиль и те, кто ему дарил"
                             3 -> "3 — дарители дарителей"
-                            6 -> "вся сеть: идём по дарителям, пока хватает лимита профилей"
+                            8 -> "вся сеть: идём по дарителям, пока хватает лимита профилей"
                             else -> "$depth — на $depth шага по сети дарителей"
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -221,11 +259,11 @@ fun GiftsScreen(
                         Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        listOf(5, 10, 25, 50, 100).forEach { value ->
+                        listOf(5, 50, 250, 1_000, 5_000).forEach { value ->
                             FilterChip(
                                 selected = maxProfiles == value,
                                 onClick = { maxProfiles = value },
-                                label = { Text("до $value") },
+                                label = { Text("до ${compactNumber(value)}") },
                                 colors = giftChipColors(),
                             )
                         }
@@ -286,7 +324,8 @@ fun GiftsScreen(
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    "Читаю подарки",
+                                    if (current.kind == "giftchain") "Собираю NFT-инвентарь"
+                                    else "Читаю подарки",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = Hd.Text,
                                 )
@@ -339,50 +378,235 @@ fun GiftsScreen(
                 }
             }
 
-            item("filter") {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = !nftOnly,
-                        onClick = { nftOnly = false },
-                        label = { Text("Все · ${summary.total}") },
-                        colors = giftChipColors(),
-                    )
-                    FilterChip(
-                        selected = nftOnly,
-                        onClick = { nftOnly = true },
-                        label = { Text("NFT · ${summary.nft}") },
-                        colors = giftChipColors(),
-                    )
-                }
-            }
-
-            if (loading && rows.isEmpty()) {
-                item("loading") { LoadingBlock() }
-            }
-
-            if (!loading && rows.isEmpty()) {
-                item("empty") {
-                    if (nftOnly && summary.total > 0) {
-                        EmptyState(
-                            emoji = "",
-                            icon = Icons.Filled.AutoAwesome,
-                            title = "NFT пока не найдено",
-                            text = "Собери подарки по профилю, где они точно есть, или увеличь глубину обхода.",
-                        )
-                    } else {
-                        EmptyState(
-                            emoji = "",
-                            icon = Icons.Outlined.CardGiftcard,
-                            title = "Подарков пока нет",
-                            text = "Вставь профиль в поле выше и запусти сбор: приложение покажет, " +
-                                "кто, кому, что и когда дарил — включая NFT.",
+            item("modes") {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    listOf("Подарки", "NFT", "Владельцы").forEachIndexed { index, label ->
+                        FilterChip(
+                            selected = mode == index,
+                            onClick = { mode = index },
+                            label = { Text(label) },
+                            colors = giftChipColors(),
                         )
                     }
                 }
             }
 
-            items(rows, key = { it.id }) { gift ->
-                GiftCard(gift = gift, onToast = onToast, onOpenProfile = onOpenProfile)
+            if (mode != 0) {
+                item("chain") {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(
+                            "" to "Все",
+                            "wallet" to "На кошельке",
+                            "telegram" to "В Telegram",
+                        ).forEach { (value, label) ->
+                            FilterChip(
+                                selected = chain == value,
+                                onClick = { chain = value },
+                                label = { Text(label) },
+                                colors = giftChipColors(),
+                            )
+                        }
+                    }
+                }
+
+                item("nftSummary") {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        StatTile("${nftSummary.total}", "NFT в базе", Hd.Accent)
+                        StatTile("${nftSummary.onChain}", "на кошельках", Hd.Warn)
+                        StatTile("${nftSummary.hosted}", "в Telegram", Hd.Accent2)
+                        StatTile("${nftSummary.owners}", "владельцев", Hd.Good)
+                    }
+                }
+
+                item("chainForm") {
+                    HdCard {
+                        Text(
+                            "Массовый сбор NFT-владельцев",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Hd.Text,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Перебираем уникальные подарки по номерам во всех коллекциях и " +
+                                "запоминаем владельцев. Прогресс хранится в базе — обход можно " +
+                                "останавливать и продолжать, он не начнётся заново.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Сколько запросов за проход",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Hd.Dim,
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf(500, 2_000, 10_000, 50_000, 200_000).forEach { value ->
+                                FilterChip(
+                                    selected = chainRequests == value,
+                                    onClick = { chainRequests = value },
+                                    label = { Text(compactNumber(value)) },
+                                    colors = giftChipColors(),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Каждый запрос — одна вещь. 50 000 запросов ≈ 15–20 часов " +
+                                "спокойного темпа, лимиты Telegram приложение соблюдает само.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = { startChain() },
+                            enabled = !busy && job == null,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Hd.Accent,
+                                contentColor = Hd.Black,
+                            ),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                tint = Hd.Black,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Собрать NFT-инвентарь")
+                        }
+                        if (collections.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            val scanned = collections.sumOf { it.scanned }
+                            val total = collections.sumOf { it.total }
+                            Text(
+                                "Коллекции: ${collections.size} · просмотрено " +
+                                    "${compactNumber(scanned)} из ${compactNumber(total)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Hd.Dim,
+                            )
+                            collections.take(3).forEach { collection ->
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    (collection.title ?: collection.slugBase) +
+                                        " · ${compactNumber(collection.scanned)}/" +
+                                        compactNumber(collection.total),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Hd.Muted,
+                                )
+                                LinearProgressIndicator(
+                                    progress = { collection.percent },
+                                    color = Hd.Accent,
+                                    trackColor = Hd.Stroke,
+                                    modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (mode == 0) {
+                item("filter") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !nftOnly,
+                            onClick = { nftOnly = false },
+                            label = { Text("Все · ${summary.total}") },
+                            colors = giftChipColors(),
+                        )
+                        FilterChip(
+                            selected = nftOnly,
+                            onClick = { nftOnly = true },
+                            label = { Text("NFT · ${summary.nft}") },
+                            colors = giftChipColors(),
+                        )
+                    }
+                }
+
+                if (loading && rows.isEmpty()) {
+                    item("loading") { LoadingBlock() }
+                }
+
+                if (!loading && rows.isEmpty()) {
+                    item("empty") {
+                        if (nftOnly && summary.total > 0) {
+                            EmptyState(
+                                emoji = "",
+                                icon = Icons.Filled.AutoAwesome,
+                                title = "NFT пока не найдено",
+                                text = "Собери подарки по профилю, где они точно есть, или запусти " +
+                                    "массовый обход NFT-коллекций во вкладке NFT.",
+                            )
+                        } else {
+                            EmptyState(
+                                emoji = "",
+                                icon = Icons.Outlined.CardGiftcard,
+                                title = "Подарков пока нет",
+                                text = "Вставь профиль в поле выше и запусти сбор: приложение покажет, " +
+                                    "кто, кому, что и когда дарил — включая NFT.",
+                            )
+                        }
+                    }
+                }
+
+                items(rows, key = { it.id }) { gift ->
+                    GiftCard(gift = gift, onToast = onToast, onOpenProfile = onOpenProfile)
+                }
+            }
+
+            if (mode == 1) {
+                if (loading && nftRows.isEmpty()) {
+                    item("nftLoading") { LoadingBlock() }
+                }
+                if (!loading && nftRows.isEmpty()) {
+                    item("nftEmpty") {
+                        EmptyState(
+                            emoji = "",
+                            icon = Icons.Filled.AutoAwesome,
+                            title = "Инвентарь пуст",
+                            text = "Запусти массовый сбор: приложение пройдёт по коллекциям " +
+                                "уникальных подарков и запишет владельцев — и тех, что лежат " +
+                                "в кошельках, и тех, что остались в Telegram.",
+                        )
+                    }
+                }
+                items(nftRows, key = { "nft-${it.slug}" }) { item ->
+                    NftItemCard(item = item, onToast = onToast, onOpenProfile = onOpenProfile)
+                }
+            }
+
+            if (mode == 2) {
+                if (loading && nftOwnersList.isEmpty()) {
+                    item("ownersLoading") { LoadingBlock() }
+                }
+                if (!loading && nftOwnersList.isEmpty()) {
+                    item("ownersEmpty") {
+                        EmptyState(
+                            emoji = "",
+                            icon = Icons.Filled.AutoAwesome,
+                            title = "Владельцев пока нет",
+                            text = "После массового обхода здесь появятся все, у кого нашлись NFT — " +
+                                "с числом вещей и раскладкой «кошелёк / Telegram».",
+                        )
+                    }
+                }
+                items(nftOwnersList, key = { "owner-${it.tgId}" }) { owner ->
+                    NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = onOpenProfile)
+                }
             }
         }
     }
@@ -508,6 +732,7 @@ private fun GiftCard(
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (gift.num > 0) Chip("#${gift.num}", Hd.Accent)
+                        Chip(if (gift.onChain) "кошелёк" else "Telegram", if (gift.onChain) Hd.Warn else Hd.Accent2)
                         gift.priceLabel?.let { Chip(it, Hd.Warn) }
                         if (gift.availabilityTotal > 0) {
                             Chip(
@@ -559,6 +784,193 @@ private fun GiftCard(
                 Spacer(Modifier.height(2.dp))
                 Text(
                     if (gift.kind == "unique") "уник." else "обыч.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                )
+            }
+        }
+    }
+}
+
+/** Карточка одной NFT-вещи: где лежит, сколько стоит, чья и по какой ссылке. */
+@Composable
+private fun NftItemCard(
+    item: NftItem,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    HdCard(
+        onClick = {
+            if (!openLink(context, item.nftLink)) {
+                copyText(context, "nft", item.nftLink)
+                onToast("Ссылка на NFT скопирована")
+            }
+        },
+        onLongClick = {
+            val payload = buildString {
+                append(item.title)
+                if (item.num > 0) append(" #${item.num}")
+                append(" · ${item.slug}")
+                append(" · ${item.chainLabel}")
+                append(" · ${item.ownerHandle}")
+                item.priceLabel?.let { append(" · $it") }
+            }
+            copyText(context, "nft", payload)
+            onToast("NFT скопирован")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.AutoAwesome,
+                    contentDescription = null,
+                    tint = Hd.Accent,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (item.num > 0) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "#${item.num}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Accent,
+                            modifier = Modifier
+                                .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    item.ownerHandle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(5.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Chip(
+                        if (item.onChain) "на кошельке" else "в Telegram",
+                        if (item.onChain) Hd.Warn else Hd.Accent2,
+                    )
+                    item.priceLabel?.let { Chip(it, Hd.Accent) }
+                    if (item.availabilityTotal > 0) {
+                        Chip("${item.availabilityIssued}/${item.availabilityTotal}", Hd.Dim)
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = { onOpenProfile(item.ownerUsername?.let { "@$it" } ?: item.ownerTgId.toString()) },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            "Профиль владельца",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            if (!openLink(context, item.nftLink)) {
+                                copyText(context, "nft", item.nftLink)
+                                onToast("Ссылка на NFT скопирована")
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            "Открыть NFT",
+                            color = Hd.Accent,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                relativeTime(item.seenAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = Hd.Dim,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+/** Владелец NFT: почти любой пользователь, встреченный при обходе сети. */
+@Composable
+private fun NftOwnerCard(
+    owner: NftOwner,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    HdCard(
+        onClick = { onOpenProfile(owner.username?.let { "@$it" } ?: owner.tgId.toString()) },
+        onLongClick = {
+            copyText(context, "owner", "${owner.handle} · id ${owner.tgId} · NFT ${owner.nft}")
+            onToast("Владелец скопирован")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(38.dp)
+                    .background(Hd.Good.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = Hd.Good,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    owner.handle,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Hd.Text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "id ${owner.tgId}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    "${owner.nft} NFT",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Hd.Accent,
+                )
+                Text(
+                    "${owner.onChain} / ${owner.hosted}",
                     style = MaterialTheme.typography.labelSmall,
                     color = Hd.Dim,
                 )
