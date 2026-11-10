@@ -172,7 +172,11 @@ fun SettingsScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     if (vm.sessions.isEmpty()) {
-                        "Ни один аккаунт не подключён — скан и добавление цели не запустятся."
+                        if (vm.engine == EngineState.Ready) {
+                            "Ни один аккаунт не подключён — скан и добавление цели не запустятся."
+                        } else {
+                            "Список появится, когда движок запустится и ответит."
+                        }
                     } else {
                         vm.sessions.joinToString(" · ") { session ->
                             session.username?.let { "@$it" } ?: session.name

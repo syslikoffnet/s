@@ -131,7 +131,8 @@ fun TargetsScreen(
                     item("loading") { LoadingBlock() }
                 }
 
-                if (!vm.hasSessions) {
+                val needAccount = !vm.hasSessions && vm.engine == EngineState.Ready
+                if (needAccount) {
                     item("no-account") {
                         HdCard {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -161,29 +162,29 @@ fun TargetsScreen(
                     item("empty") {
                         EmptyState(
                             emoji = when {
-                                !vm.hasSessions -> "🔐"
+                                needAccount -> "🔐"
                                 query.isBlank() -> "🎯"
                                 else -> "🔍"
                             },
                             title = when {
-                                !vm.hasSessions -> "Сначала аккаунт"
+                                needAccount -> "Сначала аккаунт"
                                 query.isBlank() -> "Пока нет целей"
                                 else -> "Ничего не найдено"
                             },
                             text = when {
-                                !vm.hasSessions ->
+                                needAccount ->
                                     "Приложение читает Telegram от имени твоего аккаунта — подключи его, это минута."
                                 query.isBlank() ->
                                     "Добавь цель по @username, ссылке или ID — приложение найдёт её чаты и собеседников."
                                 else -> "Попробуй другое имя, @username или числовой ID."
                             },
                             actionLabel = when {
-                                !vm.hasSessions -> "Войти в Telegram"
+                                needAccount -> "Войти в Telegram"
                                 query.isBlank() -> "Добавить цель"
                                 else -> null
                             },
                             onAction = when {
-                                !vm.hasSessions -> ({ onOpenAccounts() })
+                                needAccount -> ({ onOpenAccounts() })
                                 query.isBlank() -> ({ addOpen = true })
                                 else -> null
                             },
@@ -212,10 +213,10 @@ fun TargetsScreen(
 
         ExtendedFloatingActionButton(
             onClick = {
-                if (vm.hasSessions) {
-                    addOpen = true
-                } else {
+                if (!vm.hasSessions && vm.engine == EngineState.Ready) {
                     onOpenAccounts()
+                } else {
+                    addOpen = true
                 }
             },
             containerColor = Hd.Accent,

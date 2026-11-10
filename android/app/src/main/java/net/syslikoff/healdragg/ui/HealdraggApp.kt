@@ -159,14 +159,29 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                     )
                     Box(Modifier.weight(1f)) {
                         when (tab) {
-                            Tab.Catalog -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                                Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) {
-                                    CatalogScreen(
+                            Tab.Catalog -> {
+                                val catalogTarget = openTarget
+                                if (catalogTarget != null) {
+                                    TargetDetailScreen(
                                         vm = vm,
-                                        onOpenTarget = { openTarget = it },
+                                        tgId = catalogTarget,
+                                        onBack = { openTarget = null },
                                         onToast = toast,
-                                        onOpenAccounts = { showAccounts = true },
                                     )
+                                } else {
+                                    Box(
+                                        Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.TopCenter,
+                                    ) {
+                                        Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) {
+                                            CatalogScreen(
+                                                vm = vm,
+                                                onOpenTarget = { openTarget = it },
+                                                onToast = toast,
+                                                onOpenAccounts = { showAccounts = true },
+                                            )
+                                        }
+                                    }
                                 }
                             }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {

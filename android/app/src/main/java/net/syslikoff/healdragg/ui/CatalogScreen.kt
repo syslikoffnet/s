@@ -101,6 +101,12 @@ fun CatalogScreen(
         load(1, reset = true)
     }
 
+    LaunchedEffect(vm.bootJob?.finished) {
+        if (vm.bootJob?.finished == true) {
+            load(1, reset = true)
+        }
+    }
+
     LaunchedEffect(listState, page, pages, loadingMore) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
             .collect { last ->
@@ -216,6 +222,12 @@ fun CatalogScreen(
 
             error?.let { message ->
                 item("error") { ErrorBanner(message = message, onRetry = { scope.launch { load(1, reset = true) } }) }
+            }
+
+            if (!vm.bootRunning) {
+                vm.bootError?.let { message ->
+                    item("boot-error") { ErrorBanner(message = message) }
+                }
             }
 
             if (!loading && rows.isNotEmpty()) {
