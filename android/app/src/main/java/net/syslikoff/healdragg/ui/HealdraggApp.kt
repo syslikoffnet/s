@@ -171,7 +171,13 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                 tab = item
                             },
                             icon = { TabIcon(item, vm, tab == item) },
-                            label = { Text(item.title, style = MaterialTheme.typography.labelMedium) },
+                            label = {
+                                Text(
+                                    item.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    maxLines = 1,
+                                )
+                            },
                             colors = railColors(),
                         )
                     }
@@ -281,7 +287,13 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                     selected = tab == item,
                                     onClick = { tab = item },
                                     icon = { TabIcon(item, vm, tab == item) },
-                                    label = { Text(item.title, style = MaterialTheme.typography.labelSmall) },
+                                    label = {
+                                        Text(
+                                            item.title,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1,
+                                        )
+                                    },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = if (Hd.material3) Hd.Accent else Hd.Accent,
                                         selectedTextColor = if (Hd.material3) Hd.Accent else Hd.Accent,

@@ -81,6 +81,7 @@ fun SettingsScreen(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 30.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        item("label-engine") { SectionLabel("Движок") }
         item("engine") {
             HdCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -161,6 +162,7 @@ fun SettingsScreen(
             }
         }
 
+        item("label-look") { SectionLabel("Оформление") }
         item("appearance") {
             HdCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -211,6 +213,7 @@ fun SettingsScreen(
             }
         }
 
+        item("label-tg") { SectionLabel("Telegram") }
         item("accounts") {
             HdCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -403,6 +406,7 @@ fun SettingsScreen(
             }
         }
 
+        item("label-net") { SectionLabel("Связь") }
         item("server") {
             HdCard {
                 Text("Подключение", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
@@ -452,6 +456,7 @@ fun SettingsScreen(
             }
         }
 
+        item("label-about") { SectionLabel("О приложении") }
         item("about") {
             HdCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
