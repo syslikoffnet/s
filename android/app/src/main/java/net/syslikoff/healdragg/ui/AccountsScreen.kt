@@ -21,7 +21,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -213,7 +215,8 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
             if (vm.sessions.isEmpty()) {
                 item("sessions-empty") {
                     EmptyState(
-                        emoji = "🔐",
+                        emoji = "",
+                        icon = Icons.Filled.Lock,
                         title = "Аккаунт не подключён",
                         text = "Без него приложение не сможет искать чаты. Вход занимает минуту.",
                         actionLabel = if (step == LoginStep.Idle) "Войти в Telegram" else null,
@@ -364,7 +367,12 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
 
                             LoginStep.Done -> {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("✅", fontSize = 22.sp)
+                                    Icon(
+                                        Icons.Filled.CheckCircle,
+                                        contentDescription = null,
+                                        tint = Hd.Good,
+                                        modifier = Modifier.size(26.dp),
+                                    )
                                     Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text(

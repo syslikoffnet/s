@@ -18,7 +18,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -116,7 +123,8 @@ fun AlertsScreen(
             if (rows.isEmpty()) {
                 item("empty") {
                     EmptyState(
-                        emoji = if (unreadOnly) "✅" else "🔔",
+                        emoji = "",
+                        icon = if (unreadOnly) Icons.Filled.CheckCircle else Icons.Filled.Notifications,
                         title = if (unreadOnly) "Непрочитанных нет" else "Алертов пока нет",
                         text = "Когда цель зайдёт в новый чат, выйдет из него или напишет — событие появится здесь. " +
                             "Такие же уведомления приходят в шторку Android.",
@@ -156,12 +164,13 @@ private fun filterColors() = FilterChipDefaults.filterChipColors(
 
 @Composable
 private fun AlertCard(alert: AlertItem, onClick: () -> Unit) {
-    val (emoji, tint) = when (alert.kind.lowercase()) {
-        "join", "joined" -> "🚪" to Hd.Good
-        "leave", "left" -> "🚪" to Hd.Bad
-        "message", "msg", "post" -> "✍️" to Hd.Accent2
-        "mention" -> "📣" to Hd.Warn
-        else -> "🔔" to Hd.Accent
+    val (icon, tint) = when (alert.kind.lowercase()) {
+        "join", "joined" -> Icons.Filled.Login to Hd.Good
+        "leave", "left" -> Icons.Filled.Logout to Hd.Bad
+        "message", "msg", "post" -> Icons.Filled.ChatBubble to Hd.Accent2
+        "mention" -> Icons.Filled.Campaign to Hd.Warn
+        "gift" -> Icons.Filled.CardGiftcard to Hd.Accent
+        else -> Icons.Filled.Notifications to Hd.Accent
     }
     HdCard(onClick = onClick, contentPadding = PaddingValues(14.dp)) {
         Row(verticalAlignment = Alignment.Top) {
@@ -170,7 +179,9 @@ private fun AlertCard(alert: AlertItem, onClick: () -> Unit) {
                     .size(38.dp)
                     .background(tint.copy(alpha = 0.14f), RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
-            ) { Text(emoji, fontSize = 17.sp) }
+            ) {
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+            }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

@@ -19,14 +19,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.outlined.CardGiftcard
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -323,13 +326,15 @@ fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
                 item("empty") {
                     if (nftOnly && summary.total > 0) {
                         EmptyState(
-                            emoji = "💎",
+                            emoji = "",
+                            icon = Icons.Filled.AutoAwesome,
                             title = "NFT пока не найдено",
                             text = "Собери подарки по профилю, где они точно есть, или увеличь глубину обхода.",
                         )
                     } else {
                         EmptyState(
-                            emoji = "🎁",
+                            emoji = "",
+                            icon = Icons.Outlined.CardGiftcard,
                             title = "Подарков пока нет",
                             text = "Вставь профиль в поле выше и запусти сбор: приложение покажет, " +
                                 "кто, кому, что и когда дарил — включая NFT.",
@@ -389,7 +394,12 @@ private fun GiftCard(gift: GiftItem, onToast: (String) -> Unit) {
                     ),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(if (gift.isNft) "💎" else "🎁", fontSize = 18.sp)
+                Icon(
+                    imageVector = if (gift.isNft) Icons.Filled.AutoAwesome else Icons.Outlined.CardGiftcard,
+                    contentDescription = null,
+                    tint = if (gift.isNft) Hd.Accent else Hd.Accent2,
+                    modifier = Modifier.size(20.dp),
+                )
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {

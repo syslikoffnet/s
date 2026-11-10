@@ -29,7 +29,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -325,7 +331,9 @@ fun TargetDetailScreen(
                                         color = if (vm.profileBusy) Hd.Dim else Hd.Text,
                                     )
                                 },
-                                leadingIcon = { Text("🪪", fontSize = 16.sp) },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Refresh, contentDescription = null, tint = Hd.Accent)
+                                },
                                 enabled = !vm.profileBusy,
                                 onClick = {
                                     menu = false
@@ -363,11 +371,15 @@ fun TargetDetailScreen(
                         Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Chip("💬 ${t.groupsCount}", Hd.Accent2)
-                        Chip("✉️ ${compactNumber(t.activity.messages)}", Hd.Muted)
-                        Chip("👥 ${compactNumber(t.activity.peers)}", Hd.Muted)
-                        if (t.alertsUnread > 0) Chip("🔔 ${t.alertsUnread}", Hd.Bad)
-                        if (t.giftsCount > 0) Chip("🎁 ${t.giftsCount}", Hd.Accent)
+                        Chip("${t.groupsCount} чатов", Hd.Accent2, icon = Icons.Filled.ChatBubble)
+                        Chip(compactNumber(t.activity.messages), Hd.Muted, icon = Icons.Filled.Email)
+                        Chip(compactNumber(t.activity.peers), Hd.Muted, icon = Icons.Filled.People)
+                        if (t.alertsUnread > 0) {
+                            Chip(t.alertsUnread.toString(), Hd.Bad, icon = Icons.Filled.Notifications)
+                        }
+                        if (t.giftsCount > 0) {
+                            Chip(t.giftsCount.toString(), Hd.Accent, icon = Icons.Filled.CardGiftcard)
+                        }
                         Chip(t.lastScan ?: "не сканировалась", if (t.lastScanAt > 0) Hd.Good else Hd.Dim)
                     }
                     t.bio?.takeIf { it.isNotBlank() }?.let { bio ->
@@ -441,7 +453,7 @@ fun TargetDetailScreen(
                     onClick = { linksOpen = true },
                     modifier = Modifier.semantics { contentDescription = "Ссылки на чаты" },
                 ) {
-                    Text("🔗", fontSize = 18.sp)
+                    Icon(Icons.Filled.Link, contentDescription = null, tint = Hd.Muted)
                 }
                 IconButton(onClick = { scope.launch { loadTarget(); loadChats(reset = true); loadFeed() } }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "Обновить цель", tint = Hd.Muted)

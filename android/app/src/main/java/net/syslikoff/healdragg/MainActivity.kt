@@ -38,7 +38,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            HealdraggTheme {
+            HealdraggTheme(md3 = vm.md3) {
                 LaunchedEffect(Unit) {
                     maybeAskNotifications()
                     AlertsWork.schedule(this@MainActivity)

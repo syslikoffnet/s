@@ -22,6 +22,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -103,9 +108,9 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Chip("🎯 цель", Hd.Accent)
-            Chip("💬 $chats", Hd.Accent2)
-            Chip("👥 $peers", Hd.Good)
+            Chip("цель", Hd.Accent, icon = Icons.Filled.GpsFixed)
+            Chip(chats.toString(), Hd.Accent2, icon = Icons.Filled.ChatBubble)
+            Chip(peers.toString(), Hd.Good, icon = Icons.Filled.People)
             Spacer(Modifier.weight(1f))
             TextButton(onClick = {
                 scale = 1f
@@ -116,7 +121,8 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit) {
 
         if (chats == 0 && peers == 0) {
             EmptyState(
-                emoji = "🕸",
+                emoji = "",
+                icon = Icons.Filled.Share,
                 title = "Паутина пуста",
                 text = "Граф строится из сообщений цели и её собеседников. Сначала собери ленту.",
             )

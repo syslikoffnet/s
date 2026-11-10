@@ -33,6 +33,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var apiHash by mutableStateOf(prefs.getString(KEY_API_HASH, "").orEmpty())
         private set
 
+    /** Оформление: Material 3 (по умолчанию) или компактная моно-тема. */
+    var md3 by mutableStateOf(prefs.getBoolean(KEY_MD3, true))
+        private set
+
     var engine by mutableStateOf(EngineState.Unknown)
         private set
     var engineError by mutableStateOf<String?>(null)
@@ -100,6 +104,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── настройки ────────────────────────────────────────────────────────────
+
+    fun setMaterial3(enabled: Boolean) {
+        if (md3 == enabled) return
+        md3 = enabled
+        prefs.edit().putBoolean(KEY_MD3, enabled).apply()
+    }
 
     fun saveCredentials(id: String, hash: String) {
         apiId = id.trim()
@@ -521,6 +531,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_UNREAD = "notified_unread"
         const val KEY_ENGINE_STATE = "engine_state"
         const val KEY_ENGINE_ERROR = "engine_error"
+        const val KEY_MD3 = "material3"
         const val LOCAL_URL = "http://127.0.0.1:8080/"
         const val LOCAL_HOST = "http://127.0.0.1"
     }

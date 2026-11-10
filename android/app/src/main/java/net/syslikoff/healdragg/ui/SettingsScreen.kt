@@ -23,15 +23,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -43,6 +49,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -145,11 +152,61 @@ fun SettingsScreen(
                     }
                     TextButton(onClick = onOpenBattery) {
                         Text(
-                            if (vm.batteryOptimized()) "🔋 батарея: без ограничений" else "🔋 разрешить фон",
+                            if (vm.batteryOptimized()) "батарея: без ограничений" else "разрешить фон",
                             color = if (vm.batteryOptimized()) Hd.Good else Hd.Warn,
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }
+                }
+            }
+        }
+
+        item("appearance") {
+            HdCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(40.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Hd.Accent.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.Palette,
+                            contentDescription = null,
+                            tint = Hd.Accent,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Material Design 3",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Hd.Text,
+                        )
+                        Text(
+                            if (vm.md3) {
+                                "Мягкие поверхности, крупные скругления и акцентные чипы — оформление применяется сразу."
+                            } else {
+                                "Компактная моно-тема прежних версий: плотный терминальный вид."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(
+                        checked = vm.md3,
+                        onCheckedChange = { vm.setMaterial3(it) },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Hd.Black,
+                            checkedTrackColor = Hd.Accent,
+                            uncheckedThumbColor = Hd.Muted,
+                            uncheckedTrackColor = Hd.Surface2,
+                            uncheckedBorderColor = Hd.Stroke,
+                        ),
+                    )
                 }
             }
         }
@@ -481,6 +538,7 @@ fun SetupScreen(
     onOpenBattery: () -> Unit,
     onDone: () -> Unit,
     onOpenAccounts: () -> Unit = {},
+    onBack: (() -> Unit)? = null,
 ) {
     var apiId by remember { mutableStateOf(vm.apiId) }
     var apiHash by remember { mutableStateOf(vm.apiHash) }
@@ -501,14 +559,16 @@ fun SetupScreen(
             .padding(horizontal = 20.dp, vertical = 22.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (onBack != null) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "Назад", tint = Hd.Muted)
+                }
+            }
+        }
         Spacer(Modifier.height(12.dp))
-        Box(
-            Modifier
-                .size(76.dp)
-                .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(24.dp)),
-            contentAlignment = Alignment.Center,
-        ) { Text("🩺", fontSize = 34.sp) }
-        Spacer(Modifier.height(12.dp))
+        BrandMark(size = 76)
+        Spacer(Modifier.height(14.dp))
         Text("Healdragg", style = MaterialTheme.typography.displaySmall, color = Hd.Text)
         Text(
             "Монитор публичных чатов Telegram.\nДвижок уже внутри приложения.",
@@ -575,7 +635,7 @@ fun SetupScreen(
                 }
                 Spacer(Modifier.height(6.dp))
                 TextButton(onClick = onOpenBattery) {
-                    Text("🔋 Разрешить работу в фоне", color = Hd.Muted, style = MaterialTheme.typography.labelLarge)
+                    Text("Разрешить работу в фоне", color = Hd.Muted, style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
@@ -584,7 +644,12 @@ fun SetupScreen(
             Spacer(Modifier.height(12.dp))
             HdCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("✅", fontSize = 18.sp)
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = Hd.Good,
+                        modifier = Modifier.size(20.dp),
+                    )
                     Spacer(Modifier.width(8.dp))
                     Text(
                         "Движок работает",

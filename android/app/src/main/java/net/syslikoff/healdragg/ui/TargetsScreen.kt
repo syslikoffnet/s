@@ -21,10 +21,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -136,7 +142,12 @@ fun TargetsScreen(
                     item("no-account") {
                         HdCard {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("🔐", fontSize = 18.sp)
+                                Icon(
+                                    Icons.Filled.Lock,
+                                    contentDescription = null,
+                                    tint = Hd.Warn,
+                                    modifier = Modifier.size(18.dp),
+                                )
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(
@@ -161,10 +172,11 @@ fun TargetsScreen(
                 if (!vm.loading && filtered.isEmpty()) {
                     item("empty") {
                         EmptyState(
-                            emoji = when {
-                                needAccount -> "🔐"
-                                query.isBlank() -> "🎯"
-                                else -> "🔍"
+                            emoji = "",
+                            icon = when {
+                                needAccount -> Icons.Filled.Lock
+                                query.isBlank() -> Icons.Filled.GpsFixed
+                                else -> Icons.Filled.Search
                             },
                             title = when {
                                 needAccount -> "Сначала аккаунт"
@@ -332,11 +344,20 @@ private fun TargetCard(
                         .background(Hd.Bad.copy(alpha = 0.16f), RoundedCornerShape(50))
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                 ) {
-                    Text(
-                        "🔔 ${target.alertsUnread}",
-                        color = Hd.Bad,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.Notifications,
+                            contentDescription = null,
+                            tint = Hd.Bad,
+                            modifier = Modifier.size(11.dp),
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            target.alertsUnread.toString(),
+                            color = Hd.Bad,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(4.dp))
             }
@@ -366,9 +387,9 @@ private fun TargetCard(
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Chip("💬 ${target.groupsCount}", Hd.Accent2, emoji = null)
-            Chip("✉️ ${compactNumber(target.activity.messages)}", Hd.Muted)
-            Chip("👥 ${compactNumber(target.activity.peers)}", Hd.Muted)
+            Chip("${target.groupsCount} чатов", Hd.Accent2, icon = Icons.Filled.ChatBubble)
+            Chip(compactNumber(target.activity.messages), Hd.Muted, icon = Icons.Filled.Email)
+            Chip(compactNumber(target.activity.peers), Hd.Muted, icon = Icons.Filled.People)
             Chip(
                 text = target.lastScan ?: "не сканировалась",
                 color = if (target.lastScanAt > 0) Hd.Good else Hd.Dim,

@@ -8,12 +8,12 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,12 +27,23 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TrackChanges
+import androidx.compose.material.icons.outlined.CardGiftcard
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.GpsFixed
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -53,24 +64,44 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-private enum class Tab(val title: String, val emoji: String) {
-    Targets("Цели", "🎯"),
-    Alerts("Алерты", "🔔"),
-    Catalog("База", "🗂"),
-    Gifts("Подарки", "🎁"),
-    Settings("Настройки", "⚙"),
+private enum class Tab(
+    val title: String,
+    val icon: ImageVector,
+    val selectedIcon: ImageVector,
+) {
+    Targets("Цели", Icons.Outlined.GpsFixed, Icons.Filled.GpsFixed),
+    Alerts("Алерты", Icons.Outlined.Notifications, Icons.Filled.Notifications),
+    Catalog("База", Icons.Outlined.Explore, Icons.Filled.Explore),
+    Gifts("Подарки", Icons.Outlined.CardGiftcard, Icons.Filled.CardGiftcard),
+    Settings("Настройки", Icons.Outlined.Settings, Icons.Filled.Settings),
+}
+
+/** Стеклянный контейнер для полноэкранных сценариев (вход, мастер настройки). */
+@Composable
+private fun OverlayScreen(snackbar: SnackbarHostState, content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Hd.Bg)) {
+        content()
+        SnackbarHost(
+            hostState = snackbar,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp).navigationBarsPadding(),
+        )
+    }
 }
 
 /**
- * Корень приложения: адаптивный каркас (телефон — табы, планшет — rail и две
- * колонки), вкладки, статус движка и общий snackbar.
+ * Корень приложения: адаптивный каркас (телефон — нижние табы, планшет — rail
+ * и две колонки), общая шапка, вкладки и единый snackbar.
  */
 @Composable
 fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
@@ -92,29 +123,27 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
     BackHandler(enabled = showAccounts) { showAccounts = false }
 
     if (showAccounts) {
-        AccountsScreen(vm = vm, onBack = { showAccounts = false }, onToast = toast)
-        Box(Modifier.fillMaxSize().background(Hd.Bg)) {
-            SnackbarHost(
-                hostState = snackbar,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
-            )
+        OverlayScreen(snackbar) {
+            AccountsScreen(vm = vm, onBack = { showAccounts = false }, onToast = toast)
         }
         return
     }
 
     if (showSetup) {
-        SetupScreen(
-            vm = vm,
-            onToast = toast,
-            onOpenBattery = onOpenBattery,
-            onDone = {
-                showSetup = false
-                vm.refresh(force = true)
-            },
-            onOpenAccounts = { showAccounts = true },
-        )
-        Box(Modifier.fillMaxSize().background(Hd.Bg)) {
-            SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+        val closeSetup: (() -> Unit)? =
+            if (vm.hasCredentials || !vm.isLocal) ({ showSetup = false }) else null
+        OverlayScreen(snackbar) {
+            SetupScreen(
+                vm = vm,
+                onToast = toast,
+                onOpenBattery = onOpenBattery,
+                onDone = {
+                    showSetup = false
+                    vm.refresh(force = true)
+                },
+                onOpenAccounts = { showAccounts = true },
+                onBack = closeSetup,
+            )
         }
         return
     }
@@ -122,11 +151,18 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Hd.Bg)) {
         val wide = maxWidth >= 800.dp
         val listWidth = (maxWidth * 0.36f).coerceIn(320.dp, 430.dp)
+        val title = when {
+            openTarget != null -> "Цель"
+            else -> tab.title
+        }
 
         if (wide) {
             Row(Modifier.fillMaxSize().navigationBarsPadding()) {
-                NavigationRail(containerColor = Hd.Surface, header = { RailHeader() }) {
-                    Spacer(Modifier.height(12.dp))
+                NavigationRail(
+                    containerColor = Hd.Surface,
+                    header = { RailHeader() },
+                ) {
+                    Spacer(Modifier.height(10.dp))
                     Tab.entries.forEach { item ->
                         NavigationRailItem(
                             selected = tab == item && openTarget == null,
@@ -134,29 +170,21 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                 openTarget = null
                                 tab = item
                             },
-                            icon = { TabIcon(item, vm) },
+                            icon = { TabIcon(item, vm, tab == item) },
                             label = { Text(item.title, style = MaterialTheme.typography.labelMedium) },
-                            colors = NavigationRailItemDefaults.colors(
-                                selectedIconColor = Hd.Accent,
-                                selectedTextColor = Hd.Accent,
-                                indicatorColor = Hd.Accent.copy(alpha = 0.16f),
-                                unselectedIconColor = Hd.Muted,
-                                unselectedTextColor = Hd.Muted,
-                            ),
+                            colors = railColors(),
                         )
                     }
                 }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     HdTopBar(
                         vm = vm,
-                        title = when {
-                            openTarget != null -> "Цель"
-                            else -> tab.title
+                        title = title,
+                        onRefresh = { vm.refresh(force = true) },
+                        onSettings = {
+                            openTarget = null
+                            tab = Tab.Settings
                         },
-                        onRefresh = {
-                            if (openTarget == null) vm.refresh(force = true) else vm.refresh()
-                        },
-                        onSettings = { showSetup = true },
                     )
                     Box(Modifier.weight(1f)) {
                         when (tab) {
@@ -170,10 +198,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                         onToast = toast,
                                     )
                                 } else {
-                                    Box(
-                                        Modifier.fillMaxSize(),
-                                        contentAlignment = Alignment.TopCenter,
-                                    ) {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                         Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) {
                                             CatalogScreen(
                                                 vm = vm,
@@ -191,7 +216,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                 }
                             }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                                Box(Modifier.widthIn(max = 760.dp).fillMaxWidth()) {
+                                Box(Modifier.widthIn(max = 780.dp).fillMaxWidth()) {
                                     SettingsScreen(
                                         vm = vm,
                                         onOpenBattery = onOpenBattery,
@@ -235,29 +260,36 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
         } else {
             Scaffold(
                 containerColor = Hd.Bg,
-                contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 snackbarHost = { SnackbarHost(snackbar) },
                 topBar = {
                     HdTopBar(
                         vm = vm,
-                        title = if (openTarget != null) "Цель" else tab.title,
+                        title = title,
                         onRefresh = { vm.refresh(force = true) },
-                        onSettings = { showSetup = true },
+                        onSettings = {
+                            openTarget = null
+                            tab = Tab.Settings
+                        },
                     )
                 },
                 bottomBar = {
                     if (openTarget == null) {
-                        NavigationBar(containerColor = Hd.Surface) {
+                        NavigationBar(containerColor = Hd.Surface, tonalElevation = 0.dp) {
                             Tab.entries.forEach { item ->
                                 NavigationBarItem(
                                     selected = tab == item,
                                     onClick = { tab = item },
-                                    icon = { TabIcon(item, vm) },
-                                    label = { Text(item.title, style = MaterialTheme.typography.labelMedium) },
+                                    icon = { TabIcon(item, vm, tab == item) },
+                                    label = { Text(item.title, style = MaterialTheme.typography.labelSmall) },
                                     colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = Hd.Accent,
-                                        selectedTextColor = Hd.Accent,
-                                        indicatorColor = Hd.Accent.copy(alpha = 0.16f),
+                                        selectedIconColor = if (Hd.material3) Hd.Accent else Hd.Accent,
+                                        selectedTextColor = if (Hd.material3) Hd.Accent else Hd.Accent,
+                                        indicatorColor = if (Hd.material3) {
+                                            Hd.Accent.copy(alpha = 0.22f)
+                                        } else {
+                                            Hd.Accent.copy(alpha = 0.16f)
+                                        },
                                         unselectedIconColor = Hd.Muted,
                                         unselectedTextColor = Hd.Muted,
                                     ),
@@ -301,7 +333,6 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
             }
         }
     }
-    SnackbarHost(hostState = snackbar, modifier = Modifier.navigationBarsPadding())
 }
 
 @Composable
@@ -309,10 +340,20 @@ private fun EmptyDetailHint(tab: Tab) {
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
     ) {
-        Text(if (tab == Tab.Alerts) "🔔" else "🎯", fontSize = 42.sp)
-        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier.size(76.dp).clip(CircleShape).background(Hd.Accent.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (tab == Tab.Alerts) Icons.Filled.Notifications else Icons.Filled.TrackChanges,
+                contentDescription = null,
+                tint = Hd.Accent,
+                modifier = Modifier.size(34.dp),
+            )
+        }
+        Spacer(Modifier.height(16.dp))
         Text(
             if (tab == Tab.Alerts) "Выбери алерт слева" else "Выбери цель слева",
             style = MaterialTheme.typography.titleMedium,
@@ -332,31 +373,53 @@ private fun EmptyDetailHint(tab: Tab) {
 @Composable
 private fun RailHeader() {
     Column(
-        Modifier.statusBarsPadding().padding(top = 12.dp),
+        Modifier.statusBarsPadding().padding(top = 14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            Modifier
-                .size(42.dp)
-                .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(14.dp)),
-            contentAlignment = Alignment.Center,
-        ) { Text("🩺", fontSize = 20.sp) }
+        BrandMark(size = 42)
     }
 }
 
 @Composable
-private fun TabIcon(item: Tab, vm: AppViewModel) {
+private fun TabIcon(item: Tab, vm: AppViewModel, selected: Boolean) {
+    val vector = if (selected) item.selectedIcon else item.icon
     if (item == Tab.Alerts && vm.unread > 0) {
-        BadgedBox(badge = {
-            Badge(containerColor = Hd.Bad, contentColor = Hd.Text) {
-                Text(if (vm.unread > 99) "99+" else vm.unread.toString(), fontSize = 10.sp)
-            }
-        }) {
-            Text(item.emoji, fontSize = 19.sp)
+        BadgedBox(
+            badge = {
+                Badge(containerColor = Hd.Bad, contentColor = Hd.Black) {
+                    Text(if (vm.unread > 99) "99+" else vm.unread.toString(), fontSize = 10.sp)
+                }
+            },
+        ) {
+            Icon(vector, contentDescription = item.title, modifier = Modifier.size(23.dp))
         }
     } else {
-        Text(item.emoji, fontSize = 19.sp)
+        Icon(vector, contentDescription = item.title, modifier = Modifier.size(23.dp))
     }
+}
+
+@Composable
+private fun railColors() = NavigationRailItemDefaults.colors(
+    selectedIconColor = Hd.Accent,
+    selectedTextColor = Hd.Accent,
+    indicatorColor = Hd.Accent.copy(alpha = 0.20f),
+    unselectedIconColor = Hd.Muted,
+    unselectedTextColor = Hd.Muted,
+)
+
+private fun engineLabel(state: EngineState): String = when (state) {
+    EngineState.Ready -> "онлайн"
+    EngineState.Starting -> "запуск"
+    EngineState.Error -> "ошибка"
+    EngineState.Stopped -> "выключен"
+    EngineState.Unknown -> "проверка"
+}
+
+private fun engineTint(state: EngineState): Color = when (state) {
+    EngineState.Ready -> Hd.Good
+    EngineState.Starting -> Hd.Warn
+    EngineState.Error -> Hd.Bad
+    else -> Hd.Dim
 }
 
 @Composable
@@ -371,31 +434,78 @@ private fun HdTopBar(
             .fillMaxWidth()
             .background(Hd.Bg)
             .statusBarsPadding()
-            .padding(start = 18.dp, end = 10.dp, top = 8.dp, bottom = 6.dp),
+            .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                color = Hd.Text,
-                modifier = Modifier.weight(1f),
-            )
-            EngineDot(vm.engine)
-            Spacer(Modifier.width(6.dp))
-            IconButton(onClick = onRefresh, enabled = !vm.refreshing) {
-                Icon(
-                    Icons.Filled.Refresh,
-                    contentDescription = "Обновить данные",
-                    tint = if (vm.refreshing) Hd.Dim else Hd.Muted,
+            BrandMark(size = 38)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "HEALDRAGG",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        letterSpacing = 1.8.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = Hd.Dim,
+                    maxLines = 1,
+                )
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Hd.Text,
+                    maxLines = 1,
                 )
             }
-            IconButton(onClick = onSettings) {
-                Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = Hd.Muted)
+            EnginePill(vm.engine)
+            Spacer(Modifier.width(6.dp))
+            FilledTonalIconButton(
+                onClick = onRefresh,
+                enabled = !vm.refreshing,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = Hd.Surface2,
+                    contentColor = if (vm.refreshing) Hd.Dim else Hd.Muted,
+                ),
+                modifier = Modifier.size(38.dp),
+            ) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Обновить данные", modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(4.dp))
+            FilledTonalIconButton(
+                onClick = onSettings,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = Hd.Surface2,
+                    contentColor = Hd.Muted,
+                ),
+                modifier = Modifier.size(38.dp),
+            ) {
+                Icon(Icons.Filled.Settings, contentDescription = "Настройки", modifier = Modifier.size(20.dp))
             }
         }
         if (vm.offline) {
+            Spacer(Modifier.height(8.dp))
             EngineBanner(vm)
         }
+    }
+}
+
+@Composable
+private fun EnginePill(state: EngineState) {
+    val color = engineTint(state)
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.12f))
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        EngineDot(state)
+        Spacer(Modifier.width(5.dp))
+        Text(
+            engineLabel(state),
+            style = MaterialTheme.typography.labelSmall,
+            color = color,
+            maxLines = 1,
+        )
     }
 }
 
@@ -417,7 +527,7 @@ private fun EngineDot(state: EngineState) {
     }
     Box(
         Modifier
-            .size(10.dp)
+            .size(8.dp)
             .background(color.copy(alpha = if (state == EngineState.Starting) alpha else 1f), CircleShape)
             .semantics { contentDescription = desc },
     )
@@ -430,29 +540,22 @@ private fun EngineBanner(vm: AppViewModel) {
     HdCard(contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                if (unreachable) {
-                    "⚠️ Панель не отвечает"
-                } else {
-                    when (vm.engine) {
-                        EngineState.Starting -> "⏳ Движок запускается…"
-                        EngineState.Error -> "⚠️ Движок не запустился"
-                        EngineState.Stopped -> "⚪ Движок остановлен"
-                        else -> "⚠️ Нет связи с движком"
-                    }
-                },
+                if (unreachable) "Панель не отвечает" else "Нет связи с движком",
                 style = MaterialTheme.typography.bodySmall,
                 color = Hd.Muted,
                 modifier = Modifier.weight(1f),
             )
             Text(
                 if (unreachable) "Проверить" else "Запустить",
-                color = Hd.Accent2,
+                color = Hd.Accent,
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(Hd.Accent.copy(alpha = 0.12f))
                     .clickable {
                         if (unreachable) vm.refresh(force = true) else vm.startEngine()
                     }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
         vm.engineError?.let { error ->

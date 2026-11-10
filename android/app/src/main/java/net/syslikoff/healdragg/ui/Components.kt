@@ -20,10 +20,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.HealthAndSafety
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -33,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -54,11 +59,13 @@ fun HdCard(
         androidx.compose.foundation.layout.PaddingValues(16.dp),
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) {
+    val radius = if (Hd.material3) 20.dp else 18.dp
+    val shape = RoundedCornerShape(radius)
     val base = Modifier
         .fillMaxWidth()
-        .clip(RoundedCornerShape(18.dp))
-        .background(Hd.Surface)
-        .border(1.dp, Hd.Stroke, RoundedCornerShape(18.dp))
+        .clip(shape)
+        .background(if (Hd.material3) Hd.Surface else Hd.Surface)
+        .then(if (Hd.material3) Modifier else Modifier.border(1.dp, Hd.Stroke, shape))
     val interactive = when {
         onLongClick != null -> base.combinedClickable(
             onClick = { onClick?.invoke() },
@@ -74,8 +81,15 @@ fun HdCard(
 fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text.uppercase(),
-        style = SectionTitleStyle,
-        color = Hd.Dim,
+        style = if (Hd.material3) {
+            MaterialTheme.typography.labelLarge.copy(
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.6.sp,
+            )
+        } else {
+            SectionTitleStyle
+        },
+        color = if (Hd.material3) Hd.Muted else Hd.Dim,
         modifier = modifier.padding(horizontal = 4.dp, vertical = 6.dp),
     )
 }
@@ -86,16 +100,24 @@ fun Chip(
     color: Color = Hd.Muted,
     modifier: Modifier = Modifier,
     emoji: String? = null,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
 ) {
+    val shape = RoundedCornerShape(50)
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(50))
-            .background(color.copy(alpha = 0.12f))
-            .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(50))
-            .padding(horizontal = 9.dp, vertical = 4.dp),
+            .clip(shape)
+            .background(color.copy(alpha = if (Hd.material3) 0.16f else 0.12f))
+            .then(
+                if (Hd.material3) Modifier
+                else Modifier.border(1.dp, color.copy(alpha = 0.35f), shape),
+            )
+            .padding(horizontal = if (Hd.material3) 10.dp else 9.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (emoji != null) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(12.dp))
+            Spacer(Modifier.width(4.dp))
+        } else if (emoji != null) {
             Text(emoji, fontSize = 10.5.sp)
             Spacer(Modifier.width(4.dp))
         }
@@ -116,22 +138,27 @@ fun StatTile(
     tint: Color = Hd.Text,
     modifier: Modifier = Modifier,
 ) {
+    val shape = RoundedCornerShape(if (Hd.material3) 18.dp else 16.dp)
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
+            .clip(shape)
             .background(Hd.Surface)
-            .border(1.dp, Hd.Stroke, RoundedCornerShape(16.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .then(if (Hd.material3) Modifier else Modifier.border(1.dp, Hd.Stroke, shape))
+            .padding(horizontal = 12.dp, vertical = if (Hd.material3) 12.dp else 10.dp),
     ) {
         Text(
             text = value,
             color = tint,
-            style = MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Monospace),
+            style = if (Hd.material3) {
+                MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            } else {
+                MaterialTheme.typography.titleLarge.copy(fontFamily = FontFamily.Monospace)
+            },
             maxLines = 1,
         )
         Text(
             text = label,
-            color = Hd.Dim,
+            color = Hd.Muted,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -143,6 +170,23 @@ fun StatTile(
 @Composable
 fun Avatar(name: String, seed: Long, size: Int = 46, modifier: Modifier = Modifier) {
     val tint = Hd.avatarColor(seed)
+    if (Hd.material3) {
+        Box(
+            modifier = modifier
+                .size(size.dp)
+                .clip(CircleShape)
+                .background(tint.copy(alpha = 0.20f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = name.take(2).uppercase(),
+                color = tint,
+                fontWeight = FontWeight.Bold,
+                fontSize = (size / 3).sp,
+            )
+        }
+        return
+    }
     val brush = Brush.linearGradient(listOf(tint, Hd.Accent2))
     Box(
         modifier = modifier
@@ -178,6 +222,7 @@ fun EmptyState(
     modifier: Modifier = Modifier,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
+    icon: ImageVector? = null,
 ) {
     Column(
         modifier = modifier
@@ -185,8 +230,20 @@ fun EmptyState(
             .padding(horizontal = 24.dp, vertical = 42.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(emoji, fontSize = 40.sp)
-        Spacer(Modifier.height(10.dp))
+        if (icon != null) {
+            Box(
+                Modifier
+                    .size(64.dp)
+                    .clip(CircleShape)
+                    .background(Hd.Accent.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, contentDescription = null, tint = Hd.Accent, modifier = Modifier.size(30.dp))
+            }
+        } else {
+            Text(emoji, fontSize = 40.sp)
+        }
+        Spacer(Modifier.height(14.dp))
         Text(
             title,
             style = MaterialTheme.typography.titleMedium,
@@ -226,7 +283,12 @@ fun ErrorBanner(message: String, onRetry: (() -> Unit)? = null, modifier: Modifi
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("⚠️", fontSize = 14.sp)
+        Icon(
+            Icons.Filled.Warning,
+            contentDescription = null,
+            tint = Hd.Bad,
+            modifier = Modifier.size(16.dp),
+        )
         Spacer(Modifier.width(8.dp))
         Text(
             text = message,
@@ -305,7 +367,7 @@ fun HdTextField(
             focusedContainerColor = Hd.Surface,
             unfocusedContainerColor = Hd.Surface,
         ),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(if (Hd.material3) 16.dp else 14.dp),
         modifier = modifier.fillMaxWidth(),
     )
 }
@@ -346,6 +408,28 @@ fun KeyValueRow(label: String, value: String, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** Знак приложения: медицинский щит с пульсом — без эмодзи и стоковых картинок. */
+@Composable
+fun BrandMark(size: Int = 36, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(if (Hd.material3) (size * 0.32f).dp else 14.dp)
+    Box(
+        modifier = modifier
+            .size(size.dp)
+            .clip(shape)
+            .background(
+                if (Hd.material3) Hd.Accent else Hd.Accent.copy(alpha = 0.16f),
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.HealthAndSafety,
+            contentDescription = "Healdragg",
+            tint = if (Hd.material3) Hd.Black else Hd.Accent,
+            modifier = Modifier.size((size * 0.62f).dp),
         )
     }
 }

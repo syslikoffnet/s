@@ -31,8 +31,8 @@ android {
         applicationId = "net.syslikoff.healdragg"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.3.0"
+        versionCode = 7
+        versionName = "1.4.0"
         resourceConfigurations += listOf("ru", "en")
         ndk {
             // Chaquopy: только 64-битные ABI (Python 3.13 их и поддерживает)
@@ -125,6 +125,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material")
     implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.2")

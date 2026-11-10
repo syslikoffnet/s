@@ -19,7 +19,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -252,7 +256,8 @@ fun CatalogScreen(
                 item("empty") {
                     if (query.isBlank()) {
                         EmptyState(
-                            emoji = "🗂",
+                            emoji = "",
+                            icon = Icons.Outlined.Explore,
                             title = "База пока пуста",
                             text = if (vm.hasSessions) {
                                 "Собери базу: приложение обойдёт диалоги аккаунта и найдёт публичные чаты. " +
@@ -276,7 +281,8 @@ fun CatalogScreen(
                         )
                     } else {
                         EmptyState(
-                            emoji = "🔍",
+                            emoji = "",
+                            icon = Icons.Filled.Search,
                             title = "Ничего не найдено",
                             text = "Попробуй другое слово, @username или часть названия. " +
                                 "Если чата нет в базе — сначала собери её.",
@@ -339,7 +345,14 @@ private fun CatalogCard(
                     .size(40.dp)
                     .background(Hd.avatarColor(chat.tgId).copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
-            ) { Text(if (chat.isPublic) "🌐" else "🔒", fontSize = 16.sp) }
+            ) {
+                Icon(
+                    imageVector = if (chat.isPublic) Icons.Filled.Public else Icons.Filled.Lock,
+                    contentDescription = null,
+                    tint = Hd.avatarColor(chat.tgId),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -378,7 +391,7 @@ private fun CatalogCard(
                     onClick = onTarget,
                     modifier = Modifier.semantics { contentDescription = "Сделать целью" },
                 ) {
-                    Text("🎯", fontSize = 16.sp)
+                    Icon(Icons.Filled.GpsFixed, contentDescription = null, tint = Hd.Accent)
                 }
             }
         }
