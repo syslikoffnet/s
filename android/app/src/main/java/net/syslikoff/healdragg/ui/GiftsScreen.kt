@@ -96,6 +96,8 @@ fun GiftsScreen(
     var nftResale by rememberSaveable { mutableStateOf(false) }
     var nftCollection by rememberSaveable { mutableStateOf("") }
     var nftTotal by remember { mutableStateOf(0) }
+    var ownerQuery by rememberSaveable { mutableStateOf("") }
+    var ownerTotal by remember { mutableStateOf(0) }
     var nftMoreBusy by remember { mutableStateOf(false) }
     var pendingCsv by remember { mutableStateOf<ByteArray?>(null) }
     val saveCsv = rememberLauncherForActivityResult(
@@ -123,8 +125,17 @@ fun GiftsScreen(
             }
             .onFailure { error = it.message ?: "Не удалось прочитать подарки" }
         if (mode == 2) {
-            runCatching { client.nftOwners(chain = chainArg, limit = 200) }
-                .onSuccess { nftOwnersList = it }
+            runCatching {
+                client.nftOwners(
+                    chain = chainArg,
+                    q = ownerQuery.trim().ifBlank { null },
+                    limit = 500,
+                )
+            }
+                .onSuccess {
+                    nftOwnersList = it
+                    ownerTotal = it.size
+                }
                 .onFailure { error = it.message ?: "Не удалось прочитать владельцев" }
         }
         loading = false
@@ -189,6 +200,11 @@ fun GiftsScreen(
     }
 
     LaunchedEffect(mode, chain, nftOnly) { reload() }
+    LaunchedEffect(mode, ownerQuery) {
+        if (mode != 2) return@LaunchedEffect
+        if (ownerQuery.isNotBlank()) delay(400)
+        reload()
+    }
     LaunchedEffect(mode, chain, nftQuery, nftSort, nftResale, nftCollection) {
         if (mode == 0) return@LaunchedEffect
         if (nftQuery.isNotBlank()) delay(400)
@@ -867,6 +883,38 @@ fun GiftsScreen(
             }
 
             if (mode == 2) {
+                item("ownersSearch") {
+                    HdCard(contentPadding = PaddingValues(12.dp)) {
+                        HdTextField(
+                            value = ownerQuery,
+                            onValueChange = { ownerQuery = it.take(80) },
+                            label = "Поиск владельцев",
+                            hint = "ник, имя или id",
+                            singleLine = true,
+                            trailing = if (ownerQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { ownerQuery = "" }) {
+                                        Icon(
+                                            Icons.Filled.Clear,
+                                            contentDescription = "Очистить поиск",
+                                            tint = Hd.Muted,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Показано ${compactNumber(ownerTotal)} из " +
+                                "${compactNumber(nftSummary.owners)} владельцев базы",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                    }
+                }
                 item("profilesForm") {
                     HdCard {
                         Text(

@@ -83,3 +83,36 @@ def test_tzinfo_handles_any_exception(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(util, "ZoneInfo", boom)
     assert util.fmt_day(1700000000) == "15 нояб."
+
+
+def test_broken_database_recovers_from_backup(tmp_path: Path) -> None:
+    """Ломаная база не должна оставлять пользователя без аккаунтов."""
+    from healdragg.backup import create_backup, recover_from_latest
+    from healdragg.db import Store
+
+    home = tmp_path
+    db_path = home / "healdragg.db"
+    store = Store(db_path)
+    store.set_meta("проверка", "да")
+    created = create_backup(store, keep=5, label="test")
+    store.close()
+
+    db_path.write_bytes("не sqlite".encode() * 100)
+    restored = recover_from_latest(home, db_path)
+    assert restored == created["name"]
+
+    again = Store(db_path)
+    try:
+        assert again.get_meta("проверка") == "да"
+    finally:
+        again.close()
+    assert list(home.glob("healdragg.db.broken-*"))
+
+
+def test_recover_without_backups_is_noop(tmp_path: Path) -> None:
+    from healdragg.backup import recover_from_latest
+
+    db_path = tmp_path / "healdragg.db"
+    db_path.write_bytes(b"broken")
+    assert recover_from_latest(tmp_path, db_path) is None
+    assert db_path.read_bytes() == b"broken"

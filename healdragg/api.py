@@ -27,7 +27,7 @@ from starlette.routing import Route
 
 from . import __version__
 from .activity import collect_activity
-from .backup import create_backup, list_backups, restore_backup
+from .backup import create_backup, list_backups, recover_from_latest, restore_backup
 from .config import Settings
 from .db import Store
 from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts
@@ -91,7 +91,14 @@ class AppState:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         settings.ensure_dirs()
-        self.store = Store(settings.db_path)
+        try:
+            self.store = Store(settings.db_path)
+        except Exception as exc:  # noqa: BLE001 — база могла испортиться
+            log.exception("база не открылась: %s", exc)
+            restored = recover_from_latest(settings.home, settings.db_path)
+            if not restored:
+                raise
+            self.store = Store(settings.db_path)
         self.pool = SessionPool(settings, self.store)
         self.login = LoginManager(settings, self.store)
         self.jobs: dict[str, Job] = {}

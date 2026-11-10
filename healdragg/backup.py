@@ -15,6 +15,7 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from time import time
 from typing import Any
 
 from .db import Store
@@ -202,3 +203,42 @@ __all__ = [
     "list_backups",
     "latest_backup",
 ]
+
+
+def recover_from_latest(home: Path, db_path: Path) -> str | None:
+    """Ломаная база → откладываем её и достаём содержимое последней копии.
+
+    Возвращает имя копии, из которой восстановились, или ``None``, если копий
+    нет. Нужна, чтобы движок на телефоне поднимался сам, а не показывал
+    «движок упал» после сбоя питания или обновления.
+    """
+    directory = Path(home) / "backups"
+    if not directory.is_dir():
+        return None
+    archives = sorted(
+        (path for path in directory.glob("healdragg-*.zip")),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    sessions_dir = Path(db_path).parent / "sessions"
+    for archive in archives:
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                _validate(bundle)
+                if Path(db_path).exists():
+                    Path(db_path).rename(Path(db_path).with_name(f"{Path(db_path).name}.broken-{int(time())}"))
+                sessions_dir.mkdir(parents=True, exist_ok=True)
+                for name in bundle.namelist():
+                    if name == "healdragg.db":
+                        with bundle.open(name) as source, open(db_path, "wb") as target:
+                            shutil.copyfileobj(source, target)
+                    elif name.startswith("sessions/") and not name.endswith("/"):
+                        target = sessions_dir / Path(name).name
+                        with bundle.open(name) as source, open(target, "wb") as sink:
+                            shutil.copyfileobj(source, sink)
+            log.warning("база восстановлена из копии %s", archive.name)
+            return archive.name
+        except (zipfile.BadZipFile, ValueError, OSError):
+            log.exception("копия %s не подошла", archive.name)
+            continue
+    return None
