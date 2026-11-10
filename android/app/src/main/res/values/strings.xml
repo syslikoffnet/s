@@ -1,29 +1,35 @@
 <resources>
     <string name="app_name">Healdragg</string>
     <string name="setup_title">🩺 Healdragg</string>
-    <string name="setup_subtitle">Монитор публичных чатов Telegram\nдвижок и панель уже внутри APK</string>
+    <string name="setup_subtitle">Монитор публичных чатов Telegram\nдвижок работает прямо в приложении</string>
 
     <string name="engine_on">🟢 движок работает</string>
     <string name="engine_off">⚪ движок не запущен</string>
     <string name="engine_ready">Движок готов — открываю панель</string>
-    <string name="engine_starting">⏳ ставлю движок…</string>
-    <string name="engine_slow">⚠️ движок ещё ставится. Если долго — открой Termux и посмотри ~/healdragg/data/logs/api.log</string>
-    <string name="engine_preparing">Готовлю движок…</string>
-    <string name="engine_running">Ставлю движок в Termux в фоне. Вернись в приложение — панель откроется сама.</string>
-    <string name="engine_paste">Termux не принял автозапуск: скрипт уже в буфере обмена и в Downloads — вставь и нажми Enter.</string>
+    <string name="engine_starting">⏳ движок запускается…</string>
+    <string name="engine_slow">⚠️ движок ещё поднимается. Это нормально для первого запуска — подожди ещё немного.</string>
+    <string name="engine_booting">Запускаю движок внутри приложения…</string>
+    <string name="engine_failed">⚠️ движок не стартовал</string>
+    <string name="engine_failed_why">⚠️ движок не стартовал: %1$s</string>
+    <string name="engine_stopped">Движок остановлен</string>
+    <string name="engine_stop">Остановить</string>
 
-    <string name="termux_title">⚡ Всё в APK — запуск в один тап</string>
-    <string name="termux_intro">Движок, веб-панель и ключи уже внутри приложения: GitHub, ПК и ручные команды не нужны. Заполни два поля и нажми кнопку — скрипт распакует движок, поставит зависимости и поднимет панель в фоне на 127.0.0.1:8080. При обновлении APK движок обновится сам.</string>
-    <string name="termux_api_id">API_ID — my.telegram.org → API development tools</string>
-    <string name="termux_api_hash">API_HASH (32 символа)</string>
-    <string name="termux_bot_token">BOT_TOKEN (необязательно)</string>
-    <string name="termux_copy">⚡ Запустить движок</string>
-    <string name="termux_save">💾 Сохранить скрипт</string>
-    <string name="termux_open">📲 Открыть Termux</string>
-    <string name="termux_need">Сначала вставь API_ID и API_HASH (my.telegram.org → API development tools)</string>
-    <string name="termux_install_first">Нужен Termux (F-Droid) — сейчас открою страницу установки</string>
-    <string name="termux_saved">Скрипт сохранён: %1$s</string>
-    <string name="storage_denied">Без доступа к файлам Termux не увидит движок</string>
+    <string name="engine_title">⚡ Движок внутри APK</string>
+    <string name="engine_intro">Python-движок и панель уже в приложении: Termux, pip и Rust на телефоне не нужны. Впиши ключи Telegram и нажми «Запустить» — панель поднимется на 127.0.0.1:8080.</string>
+    <string name="engine_api_id">API_ID — my.telegram.org → API development tools</string>
+    <string name="engine_api_hash">API_HASH (32 символа)</string>
+    <string name="engine_start">⚡ Запустить движок</string>
+    <string name="engine_open">Открыть панель</string>
+    <string name="engine_log">Лог</string>
+    <string name="engine_log_title">Лог движка</string>
+    <string name="engine_hint">Движок живёт в foreground-сервисе: переживает сворачивание и перезагрузку. Чтобы Android его не душил, разреши работу без ограничений батареи.</string>
+    <string name="engine_need_creds">Сначала вставь API_ID и API_HASH (my.telegram.org → API development tools)</string>
+    <string name="engine_channel">Движок Healdragg</string>
+    <string name="engine_channel_desc">Панель работает в фоне</string>
+
+    <string name="battery_btn">🔋 Без ограничений батареи</string>
+    <string name="battery_ok">Уже разрешено — движок не будут усыплять</string>
+    <string name="battery_manual">Открой настройки батареи и выбери «Без ограничений» для Healdragg</string>
 
     <string name="server_title">🌐 Свой сервер (необязательно)</string>
     <string name="url_label">Адрес панели</string>
@@ -32,7 +38,7 @@
     <string name="token_hint">из .env или из вывода healdragg api</string>
     <string name="connect">Подключиться</string>
     <string name="connect_local">Проверить движок на телефоне</string>
-    <string name="setup_hint">Адрес нужен, только если панель уже живёт на компьютере или сервере.\n\nБез сети приложение показывает последний загруженный снимок из кэша.</string>
+    <string name="setup_hint">Адрес нужен, только если панель живёт на компьютере или сервере.\n\nБез сети приложение показывает последний загруженный снимок из кэша.</string>
 
     <string name="footer">Healdragg · публичные данные · ключи остаются на устройстве</string>
     <string name="menu_settings">Настройки</string>

@@ -30,6 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Chaquopy собирает .pyc и ставит python-пакеты тем же интерпретатором,
+      # что живёт в APK, — на сборщике должен быть Python 3.13.
+      - name: Python 3.13 для Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: JDK 17
         uses: actions/setup-java@v4
         with:

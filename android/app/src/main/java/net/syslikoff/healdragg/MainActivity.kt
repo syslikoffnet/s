@@ -2,20 +2,18 @@ package net.syslikoff.healdragg
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.ContentUris
-import android.content.ContentValues
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.MediaStore
+import android.os.PowerManager
+import android.provider.Settings
+import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -31,28 +29,20 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
-import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import java.io.File
-import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.security.MessageDigest
-import java.security.SecureRandom
-import javax.crypto.Cipher
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 /**
  * Healdragg для Android — монитор публичных чатов Telegram.
  *
- * Движок (python-пакет healdragg + веб-панель) лежит внутри APK зашифрованным
- * и разворачивается на телефоне одним нажатием: GitHub и ПК не нужны.
- * Ключи Telegram остаются только на устройстве.
+ * Движок встроен в APK: Chaquopy поднимает CPython, uvicorn отдаёт панель на
+ * 127.0.0.1:8080. Termux, pip и Rust на телефоне не участвуют.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -62,9 +52,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var setup: ScrollView
     private lateinit var urlInput: EditText
     private lateinit var tokenInput: EditText
-    private lateinit var termuxApiId: EditText
-    private lateinit var termuxApiHash: EditText
-    private lateinit var termuxBotToken: EditText
+    private lateinit var apiIdInput: EditText
+    private lateinit var apiHashInput: EditText
     private lateinit var engineStatus: TextView
     private lateinit var settingsBtn: View
 
@@ -82,11 +71,19 @@ class MainActivity : AppCompatActivity() {
                     alive -> {
                         awaitingEngine = false
                         toast(R.string.engine_ready)
+                        prefs.edit().putString(KEY_URL, LOCAL_URL).apply()
                         openPanel()
                     }
-                    awaitingEngine && pollAttempts < 300 -> {
-                        if (pollAttempts == 60) engineStatus.text = getString(R.string.engine_slow)
+                    awaitingEngine && pollAttempts < 150 -> {
+                        if (pollAttempts == 30) {
+                            engineStatus.text = getString(R.string.engine_slow)
+                        }
                         handler.postDelayed(this, 2_000)
+                    }
+                    awaitingEngine -> {
+                        awaitingEngine = false
+                        engineStatus.text = getString(R.string.engine_failed)
+                        toast(R.string.engine_failed)
                     }
                 }
             }
@@ -104,9 +101,8 @@ class MainActivity : AppCompatActivity() {
         setup = findViewById(R.id.setup)
         urlInput = findViewById(R.id.urlInput)
         tokenInput = findViewById(R.id.tokenInput)
-        termuxApiId = findViewById(R.id.termuxApiId)
-        termuxApiHash = findViewById(R.id.termuxApiHash)
-        termuxBotToken = findViewById(R.id.termuxBotToken)
+        apiIdInput = findViewById(R.id.apiIdInput)
+        apiHashInput = findViewById(R.id.apiHashInput)
         engineStatus = findViewById(R.id.engineStatus)
         settingsBtn = findViewById(R.id.settingsBtn)
         settingsBtn.setOnClickListener { showSetup() }
@@ -131,25 +127,18 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        apiIdInput.setText(prefs.getString(KEY_API_ID, ""))
+        apiHashInput.setText(prefs.getString(KEY_API_HASH, ""))
         urlInput.setText(prefs.getString(KEY_URL, ""))
         tokenInput.setText(prefs.getString(KEY_TOKEN, ""))
-        termuxApiId.setText(prefs.getString(KEY_API_ID, ""))
-        termuxApiHash.setText(prefs.getString(KEY_API_HASH, ""))
-        termuxBotToken.setText(prefs.getString(KEY_BOT_TOKEN, ""))
 
         val storedUrl = prefs.getString(KEY_URL, "").orEmpty()
-        if (storedUrl.isBlank()) {
+        if (storedUrl.isBlank() || storedUrl == LOCAL_URL) {
             showSetup()
-        } else if (storedUrl == LOCAL_URL) {
-            // движок мог ещё ставиться — ждём его и открываем панель сами
-            showSetup()
-            pingEngine { alive ->
-                if (alive) {
-                    openPanel()
-                } else {
-                    awaitingEngine = true
-                    startPolling()
-                }
+            if (hasCredentials()) {
+                startEngine()
+            } else {
+                refreshEngineStatus()
             }
         } else {
             openPanel()
@@ -157,22 +146,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUi() {
-        findViewById<Button>(R.id.termuxCopyBtn).setOnClickListener { startEngine() }
-        findViewById<Button>(R.id.termuxSaveBtn).setOnClickListener { saveTermuxScript() }
-        findViewById<Button>(R.id.termuxOpenBtn).setOnClickListener { openTermux() }
-        findViewById<Button>(R.id.localBtn).setOnClickListener {
-            urlInput.setText(LOCAL_URL)
-            tokenInput.setText(prefs.getString(KEY_TOKEN, ""))
+        findViewById<Button>(R.id.startBtn).setOnClickListener { startEngine() }
+        findViewById<Button>(R.id.stopBtn).setOnClickListener {
+            EngineService.stop(this)
+            awaitingEngine = false
+            handler.removeCallbacks(pollTask)
+            toast(R.string.engine_stopped)
+            handler.postDelayed({ refreshEngineStatus() }, 800)
+        }
+        findViewById<Button>(R.id.openBtn).setOnClickListener {
+            ensureToken()
+            prefs.edit().putString(KEY_URL, LOCAL_URL).apply()
             pingEngine { alive ->
-                if (alive) {
-                    prefs.edit().putString(KEY_URL, LOCAL_URL).apply()
-                    openPanel()
-                } else {
+                if (alive) openPanel() else {
                     toast(R.string.engine_off)
                     refreshEngineStatus()
                 }
             }
         }
+        findViewById<Button>(R.id.logBtn).setOnClickListener { showLog() }
+        findViewById<Button>(R.id.batteryBtn).setOnClickListener { askBattery() }
+
         findViewById<Button>(R.id.connectBtn).setOnClickListener {
             val base = normalize(urlInput.text.toString())
             if (base.isBlank()) {
@@ -185,263 +179,98 @@ class MainActivity : AppCompatActivity() {
                 .apply()
             openPanel()
         }
+        findViewById<Button>(R.id.localBtn).setOnClickListener {
+            urlInput.setText(LOCAL_URL)
+            prefs.edit().putString(KEY_URL, LOCAL_URL).apply()
+            pingEngine { alive ->
+                if (alive) openPanel() else {
+                    toast(R.string.engine_off)
+                    refreshEngineStatus()
+                }
+            }
+        }
     }
 
     // ── движок внутри APK ────────────────────────────────────────────────────
 
-    /** Один тап: распаковать движок, положить скрипт, открыть Termux. */
-    private fun startEngine() {
-        if (!termuxReady()) return
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                REQ_STORAGE,
-            )
-            return
-        }
-        if (!termuxInstalled()) {
-            toast(R.string.termux_install_first)
-            openExternal(TERMUX_URL)
-            return
-        }
+    private fun hasCredentials(): Boolean {
+        val apiId = prefs.getString(KEY_API_ID, "").orEmpty().trim()
+        val apiHash = prefs.getString(KEY_API_HASH, "").orEmpty().trim()
+        return apiId.isNotBlank() && apiHash.length >= 16
+    }
 
-        val apiId = termuxApiId.text.toString().trim()
-        val apiHash = termuxApiHash.text.toString().trim()
-        val botToken = termuxBotToken.text.toString().trim()
-        val engineToken = ensureToken()
+    /** Один тап: сохранить ключи и поднять Python-движок в фоне. */
+    private fun startEngine() {
+        val apiId = apiIdInput.text.toString().trim()
+        val apiHash = apiHashInput.text.toString().trim()
+        if (apiId.isBlank() || apiHash.length < 16) {
+            toast(R.string.engine_need_creds)
+            return
+        }
         prefs.edit()
-            .putString(KEY_URL, LOCAL_URL)
-            .putString(KEY_TOKEN, engineToken)
             .putString(KEY_API_ID, apiId)
             .putString(KEY_API_HASH, apiHash)
-            .putString(KEY_BOT_TOKEN, botToken)
+            .putString(KEY_URL, LOCAL_URL)
             .apply()
+        ensureToken()
 
         engineStatus.text = getString(R.string.engine_starting)
-        toast(R.string.engine_preparing)
-        Thread {
-            try {
-                val tarPath = writeDownloads(ENGINE_NAME, "application/gzip", readEngine())
-                    ?: throw IOException("нет доступа к Downloads")
-                val script = termuxScript(
-                    tarPath,
-                    BuildConfig.ENGINE_ID,
-                    apiId,
-                    apiHash,
-                    botToken,
-                    engineToken,
-                )
-                val scriptPath = writeDownloads(SCRIPT_NAME, "text/x-shellscript", script.toByteArray())
-                    ?: throw IOException("нет доступа к Downloads")
-                runOnUiThread {
-                    copyToClipboard(script)
-                    val autoRun = launchTermuxScript(scriptPath)
-                    awaitingEngine = true
-                    startPolling()
-                    openTermux()
-                    toast(if (autoRun) R.string.engine_running else R.string.engine_paste)
-                }
-            } catch (exc: Exception) {
-                runOnUiThread { toast("Не удалось подготовить движок: ${exc.message}") }
-            }
-        }.start()
+        engineStatus.setTextColor(Color.parseColor("#8BA1BF"))
+        toast(R.string.engine_booting)
+        awaitingEngine = true
+        EngineService.start(this)
+        startPolling()
     }
-
-    /** Скрипт для Termux: локальный архив, один раз установить и держать движок в фоне. */
-    private fun termuxScript(
-        tarPath: String,
-        engineId: String,
-        apiId: String,
-        apiHash: String,
-        botToken: String,
-        engineToken: String,
-    ): String = """
-        set -e
-        trap 'termux-toast "Healdragg: установка не удалась — открой Termux" 2>/dev/null || true' ERR
-        termux-setup-storage >/dev/null 2>&1 || true
-        ENGINE_ID="@@ENGINE_ID@@"
-        DIR="${'$'}HOME/healdragg"
-        mkdir -p "${'$'}DIR"
-        cd "${'$'}DIR"
-        if [ -f "@@TAR@@" ]; then
-          echo "🩺 Распаковываю движок из APK"
-          tar -xzf "@@TAR@@" -C .
-          rm -f "@@TAR@@"
-        fi
-        if [ ! -x "${'$'}DIR/.venv/bin/healdragg" ] || [ "${'$'}(cat "${'$'}DIR/.engine-id" 2>/dev/null)" != "${'$'}ENGINE_ID" ]; then
-          echo "🩺 Ставлю движок — это один раз и несколько минут"
-          bash install.sh
-          echo "${'$'}ENGINE_ID" > "${'$'}DIR/.engine-id"
-        fi
-        cat > .env <<'EOF'
-        API_ID=@@API_ID@@
-        API_HASH=@@API_HASH@@
-        BOT_TOKEN=@@BOT_TOKEN@@
-        API_TOKEN=@@TOKEN@@
-        API_HOST=127.0.0.1
-        AUTOPILOT_MINUTES=15
-        AUTO_ACTIVITY_ON_SCAN=true
-        ALERT_PUSH=true
-        EOF
-        if [ -f "${'$'}DIR/data/api.pid" ] && kill -0 "${'$'}(cat "${'$'}DIR/data/api.pid")" 2>/dev/null; then
-          kill "${'$'}(cat "${'$'}DIR/data/api.pid")" 2>/dev/null || true
-          sleep 1
-        fi
-        termux-wake-lock >/dev/null 2>&1 || true
-        mkdir -p "${'$'}DIR/data/logs"
-        nohup "${'$'}DIR/.venv/bin/healdragg" api --host 127.0.0.1 --port 8080 \
-          >>"${'$'}DIR/data/logs/api.log" 2>&1 &
-        echo ${'$'}! > "${'$'}DIR/data/api.pid"
-        if [ -d "${'$'}HOME/.termux/boot" ]; then
-          printf '#!/data/data/com.termux/files/usr/bin/sh\ntermux-wake-lock\nexec "%s" api --host 127.0.0.1 --port 8080\n' \
-            "${'$'}DIR/.venv/bin/healdragg" > "${'$'}HOME/.termux/boot/healdragg.sh"
-          chmod +x "${'$'}HOME/.termux/boot/healdragg.sh"
-        fi
-        echo "🟢 Панель запущена: http://127.0.0.1:8080"
-        echo "   лог: ${'$'}DIR/data/logs/api.log"
-    """.trimIndent()
-        .replace("@@TAR@@", tarPath)
-        .replace("@@ENGINE_ID@@", engineId)
-        .replace("@@API_ID@@", apiId)
-        .replace("@@API_HASH@@", apiHash)
-        .replace("@@BOT_TOKEN@@", botToken)
-        .replace("@@TOKEN@@", engineToken)
-
-    private fun readEngine(): ByteArray {
-        val raw = assets.open(ENGINE_ASSET).readBytes()
-        require(raw.size > 28) { "движок не встроен в эту сборку" }
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            SecretKeySpec(engineKey(), "AES"),
-            GCMParameterSpec(128, raw, 0, 12),
-        )
-        return cipher.doFinal(raw, 12, raw.size - 12)
-    }
-
-    private fun engineKey(): ByteArray = MessageDigest.getInstance("SHA-256")
-        .digest(listOf("heald", "ragg", "-engine", "-v1").joinToString("").toByteArray())
 
     private fun ensureToken(): String {
         val saved = prefs.getString(KEY_TOKEN, "").orEmpty()
         if (saved.length >= 16) return saved
-        val bytes = ByteArray(18).also { SecureRandom().nextBytes(it) }
+        val bytes = ByteArray(18).also { java.security.SecureRandom().nextBytes(it) }
         val token = bytes.joinToString("") { "%02x".format(it) }
         prefs.edit().putString(KEY_TOKEN, token).apply()
         return token
     }
 
-    private fun writeDownloads(name: String, mime: String, bytes: ByteArray): String? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (!writeDownloadsQ(name, mime, bytes)) return null
-        } else {
-            @Suppress("DEPRECATION")
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists() && !dir.mkdirs()) return null
-            File(dir, name).writeBytes(bytes)
-        }
-        @Suppress("DEPRECATION")
-        return File(Environment.getExternalStorageDirectory(), "Download/$name").absolutePath
-    }
-
-    @RequiresApi(Build.VERSION_CODES.Q)
-    private fun writeDownloadsQ(name: String, mime: String, bytes: ByteArray): Boolean {
-        val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
-        contentResolver.query(
-            collection,
-            arrayOf(MediaStore.Downloads._ID),
-            "${MediaStore.Downloads.DISPLAY_NAME}=?",
-            arrayOf(name),
-            null,
-        )?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val id = cursor.getLong(0)
-                contentResolver.delete(ContentUris.withAppendedId(collection, id), null, null)
-            }
-        }
-        val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            put(MediaStore.Downloads.IS_PENDING, 1)
-        }
-        val uri = contentResolver.insert(collection, values) ?: return false
-        contentResolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
-        values.clear()
-        values.put(MediaStore.Downloads.IS_PENDING, 0)
-        contentResolver.update(uri, values, null, null)
-        return true
-    }
-
-    /** Termux RUN_COMMAND: запустить скрипт, даже не открывая клавиатуру. */
-    private fun launchTermuxScript(path: String): Boolean {
-        val intent = Intent("com.termux.RUN_COMMAND").apply {
-            setClassName("com.termux", "com.termux.app.RunCommandService")
-            putExtra("com.termux.RUN_COMMAND_PATH", TERMUX_BASH)
-            putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf(path))
-            putExtra("com.termux.RUN_COMMAND_WORKDIR", TERMUX_HOME)
-            putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
-            putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "0")
-        }
-        return try {
-            startService(intent)
-            true
+    private fun showLog() {
+        val file = File(filesDir, "engine/logs/engine.log")
+        val text = try {
+            file.readLines().takeLast(400).joinToString("\n").ifBlank { "Лог пока пуст." }
         } catch (_: Exception) {
-            false
+            "Лог пока пуст."
         }
-    }
-
-    private fun termuxInstalled(): Boolean = try {
-        packageManager.getPackageInfo(TERMUX_PACKAGE, 0)
-        true
-    } catch (_: PackageManager.NameNotFoundException) {
-        false
-    }
-
-    private fun termuxReady(): Boolean {
-        if (termuxApiId.text.isBlank() || termuxApiHash.text.isBlank()) {
-            toast(R.string.termux_need)
-            return false
+        val view = TextView(this).apply {
+            text = text
+            setTextColor(Color.parseColor("#E8F0FF"))
+            textSize = 11f
+            setPadding(32, 24, 32, 24)
+            movementMethod = ScrollingMovementMethod()
         }
-        return true
+        AlertDialog.Builder(this)
+            .setTitle(R.string.engine_log_title)
+            .setView(view)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
-    private fun saveTermuxScript() {
-        if (!termuxReady()) return
-        val token = ensureToken()
-        engineStatus.text = getString(R.string.engine_starting)
-        toast(R.string.engine_preparing)
-        Thread {
-            try {
-                val tarPath = writeDownloads(ENGINE_NAME, "application/gzip", readEngine())
-                    ?: throw IOException("нет доступа к Downloads")
-                val script = termuxScript(
-                    tarPath,
-                    BuildConfig.ENGINE_ID,
-                    termuxApiId.text.toString().trim(),
-                    termuxApiHash.text.toString().trim(),
-                    termuxBotToken.text.toString().trim(),
-                    token,
-                )
-                val path = writeDownloads(SCRIPT_NAME, "text/x-shellscript", script.toByteArray())
-                    ?: throw IOException("нет доступа к Downloads")
-                runOnUiThread { toast(getString(R.string.termux_saved, path)) }
-            } catch (exc: Exception) {
-                runOnUiThread { toast("Не удалось сохранить: ${exc.message}") }
-            }
-        }.start()
-    }
-
-    private fun copyToClipboard(text: String) {
+    private fun askBattery() {
+        val manager = getSystemService(PowerManager::class.java)
+        if (manager?.isIgnoringBatteryOptimizations(packageName) == true) {
+            toast(R.string.battery_ok)
+            return
+        }
         try {
-            val clipboard = getSystemService(ClipboardManager::class.java)
-            clipboard?.setPrimaryClip(ClipData.newPlainText("healdragg setup", text))
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
         } catch (_: Exception) {
-            // буфер обмена может быть недоступен — скрипт всё равно лежит в Downloads
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {
+                toast(R.string.battery_manual)
+            }
         }
     }
 
@@ -450,7 +279,7 @@ class MainActivity : AppCompatActivity() {
     private fun startPolling() {
         pollAttempts = 0
         handler.removeCallbacks(pollTask)
-        handler.postDelayed(pollTask, 2_500)
+        handler.postDelayed(pollTask, 1_500)
     }
 
     private fun pingEngine(callback: (Boolean) -> Unit) {
@@ -471,26 +300,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshEngineStatus() {
+        val state = prefs.getString(KEY_STATE, "").orEmpty()
+        val error = prefs.getString(KEY_ERROR, "").orEmpty()
         pingEngine { alive ->
-            engineStatus.text = getString(if (alive) R.string.engine_on else R.string.engine_off)
-            engineStatus.setTextColor(Color.parseColor(if (alive) "#6EE7A8" else "#8BA1BF"))
+            val text = when {
+                alive -> getString(R.string.engine_on)
+                state == EngineService.STATE_ERROR && error.isNotBlank() ->
+                    getString(R.string.engine_failed_why, error)
+                state == EngineService.STATE_STARTING -> getString(R.string.engine_starting)
+                else -> getString(R.string.engine_off)
+            }
+            engineStatus.text = text
+            engineStatus.setTextColor(
+                Color.parseColor(if (alive) "#6EE7A8" else "#8BA1BF"),
+            )
             if (alive && awaitingEngine) {
                 awaitingEngine = false
                 toast(R.string.engine_ready)
+                prefs.edit().putString(KEY_URL, LOCAL_URL).apply()
                 openPanel()
             }
-        }
-    }
-
-    private fun openTermux() {
-        val intent = Intent().apply {
-            setClassName(TERMUX_PACKAGE, "com.termux.app.TermuxActivity")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            startActivity(intent)
-        } catch (_: Exception) {
-            openExternal(TERMUX_URL)
         }
     }
 
@@ -539,7 +368,7 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest,
                 error: WebResourceError,
             ) {
-                if (request.isForMainFrame) {
+                if (request.isMainFrame) {
                     progress.visibility = View.GONE
                     refresh.isRefreshing = false
                     Toast.makeText(this@MainActivity, R.string.error_load, Toast.LENGTH_LONG).show()
@@ -572,9 +401,8 @@ class MainActivity : AppCompatActivity() {
         settingsBtn.visibility = View.GONE
         urlInput.setText(prefs.getString(KEY_URL, ""))
         tokenInput.setText(prefs.getString(KEY_TOKEN, ""))
-        termuxApiId.setText(prefs.getString(KEY_API_ID, ""))
-        termuxApiHash.setText(prefs.getString(KEY_API_HASH, ""))
-        termuxBotToken.setText(prefs.getString(KEY_BOT_TOKEN, ""))
+        apiIdInput.setText(prefs.getString(KEY_API_ID, ""))
+        apiHashInput.setText(prefs.getString(KEY_API_HASH, ""))
         refreshEngineStatus()
     }
 
@@ -621,22 +449,6 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, resId, Toast.LENGTH_LONG).show()
     }
 
-    private fun toast(text: String) {
-        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_STORAGE) {
-            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startEngine()
-            else toast(R.string.storage_denied)
-        }
-    }
-
     override fun onPause() {
         super.onPause()
         web.onPause()
@@ -659,17 +471,10 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_TOKEN = "api_token"
         private const val KEY_API_ID = "tg_api_id"
         private const val KEY_API_HASH = "tg_api_hash"
-        private const val KEY_BOT_TOKEN = "tg_bot_token"
-        private const val LOCAL_URL = "http://127.0.0.1:8080/"
-        private const val ENGINE_ASSET = "engine.bin"
-        private const val ENGINE_NAME = "healdragg-engine.tar.gz"
-        private const val SCRIPT_NAME = "healdragg-termux.sh"
-        private const val TERMUX_PACKAGE = "com.termux"
-        private const val TERMUX_BASH = "/data/data/com.termux/files/usr/bin/bash"
-        private const val TERMUX_HOME = "/data/data/com.termux/files/home"
-        private const val TERMUX_URL = "https://f-droid.org/packages/com.termux/"
-        private const val REQ_STORAGE = 41
-        private const val REQ_NOTIFY = 42
+        private const val KEY_STATE = "engine_state"
+        private const val KEY_ERROR = "engine_error"
         private const val KEY_NOTIFY_ASKED = "notify_asked"
+        private const val LOCAL_URL = "http://127.0.0.1:8080/"
+        private const val REQ_NOTIFY = 42
     }
 }
