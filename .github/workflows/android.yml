@@ -105,6 +105,20 @@ jobs:
               raise SystemExit("в APK попали .py исходники движка")
           if not pyc:
               raise SystemExit("в APK нет .pyc движка")
+          # tdata и импорт сессий живут на вендоренном стеке — он обязан быть внутри
+          need = [
+              "_vendor/opentele",
+              "_vendor/PyQt5",
+              "_vendor/tgcrypto",
+              "pyaes",
+              "tdata",
+              "session_import",
+              "backup",
+          ]
+          missing = [k for k in need if not any(k in n for n in pyc)]
+          if missing:
+              raise SystemExit("в APK нет модулей: " + ", ".join(missing))
+          print("вендоренный стек и импорт сессий на месте")
           PY
 
       - name: Приложить к релизу
