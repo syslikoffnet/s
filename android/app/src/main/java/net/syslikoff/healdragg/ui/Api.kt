@@ -42,6 +42,31 @@ class Api(private val baseUrl: String, private val token: String) {
         return data.int("unread")
     }
 
+    suspend fun sessions(): List<SessionInfo> = jsonObjects(array("api/sessions")).map(SessionInfo::from)
+
+    suspend fun startLogin(phone: String, name: String = "main"): LoginFlow {
+        val body = JSONObject().put("phone", phone).put("name", name)
+        return LoginFlow.from(obj("api/session/start", "POST", body, LOGIN_TIMEOUT))
+    }
+
+    suspend fun submitLoginCode(id: String, code: String): LoginFlow {
+        val body = JSONObject().put("id", id).put("code", code)
+        return LoginFlow.from(obj("api/session/code", "POST", body, LOGIN_TIMEOUT))
+    }
+
+    suspend fun submitLoginPassword(id: String, password: String): LoginFlow {
+        val body = JSONObject().put("id", id).put("password", password)
+        return LoginFlow.from(obj("api/session/password", "POST", body, LOGIN_TIMEOUT))
+    }
+
+    suspend fun cancelLogin(id: String) {
+        request("api/session/$id/cancel", "POST", JSONObject())
+    }
+
+    suspend fun deleteSession(name: String) {
+        request("api/sessions/${URLEncoder.encode(name, "UTF-8")}", "DELETE")
+    }
+
     suspend fun target(tgId: Long): Target = Target.from(obj("api/targets/$tgId"))
 
     suspend fun addTarget(query: String): Target {
@@ -130,7 +155,8 @@ class Api(private val baseUrl: String, private val token: String) {
         path: String,
         method: String = "GET",
         body: JSONObject? = null,
-    ): JSONObject = JSONObject(request(path, method, body))
+        timeoutMillis: Int = READ_TIMEOUT,
+    ): JSONObject = JSONObject(request(path, method, body, timeoutMillis))
 
     private suspend fun array(path: String): JSONArray = JSONArray(request(path))
 
@@ -138,12 +164,13 @@ class Api(private val baseUrl: String, private val token: String) {
         path: String,
         method: String = "GET",
         body: JSONObject? = null,
+        timeoutMillis: Int = READ_TIMEOUT,
     ): String = withContext(Dispatchers.IO) {
         val url = URL(root + path)
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 4_000
-            readTimeout = 12_000
+            readTimeout = timeoutMillis
             setRequestProperty("Accept", "application/json")
             if (token.isNotBlank()) setRequestProperty("X-Api-Token", token)
         }
@@ -167,6 +194,12 @@ class Api(private val baseUrl: String, private val token: String) {
         } finally {
             conn.disconnect()
         }
+    }
+
+    private companion object {
+        const val READ_TIMEOUT = 12_000
+        // Telegram может думать дольше: отправка кода и проверка 2FA — сетевые запросы.
+        const val LOGIN_TIMEOUT = 40_000
     }
 
     private fun humanError(code: Int, raw: String): String {

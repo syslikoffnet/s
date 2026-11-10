@@ -57,6 +57,7 @@ fun TargetsScreen(
     vm: AppViewModel,
     onOpenTarget: (Long) -> Unit,
     onToast: (String) -> Unit,
+    onOpenAccounts: () -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var addOpen by rememberSaveable { mutableStateOf(false) }
@@ -130,18 +131,62 @@ fun TargetsScreen(
                     item("loading") { LoadingBlock() }
                 }
 
+                if (!vm.hasSessions) {
+                    item("no-account") {
+                        HdCard {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("🔐", fontSize = 18.sp)
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "Telegram-аккаунт не подключён",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = Hd.Warn,
+                                    )
+                                    Text(
+                                        "Без него нельзя добавить цель и запустить скан.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Hd.Muted,
+                                    )
+                                }
+                                TextButton(onClick = onOpenAccounts) {
+                                    Text("Войти", color = Hd.Accent2)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (!vm.loading && filtered.isEmpty()) {
                     item("empty") {
                         EmptyState(
-                            emoji = if (query.isBlank()) "🎯" else "🔍",
-                            title = if (query.isBlank()) "Пока нет целей" else "Ничего не найдено",
-                            text = if (query.isBlank()) {
-                                "Добавь цель по @username, ссылке или ID — приложение найдёт её чаты и собеседников."
-                            } else {
-                                "Попробуй другое имя, @username или числовой ID."
+                            emoji = when {
+                                !vm.hasSessions -> "🔐"
+                                query.isBlank() -> "🎯"
+                                else -> "🔍"
                             },
-                            actionLabel = if (query.isBlank()) "Добавить цель" else null,
-                            onAction = if (query.isBlank()) ({ addOpen = true }) else null,
+                            title = when {
+                                !vm.hasSessions -> "Сначала аккаунт"
+                                query.isBlank() -> "Пока нет целей"
+                                else -> "Ничего не найдено"
+                            },
+                            text = when {
+                                !vm.hasSessions ->
+                                    "Приложение читает Telegram от имени твоего аккаунта — подключи его, это минута."
+                                query.isBlank() ->
+                                    "Добавь цель по @username, ссылке или ID — приложение найдёт её чаты и собеседников."
+                                else -> "Попробуй другое имя, @username или числовой ID."
+                            },
+                            actionLabel = when {
+                                !vm.hasSessions -> "Войти в Telegram"
+                                query.isBlank() -> "Добавить цель"
+                                else -> null
+                            },
+                            onAction = when {
+                                !vm.hasSessions -> ({ onOpenAccounts() })
+                                query.isBlank() -> ({ addOpen = true })
+                                else -> null
+                            },
                         )
                     }
                 }
@@ -166,7 +211,7 @@ fun TargetsScreen(
         }
 
         ExtendedFloatingActionButton(
-            onClick = { addOpen = true },
+            onClick = { if (vm.hasSessions) addOpen = true else onOpenAccounts() },
             containerColor = Hd.Accent,
             contentColor = Hd.Black,
             icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -361,6 +406,21 @@ private fun AddTargetDialog(
                 error?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, color = Hd.Bad, style = MaterialTheme.typography.bodySmall)
+                    if (it.contains("аккаунт", ignoreCase = true)) {
+                        TextButton(
+                            onClick = {
+                                onDismiss()
+                                onOpenAccounts()
+                            },
+                            contentPadding = PaddingValues(0.dp),
+                        ) {
+                            Text(
+                                "Войти в Telegram",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
                 }
                 if (busy) {
                     Spacer(Modifier.height(12.dp))

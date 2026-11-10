@@ -55,6 +55,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -113,6 +115,11 @@ fun TargetDetailScreen(
         val client = api ?: return
         if (chatsLoading) return
         chatsLoading = true
+        if (reset) {
+            chats = emptyList()
+            chatPage = 0
+            chatsDone = false
+        }
         val page = if (reset) 1 else chatPage + 1
         runCatching { client.chats(tgId, page, size = 25, order = chatOrder) }
             .onSuccess { rows ->
@@ -326,7 +333,10 @@ fun TargetDetailScreen(
                 ) {
                     Text("Собрать ленту", color = Hd.Accent2, maxLines = 1, fontSize = 12.sp)
                 }
-                IconButton(onClick = { linksOpen = true }) {
+                IconButton(
+                    onClick = { linksOpen = true },
+                    modifier = Modifier.semantics { contentDescription = "Ссылки на чаты" },
+                ) {
                     Text("🔗", fontSize = 18.sp)
                 }
                 IconButton(onClick = { scope.launch { loadTarget(); loadChats(reset = true); loadFeed() } }) {
@@ -527,11 +537,19 @@ fun TargetDetailScreen(
 @Composable
 private fun ChatCard(chat: Chat, onToast: (String) -> Unit) {
     val context = LocalContext.current
-    HdCard(onClick = {
-        if (!openLink(context, chat.link)) {
-            onToast("У чата нет публичной ссылки")
-        }
-    }, contentPadding = PaddingValues(14.dp)) {
+    HdCard(
+        onClick = {
+            if (!openLink(context, chat.link)) {
+                onToast("У чата нет публичной ссылки")
+            }
+        },
+        onLongClick = {
+            val text = chat.link ?: chat.title
+            copyText(context, "чат", text)
+            onToast(if (chat.link != null) "Ссылка скопирована" else "Название скопировано")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier
@@ -586,7 +604,17 @@ private fun ChatCard(chat: Chat, onToast: (String) -> Unit) {
 @Composable
 private fun MessageCard(message: Message, onToast: (String) -> Unit) {
     val context = LocalContext.current
-    HdCard(contentPadding = PaddingValues(14.dp)) {
+    HdCard(
+        onLongClick = {
+            if (message.text.isNotBlank()) {
+                copyText(context, "сообщение", message.text)
+                onToast("Текст скопирован")
+            } else {
+                onToast("В этом сообщении нет текста")
+            }
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 message.groupTitle,

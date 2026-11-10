@@ -18,7 +18,7 @@ import java.io.File
  * Фоновый движок Healdragg: Python-панель живёт прямо в процессе приложения.
  *
  * Termux больше не нужен — Chaquopy поднимает CPython внутри APK, uvicorn
- * слушает 127.0.0.1:8080, WebView открывает эту же панель.
+ * слушает 127.0.0.1:8080, а нативные Compose-экраны читают это же REST API.
  */
 class EngineService : Service() {
 
@@ -54,6 +54,23 @@ class EngineService : Service() {
 
         if (worker?.isAlive != true) {
             prefs.edit().putString(KEY_STATE, STATE_STARTING).remove(KEY_ERROR).apply()
+            // Python.start на главном потоке: так первая распаковка stdlib не
+            // рискует уронить фоновый поток и гарантированно идёт после startForeground.
+            try {
+                if (!Python.isStarted()) {
+                    Python.start(AndroidPlatform(applicationContext))
+                }
+            } catch (exc: Throwable) {
+                val message = exc.message?.take(400) ?: exc.toString().take(400)
+                prefs.edit()
+                    .putString(KEY_STATE, STATE_ERROR)
+                    .putString(KEY_ERROR, message)
+                    .apply()
+                updateNotification(getString(R.string.engine_failed))
+                stopForegroundCompat()
+                stopSelf()
+                return START_NOT_STICKY
+            }
             worker = Thread({ runEngine(apiId, apiHash) }, "healdragg-engine-start").also { it.start() }
         }
         return START_STICKY

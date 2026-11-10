@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -55,6 +56,7 @@ fun SettingsScreen(
     onOpenBattery: () -> Unit,
     onToast: (String) -> Unit,
     onEditServer: () -> Unit,
+    onOpenAccounts: () -> Unit,
 ) {
     var logOpen by remember { mutableStateOf(false) }
     var apiId by remember(vm.apiId) { mutableStateOf(vm.apiId) }
@@ -146,6 +148,50 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }
+                }
+            }
+        }
+
+        item("accounts") {
+            HdCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Аккаунты-сканеры",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        vm.sessions.size.toString(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (vm.sessions.isEmpty()) Hd.Warn else Hd.Good,
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (vm.sessions.isEmpty()) {
+                        "Ни один аккаунт не подключён — скан и добавление цели не запустятся."
+                    } else {
+                        vm.sessions.joinToString(" · ") { session ->
+                            session.username?.let { "@$it" } ?: session.name
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (vm.sessions.isEmpty()) Hd.Warn else Hd.Muted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { onOpenAccounts() },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                ) {
+                    Text(
+                        if (vm.sessions.isEmpty()) "Войти в Telegram" else "Управлять аккаунтами",
+                        color = Hd.Accent2,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
                 }
             }
         }
@@ -321,6 +367,7 @@ fun SetupScreen(
     onToast: (String) -> Unit,
     onOpenBattery: () -> Unit,
     onDone: () -> Unit,
+    onOpenAccounts: () -> Unit = {},
 ) {
     var apiId by remember { mutableStateOf(vm.apiId) }
     var apiHash by remember { mutableStateOf(vm.apiHash) }
@@ -397,7 +444,6 @@ fun SetupScreen(
                         }
                         vm.saveCredentials(apiId, apiHash)
                         vm.startEngine()
-                        onDone()
                     },
                     enabled = !vm.engineBusy,
                     shape = RoundedCornerShape(14.dp),
@@ -417,6 +463,46 @@ fun SetupScreen(
                 TextButton(onClick = onOpenBattery) {
                     Text("🔋 Разрешить работу в фоне", color = Hd.Muted, style = MaterialTheme.typography.labelLarge)
                 }
+            }
+        }
+
+        if (vm.engine == EngineState.Ready) {
+            Spacer(Modifier.height(12.dp))
+            HdCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("✅", fontSize = 18.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Движок работает",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (vm.sessions.isEmpty()) {
+                        "Остался один шаг: подключи Telegram-аккаунт, с которого будем читать чаты."
+                    } else {
+                        "Аккаунт подключён. Можно добавлять цели и запускать скан."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Hd.Muted,
+                )
+                Spacer(Modifier.height(10.dp))
+                if (vm.sessions.isEmpty()) {
+                    Button(
+                        onClick = { onOpenAccounts() },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Hd.Accent, contentColor = Hd.Black),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    ) { Text("Войти в Telegram", fontWeight = FontWeight.SemiBold) }
+                }
+                OutlinedButton(
+                    onClick = { onDone() },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                ) { Text(if (vm.sessions.isEmpty()) "Позже" else "Перейти к целям", color = Hd.Accent2) }
             }
         }
 

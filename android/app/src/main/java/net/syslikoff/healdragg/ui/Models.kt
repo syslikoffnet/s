@@ -327,3 +327,52 @@ data class Job(
         }
     }
 }
+
+/** Подключённый Telegram-аккаунт, с которого приложение читает чаты. */
+data class SessionInfo(
+    val name: String,
+    val username: String?,
+    val tgUserId: Long,
+    val status: String,
+    val groupsCount: Int,
+    val lastUsedAt: Long,
+) {
+    val active: Boolean get() = status.equals("active", ignoreCase = true)
+
+    val handle: String
+        get() = username?.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "id $tgUserId"
+
+    companion object {
+        fun from(o: JSONObject) = SessionInfo(
+            name = o.str("name") ?: "аккаунт",
+            username = o.str("username"),
+            tgUserId = o.num("tg_user_id"),
+            status = o.str("status") ?: "active",
+            groupsCount = o.int("groups_count"),
+            lastUsedAt = o.num("last_used_at"),
+        )
+    }
+}
+
+/** Ответ движка на шаг входа в Telegram. */
+data class LoginFlow(
+    val id: String,
+    val status: String,
+    val passwordNeeded: Boolean,
+    val name: String?,
+    val username: String?,
+    val tgUserId: Long,
+) {
+    val done: Boolean get() = status == "done"
+
+    companion object {
+        fun from(o: JSONObject) = LoginFlow(
+            id = o.str("id") ?: "",
+            status = o.str("status") ?: "",
+            passwordNeeded = o.bool("password_needed"),
+            name = o.str("name"),
+            username = o.str("username"),
+            tgUserId = o.num("tg_user_id"),
+        )
+    }
+}

@@ -28,6 +28,7 @@ from .activity import collect_activity
 from .config import Settings
 from .db import Store
 from .graph import build_graph
+from .login import LoginError, LoginManager
 from .scan import bootstrap, resolve_and_store_target, scan_target
 from .textfmt import (
     render_account_chats,
@@ -84,6 +85,7 @@ class AppState:
         settings.ensure_dirs()
         self.store = Store(settings.db_path)
         self.pool = SessionPool(settings, self.store)
+        self.login = LoginManager(settings, self.store)
         self.jobs: dict[str, Job] = {}
 
     def running(self, key: str) -> bool:
@@ -107,6 +109,7 @@ class AppState:
         for job in list(self.jobs.values()):
             if job.task and not job.task.done():
                 job.task.cancel()
+        await self.login.close()
         await self.pool.close()
         self.store.close()
 
@@ -273,6 +276,57 @@ def create_app(settings: Settings) -> Starlette:
             for s in state.store.list_sessions()
         ]
 
+    async def session_start(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        phone = str(body.get("phone") or "")
+        name = str(body.get("name") or "main")
+        try:
+            return await state.login.start(phone, name)
+        except LoginError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    async def session_code(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        try:
+            return await state.login.submit_code(
+                str(body.get("id") or ""), str(body.get("code") or "")
+            )
+        except LoginError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    async def session_password(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        try:
+            return await state.login.submit_password(
+                str(body.get("id") or ""), str(body.get("password") or "")
+            )
+        except LoginError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    async def session_cancel(request: Request) -> dict[str, Any]:
+        guard(request)
+        await state.login.cancel(str(request.path_params.get("flow_id") or ""))
+        return {"ok": True}
+
+    async def delete_session(request: Request) -> dict[str, Any]:
+        guard(request)
+        name = str(request.path_params.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "name обязателен")
+        if name not in state.store.session_names(only_active=False):
+            raise HTTPException(404, "Сессии нет")
+        state.store.remove_session(name)
+        session_file = settings.session_file(name)
+        try:
+            session_file.unlink(missing_ok=True)
+        except OSError:
+            log.warning("не удалось удалить %s", session_file)
+        state.store.log_event("info", f"сессия {name} удалена", "app")
+        return {"ok": True, "name": name}
+
     # ── цели ────────────────────────────────────────────────────────────────
     async def targets(request: Request) -> list[dict[str, Any]]:
         guard(request)
@@ -285,7 +339,7 @@ def create_app(settings: Settings) -> Starlette:
         if not 1 <= len(query) <= 128:
             raise HTTPException(400, "query: от 1 до 128 символов")
         if not state.store.session_names():
-            raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
         try:
             target = await resolve_and_store_target(state.pool, state.store, query)
         except Exception as exc:  # noqa: BLE001
@@ -399,7 +453,7 @@ def create_app(settings: Settings) -> Starlette:
         if not target:
             raise HTTPException(404, "Цель не найдена")
         if not state.store.session_names():
-            raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
         key = f"act:{tg_id}"
         if state.running(key):
             raise HTTPException(409, "Сбор активности уже идёт")
@@ -442,7 +496,7 @@ def create_app(settings: Settings) -> Starlette:
         if not target:
             raise HTTPException(404, "Цель не найдена")
         if not state.store.session_names():
-            raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
         key = f"scan:{tg_id}"
         if state.running(key):
             raise HTTPException(409, "Скан уже идёт")
@@ -520,7 +574,7 @@ def create_app(settings: Settings) -> Starlette:
     async def start_bootstrap(request: Request) -> dict[str, Any]:
         guard(request)
         if not state.store.session_names():
-            raise HTTPException(409, "Нет сессий. Добавь: healdragg session add main")
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
         if state.running("boot"):
             raise HTTPException(409, "Сбор уже идёт")
         join = _q_bool(request, "join")
@@ -612,6 +666,11 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/health", _route(health)),
         Route("/api/stats", _route(stats)),
         Route("/api/sessions", _route(sessions)),
+        Route("/api/session/start", _route(session_start), methods=["POST"]),
+        Route("/api/session/code", _route(session_code), methods=["POST"]),
+        Route("/api/session/password", _route(session_password), methods=["POST"]),
+        Route("/api/session/{flow_id}/cancel", _route(session_cancel), methods=["POST"]),
+        Route("/api/sessions/{name}", _route(delete_session), methods=["DELETE"]),
         Route("/api/targets", _route(targets), methods=["GET"]),
         Route("/api/targets", _route(add_target), methods=["POST"]),
         Route("/api/targets/{tg_id:int}", _route(get_target), methods=["GET"]),

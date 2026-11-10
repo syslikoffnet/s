@@ -81,9 +81,24 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf(Tab.Targets) }
     var openTarget by rememberSaveable { mutableStateOf<Long?>(null) }
     var showSetup by rememberSaveable { mutableStateOf(vm.isLocal && !vm.hasCredentials) }
+    var showAccounts by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = openTarget != null) { openTarget = null }
-    BackHandler(enabled = openTarget == null && showSetup && !vm.isLocal) { showSetup = false }
+    BackHandler(enabled = openTarget == null && showSetup && (vm.hasCredentials || !vm.isLocal)) {
+        showSetup = false
+    }
+    BackHandler(enabled = showAccounts) { showAccounts = false }
+
+    if (showAccounts) {
+        AccountsScreen(vm = vm, onBack = { showAccounts = false }, onToast = toast)
+        Box(Modifier.fillMaxSize().background(Hd.Bg)) {
+            SnackbarHost(
+                hostState = snackbar,
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
+            )
+        }
+        return
+    }
 
     if (showSetup) {
         SetupScreen(
@@ -94,6 +109,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                 showSetup = false
                 vm.refresh(force = true)
             },
+            onOpenAccounts = { showAccounts = true },
         )
         Box(Modifier.fillMaxSize().background(Hd.Bg)) {
             SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
@@ -148,13 +164,23 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                         onOpenBattery = onOpenBattery,
                                         onToast = toast,
                                         onEditServer = { showSetup = true },
+                                        onOpenAccounts = { showAccounts = true },
                                     )
                                 }
                             }
                             else -> Row(Modifier.fillMaxSize()) {
-                                Box(Modifier.width(410.dp).fillMaxHeight()) {
+                                Box(
+                                    Modifier
+                                        .width((maxWidth * 0.36f).coerceIn(320.dp, 430.dp))
+                                        .fillMaxHeight(),
+                                ) {
                                     if (tab == Tab.Targets) {
-                                        TargetsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                                        TargetsScreen(
+                                            vm = vm,
+                                            onOpenTarget = { openTarget = it },
+                                            onToast = toast,
+                                            onOpenAccounts = { showAccounts = true },
+                                        )
                                     } else {
                                         AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
                                     }
@@ -220,13 +246,19 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             onBack = { openTarget = null },
                             onToast = toast,
                         )
-                        tab == Tab.Targets -> TargetsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                        tab == Tab.Targets -> TargetsScreen(
+                            vm = vm,
+                            onOpenTarget = { openTarget = it },
+                            onToast = toast,
+                            onOpenAccounts = { showAccounts = true },
+                        )
                         tab == Tab.Alerts -> AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
                         else -> SettingsScreen(
                             vm = vm,
                             onOpenBattery = onOpenBattery,
                             onToast = toast,
                             onEditServer = { showSetup = true },
+                            onOpenAccounts = { showAccounts = true },
                         )
                     }
                 }
@@ -325,7 +357,7 @@ private fun HdTopBar(
                 Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = Hd.Muted)
             }
         }
-        if (vm.offline && vm.engine != EngineState.Ready) {
+        if (vm.offline) {
             EngineBanner(vm)
         }
     }

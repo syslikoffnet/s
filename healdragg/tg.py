@@ -28,6 +28,7 @@ from telethon.errors import (
 )
 from telethon.tl.types import Channel, Chat, ChatForbidden, User
 
+from . import __version__
 from .config import Settings
 from .db import Store
 from .util import group_link
@@ -138,7 +139,7 @@ class SessionPool:
                 api_hash,
                 device_model="Healdragg",
                 system_version="Android 14",
-                app_version="1.0.0",
+                app_version=__version__,
                 lang_code="ru",
                 system_lang_code="ru",
                 connection_retries=5,

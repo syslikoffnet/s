@@ -49,6 +49,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var unread by mutableStateOf(0)
         private set
 
+    var sessions by mutableStateOf<List<SessionInfo>>(emptyList())
+        private set
+
     var loading by mutableStateOf(false)
         private set
     var refreshing by mutableStateOf(false)
@@ -63,6 +66,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val hasCredentials: Boolean
         get() = apiId.isNotBlank() && apiHash.length >= 16
+
+    val hasSessions: Boolean
+        get() = sessions.isNotEmpty()
 
     val isLocal: Boolean
         get() = baseUrl == LOCAL_URL || baseUrl.startsWith(LOCAL_HOST)
@@ -119,6 +125,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ── движок ───────────────────────────────────────────────────────────────
 
     fun startEngine() {
+        if (engineBusy) return
         if (!hasCredentials) {
             lastError = "Сначала впиши API_ID и API_HASH"
             return
@@ -231,10 +238,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val freshTargets = client.targets()
                 val freshStats = runCatching { client.stats() }.getOrNull()
                 val (freshAlerts, freshUnread) = client.alerts()
+                val freshSessions = runCatching { client.sessions() }.getOrDefault(sessions)
                 targets = freshTargets
                 stats = freshStats
                 alerts = freshAlerts
                 unread = freshUnread
+                sessions = freshSessions
                 lastError = null
                 offline = false
             } catch (exc: Exception) {
@@ -317,6 +326,72 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             onDone(runCatching { client.collect(tgId) })
         }
+    }
+
+    fun refreshSessions() {
+        val client = api ?: return
+        viewModelScope.launch {
+            runCatching { client.sessions() }.onSuccess { sessions = it }
+        }
+    }
+
+    // ── вход в Telegram ──────────────────────────────────────────────────────
+
+    fun startLogin(phone: String, onDone: (Result<LoginFlow>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch { onDone(runCatching { client.startLogin(phone) }) }
+    }
+
+    fun submitLoginCode(id: String, code: String, onDone: (Result<LoginFlow>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { client.submitLoginCode(id, code) }
+            result.onSuccess { if (it.done) afterLogin() }
+            onDone(result)
+        }
+    }
+
+    fun submitLoginPassword(id: String, password: String, onDone: (Result<LoginFlow>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { client.submitLoginPassword(id, password) }
+            result.onSuccess { if (it.done) afterLogin() }
+            onDone(result)
+        }
+    }
+
+    fun cancelLogin(id: String) {
+        val client = api ?: return
+        viewModelScope.launch { runCatching { client.cancelLogin(id) } }
+    }
+
+    fun deleteSession(name: String, onDone: (Result<Unit>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { client.deleteSession(name) }
+            result.onSuccess {
+                sessions = sessions.filterNot { it.name == name }
+                refresh(force = true)
+            }
+            onDone(result)
+        }
+    }
+
+    private fun afterLogin() {
+        refreshSessions()
+        refresh(force = true)
     }
 
     fun targetByTgId(tgId: Long): Target? = targets.firstOrNull { it.tgId == tgId }

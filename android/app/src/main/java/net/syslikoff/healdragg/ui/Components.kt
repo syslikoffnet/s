@@ -1,7 +1,9 @@
 package net.syslikoff.healdragg.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,10 +44,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** Карточка: тёмная поверхность с тонкой рамкой, как в панели. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HdCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     contentPadding: androidx.compose.foundation.layout.PaddingValues =
         androidx.compose.foundation.layout.PaddingValues(16.dp),
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
@@ -55,8 +59,15 @@ fun HdCard(
         .clip(RoundedCornerShape(18.dp))
         .background(Hd.Surface)
         .border(1.dp, Hd.Stroke, RoundedCornerShape(18.dp))
-    val clickable = if (onClick != null) base.clickable(onClick = onClick) else base
-    Column(modifier = clickable.padding(contentPadding), content = content)
+    val interactive = when {
+        onLongClick != null -> base.combinedClickable(
+            onClick = { onClick?.invoke() },
+            onLongClick = onLongClick,
+        )
+        onClick != null -> base.clickable(onClick = onClick)
+        else -> base
+    }
+    Column(modifier = interactive.padding(contentPadding), content = content)
 }
 
 @Composable
@@ -267,6 +278,8 @@ fun HdTextField(
     minLines: Int = 1,
     isError: Boolean = false,
     keyboard: androidx.compose.ui.text.input.KeyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
+    visualTransformation: androidx.compose.ui.text.input.VisualTransformation =
+        androidx.compose.ui.text.input.VisualTransformation.None,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     OutlinedTextField(
@@ -278,6 +291,7 @@ fun HdTextField(
         minLines = minLines,
         isError = isError,
         trailingIcon = trailing,
+        visualTransformation = visualTransformation,
         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = keyboard),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = Hd.Accent,

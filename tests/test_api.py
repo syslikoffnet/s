@@ -169,3 +169,33 @@ def test_api_has_no_pydantic() -> None:
     source = (Path(__file__).resolve().parent.parent / "healdragg" / "api.py").read_text()
     for banned in ("fastapi", "pydantic"):
         assert banned not in source.lower()
+
+
+def test_login_endpoints_validation(client: TestClient) -> None:
+    assert client.post("/api/session/start", json={}).status_code == 401
+    assert (
+        client.post("/api/session/start", json={}, headers=HEADERS).status_code == 400
+    )
+    assert (
+        client.post(
+            "/api/session/code", json={"id": "nope", "code": "123"}, headers=HEADERS
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/session/password", json={"id": "nope", "password": "x"}, headers=HEADERS
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post("/api/session/nope/cancel", headers=HEADERS).json()["ok"] is True
+    )
+
+
+def test_delete_session(client: TestClient) -> None:
+    assert client.delete("/api/sessions/main", headers=HEADERS).status_code == 404
+    store = client.app.state.hd.store
+    store.add_session("main", "/tmp/main.session", username="main_user", status="active")
+    assert client.delete("/api/sessions/main", headers=HEADERS).status_code == 200
+    assert "main" not in store.session_names(only_active=False)

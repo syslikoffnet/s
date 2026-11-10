@@ -475,7 +475,7 @@ async def _add_session(args: argparse.Namespace, settings: Settings, store: Stor
         api_hash,
         device_model="Healdragg",
         system_version="Android 14",
-        app_version="1.0.0",
+        app_version=__version__,
         lang_code="ru",
         system_lang_code="ru",
     )
