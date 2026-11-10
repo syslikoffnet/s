@@ -71,6 +71,27 @@ jobs:
           printf 'Сборка APK упала на %s\n\n```\n%s\n```\n' "$GITHUB_SHA" "$BODY" > /tmp/comment.md
           gh pr comment 1 --body-file /tmp/comment.md || true
 
+      # Проверяем, что в APK лежит именно байткод движка, а исходники .py — нет
+      - name: Проверка содержимого APK
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          ls -lh "$APK"
+          python3 - "$APK" <<'PY'
+          import sys, zipfile
+
+          apk = sys.argv[1]
+          names = zipfile.ZipFile(apk).namelist()
+          pyc = [n for n in names if n.endswith(".pyc")]
+          py = [n for n in names if n.endswith(".py") and "chaquopy" in n]
+          print(f"python: {len(pyc)} .pyc, {len(py)} .py")
+          if py:
+              print("\n".join(py[:10]))
+              raise SystemExit("в APK попали .py исходники движка")
+          if not pyc:
+              raise SystemExit("в APK нет .pyc движка")
+          PY
+
       - name: Локальные артефакты
         run: |
           mkdir -p artifacts
