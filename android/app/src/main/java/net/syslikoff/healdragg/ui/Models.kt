@@ -435,9 +435,26 @@ data class GiftItem(
     val date: Long,
     val isNft: Boolean,
     val nameHidden: Boolean,
+    val slug: String? = null,
+    val num: Int = 0,
+    val valueAmount: Long = 0,
+    val valueCurrency: String? = null,
+    val resellAmount: Long = 0,
+    val availabilityIssued: Int = 0,
+    val availabilityTotal: Int = 0,
 ) {
     val ownerHandle: String
         get() = ownerUsername?.let { "@$it" } ?: "id $ownerTgId"
+
+    val nftLink: String?
+        get() = slug?.takeIf { it.isNotBlank() }?.let { "https://t.me/nft/$it" }
+
+    val priceLabel: String?
+        get() = if (valueAmount > 0) {
+            "${compactNumber(valueAmount.toInt())} ${valueCurrency ?: "TON"}"
+        } else {
+            null
+        }
 
     companion object {
         fun from(o: JSONObject): GiftItem = GiftItem(
@@ -455,6 +472,13 @@ data class GiftItem(
             date = o.num("date"),
             isNft = o.bool("is_nft"),
             nameHidden = o.bool("name_hidden"),
+            slug = o.str("slug"),
+            num = o.int("num"),
+            valueAmount = o.num("value_amount"),
+            valueCurrency = o.str("value_currency"),
+            resellAmount = o.num("resell_amount"),
+            availabilityIssued = o.int("availability_issued"),
+            availabilityTotal = o.int("availability_total"),
         )
     }
 }

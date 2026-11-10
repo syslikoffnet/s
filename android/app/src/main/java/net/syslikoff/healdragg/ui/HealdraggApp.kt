@@ -116,6 +116,17 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
     var showSetup by rememberSaveable { mutableStateOf(vm.isLocal && !vm.hasCredentials) }
     var showAccounts by rememberSaveable { mutableStateOf(false) }
 
+    // Подарок → «открыть профиль владельца»: добавляем человека целью и
+    // показываем его карточку прямо в приложении.
+    val openProfile: (String) -> Unit = { key ->
+        vm.addTarget(key) { result ->
+            result.onSuccess { target ->
+                openTarget = target.tgId
+                tab = Tab.Targets
+            }.onFailure { toast(it.message ?: "Не удалось открыть профиль") }
+        }
+    }
+
     BackHandler(enabled = openTarget != null) { openTarget = null }
     BackHandler(enabled = openTarget == null && showSetup && (vm.hasCredentials || !vm.isLocal)) {
         showSetup = false
@@ -218,7 +229,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             }
                             Tab.Gifts -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                 Box(Modifier.widthIn(max = 820.dp).fillMaxWidth()) {
-                                    GiftsScreen(vm = vm, onToast = toast)
+                                    GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
                                 }
                             }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -332,7 +343,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             onToast = toast,
                             onOpenAccounts = { showAccounts = true },
                         )
-                        tab == Tab.Gifts -> GiftsScreen(vm = vm, onToast = toast)
+                        tab == Tab.Gifts -> GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
                         else -> SettingsScreen(
                             vm = vm,
                             onOpenBattery = onOpenBattery,

@@ -44,6 +44,32 @@ def test_gift_upsert_and_summary(store: Store) -> None:
     assert rows[0]["owner_name"] == "User 1"
 
 
+def test_nft_metadata(store: Store) -> None:
+    store.add_gift(
+        1,
+        saved_id=500,
+        gift_id=9,
+        title="Plush Pepe",
+        kind="unique",
+        stars=1500,
+        from_tg_id=2,
+        date=100,
+        is_nft=True,
+        slug="PlushPepe-123",
+        num=123,
+        value_amount=1500,
+        value_currency="TON",
+        availability_issued=10,
+        availability_total=50,
+    )
+    row = store.list_gifts(nft_only=True)[0]
+    assert row["slug"] == "PlushPepe-123"
+    assert row["num"] == 123
+    assert row["value_amount"] == 1500
+    assert row["value_currency"] == "TON"
+    assert row["availability_total"] == 50
+
+
 def test_nft_filter(store: Store) -> None:
     _gift(store, 1, 2, nft=True, date=200)
     _gift(store, 1, 3, date=300)

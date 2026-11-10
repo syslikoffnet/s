@@ -27,7 +27,7 @@ from typing import Any
 
 from .util import group_link, now_ts
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -191,6 +191,13 @@ CREATE TABLE IF NOT EXISTS gifts (
     date          INTEGER,
     is_nft        INTEGER NOT NULL DEFAULT 0,
     name_hidden   INTEGER NOT NULL DEFAULT 0,
+    slug          TEXT,
+    num           INTEGER,
+    value_amount  INTEGER,
+    value_currency TEXT,
+    resell_amount INTEGER,
+    availability_issued INTEGER,
+    availability_total  INTEGER,
     raw           TEXT,
     seen_at       INTEGER NOT NULL,
     UNIQUE(owner_tg_id, saved_id, gift_id)
@@ -348,6 +355,19 @@ class Store:
         for column, ddl in target_additions.items():
             if column not in target_cols:
                 self._conn.execute(f"ALTER TABLE targets ADD COLUMN {column} {ddl}")
+        gift_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gifts)")}
+        gift_additions = {
+            "slug": "TEXT",
+            "num": "INTEGER",
+            "value_amount": "INTEGER",
+            "value_currency": "TEXT",
+            "resell_amount": "INTEGER",
+            "availability_issued": "INTEGER",
+            "availability_total": "INTEGER",
+        }
+        for column, ddl in gift_additions.items():
+            if column not in gift_cols:
+                self._conn.execute(f"ALTER TABLE gifts ADD COLUMN {column} {ddl}")
         self._conn.commit()
 
     @contextmanager
@@ -926,6 +946,13 @@ class Store:
         date: int | None = None,
         is_nft: bool = False,
         name_hidden: bool = False,
+        slug: str | None = None,
+        num: int | None = None,
+        value_amount: int | None = None,
+        value_currency: str | None = None,
+        resell_amount: int | None = None,
+        availability_issued: int | None = None,
+        availability_total: int | None = None,
         raw: str | None = None,
     ) -> bool:
         """Сохраняет подарок. True — если он появился в базе впервые."""
@@ -939,8 +966,10 @@ class Store:
                     """
                     INSERT INTO gifts(owner_tg_id, saved_id, gift_id, title, kind, stars,
                                       from_tg_id, from_username, from_name, owner_username,
-                                      owner_name, message, date, is_nft, name_hidden, raw, seen_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                      owner_name, message, date, is_nft, name_hidden,
+                                      slug, num, value_amount, value_currency, resell_amount,
+                                      availability_issued, availability_total, raw, seen_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         owner_tg_id,
@@ -958,6 +987,13 @@ class Store:
                         date,
                         int(is_nft),
                         int(name_hidden),
+                        slug,
+                        num,
+                        value_amount,
+                        value_currency,
+                        resell_amount,
+                        availability_issued,
+                        availability_total,
                         raw,
                         now_ts(),
                     ),
@@ -973,6 +1009,12 @@ class Store:
                        owner_name = coalesce(?, owner_name),
                        message = coalesce(?, message), date = coalesce(?, date),
                        is_nft = ?, name_hidden = ?, raw = coalesce(?, raw),
+                       slug = coalesce(?, slug), num = coalesce(?, num),
+                       value_amount = coalesce(?, value_amount),
+                       value_currency = coalesce(?, value_currency),
+                       resell_amount = coalesce(?, resell_amount),
+                       availability_issued = coalesce(?, availability_issued),
+                       availability_total = coalesce(?, availability_total),
                        seen_at = ?
                  WHERE id = ?
                 """,
@@ -989,6 +1031,13 @@ class Store:
                     int(is_nft),
                     int(name_hidden),
                     raw,
+                    slug,
+                    num,
+                    value_amount,
+                    value_currency,
+                    resell_amount,
+                    availability_issued,
+                    availability_total,
                     now_ts(),
                     existing["id"],
                 ),
@@ -1038,7 +1087,8 @@ class Store:
         return self.query(
             """
             SELECT owner_tg_id, COUNT(*) AS gifts, coalesce(SUM(is_nft), 0) AS nft,
-                   max(date) AS last_date
+                   max(date) AS last_date, max(owner_username) AS owner_username,
+                   max(owner_name) AS owner_name, max(seen_at) AS checked_at
               FROM gifts GROUP BY owner_tg_id
              ORDER BY nft DESC, gifts DESC LIMIT ?
             """,

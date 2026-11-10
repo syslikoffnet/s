@@ -110,6 +110,14 @@ class Api(private val baseUrl: String, private val token: String) {
             (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.map(Message::from)
     }
 
+    /** Режим наблюдения: сервер сам добирает свежие сообщения цели. */
+    suspend fun liveActivity(tgId: Long, limit: Int = 120): Pair<ActivityStats, List<Message>> {
+        val data = obj("api/targets/$tgId/activity/live?limit=$limit", "POST", null, LIVE_TIMEOUT)
+        val rows = data.arr("rows")
+        return ActivityStats.from(data.obj("stats")) to
+            (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }.map(Message::from)
+    }
+
     suspend fun graph(tgId: Long): GraphData = GraphData.from(obj("api/targets/$tgId/graph"))
 
     suspend fun scan(tgId: Long, deep: Boolean = false): Job {
@@ -155,6 +163,11 @@ class Api(private val baseUrl: String, private val token: String) {
             )
         }
         return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners)
+    }
+
+    suspend fun refreshGifts(limit: Int = 60, perProfile: Int = 100): Job {
+        val body = JSONObject().put("limit", limit).put("per_profile", perProfile)
+        return Job.from(obj("api/gifts/refresh", "POST", body))
     }
 
     suspend fun crawlGifts(query: String, depth: Int = 1, maxProfiles: Int = 5): Job {
@@ -299,6 +312,8 @@ class Api(private val baseUrl: String, private val token: String) {
         const val LOGIN_TIMEOUT = 40_000
         // Загрузка профиля: get_entity + full user + скачивание фото.
         const val PROFILE_TIMEOUT = 60_000
+        // Живой добор сообщений: несколько чатов подряд, поэтому с запасом.
+        const val LIVE_TIMEOUT = 35_000
     }
 
     private fun humanError(code: Int, raw: String): String {

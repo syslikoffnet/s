@@ -288,3 +288,17 @@ def test_catalog_update_and_delete(client: TestClient) -> None:
     )
     assert client.delete(f"/api/catalog/{tg_id}", headers=HEADERS).json()["ok"] is True
     assert client.delete(f"/api/catalog/{tg_id}", headers=HEADERS).status_code == 404
+
+
+def test_gift_refresh_requires_session(client: TestClient) -> None:
+    response = client.post("/api/gifts/refresh", headers=HEADERS, json={})
+    assert response.status_code == 409
+    assert "аккаунта" in response.text.lower()
+
+
+def test_live_activity_without_session(client: TestClient) -> None:
+    response = client.post(f"/api/targets/{DEMO_TARGET}/activity/live", headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()
+    assert "rows" in data and "stats" in data
+    assert data.get("skipped")

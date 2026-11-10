@@ -119,6 +119,8 @@ fun TargetDetailScreen(
     var linksOpen by remember { mutableStateOf(false) }
     var chatQuery by remember(tgId) { mutableStateOf("") }
     var photo by remember(tgId) { mutableStateOf<ImageBitmap?>(null) }
+    var liveOn by rememberSaveable(tgId) { mutableStateOf(true) }
+    var autoCollected by rememberSaveable(tgId) { mutableStateOf(false) }
 
     LaunchedEffect(tgId, target?.photoUpdatedAt) {
         val client = api ?: return@LaunchedEffect
@@ -237,6 +239,28 @@ fun TargetDetailScreen(
         }
     }
 
+    // Первый заход в ленту: если сообщений ещё нет — сразу собираем архив.
+    LaunchedEffect(tab, tgId) {
+        if (tab != DetailTab.Feed) return@LaunchedEffect
+        if (!autoCollected && messages.isEmpty() && job == null) {
+            autoCollected = true
+            collect()
+        }
+    }
+
+    // Режим наблюдения: без кнопок, сообщение появилось — оно уже в ленте.
+    LaunchedEffect(tgId, tab, liveOn) {
+        if (tab != DetailTab.Feed || !liveOn) return@LaunchedEffect
+        val client = api ?: return@LaunchedEffect
+        while (true) {
+            delay(4_000)
+            val fresh = runCatching { client.liveActivity(tgId) }.getOrNull() ?: continue
+            if (fresh.second.isNotEmpty()) {
+                messages = fresh.second
+            }
+        }
+    }
+
     val listState = rememberLazyListState()
     LaunchedEffect(listState, chatsDone, tab) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
@@ -341,6 +365,21 @@ fun TargetDetailScreen(
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text("Собрать архив ленты", color = Hd.Text) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Notifications,
+                                        contentDescription = null,
+                                        tint = Hd.Accent2,
+                                    )
+                                },
+                                enabled = !actionBusy && job == null,
+                                onClick = {
+                                    menu = false
+                                    collect()
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Глубокий скан", color = Hd.Text) },
                                 onClick = {
                                     menu = false
@@ -440,14 +479,6 @@ fun TargetDetailScreen(
                     Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
                     Text("Сканировать")
-                }
-                OutlinedButton(
-                    onClick = { collect() },
-                    enabled = !actionBusy && job == null,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.weight(1f).heightIn(min = 46.dp),
-                ) {
-                    Text("Собрать ленту", color = Hd.Accent2, maxLines = 1, fontSize = 12.sp)
                 }
                 IconButton(
                     onClick = { linksOpen = true },
@@ -595,13 +626,55 @@ fun TargetDetailScreen(
             }
 
             DetailTab.Feed -> {
+                item("feed-live") {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Hd.Good.copy(alpha = 0.14f))
+                                .padding(horizontal = 9.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.size(7.dp).background(Hd.Good, CircleShape),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "наблюдение",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Hd.Good,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (messages.isEmpty()) "ждём сообщений…" else "${messages.size} сообщений",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = { liveOn = !liveOn },
+                        ) {
+                            Text(
+                                if (liveOn) "Пауза" else "Продолжить",
+                                color = Hd.Muted,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
                 if (messages.isEmpty() && !feedLoading) {
                     item("feed-empty") {
                         EmptyState(
-                            emoji = "📜",
-                            title = "Лента пуста",
-                            text = "Нажми «Собрать ленту» — приложение вытащит последние сообщения цели из её чатов.",
-                            actionLabel = "Собрать ленту",
+                            emoji = "",
+                            icon = Icons.Filled.ChatBubble,
+                            title = "Пока тихо",
+                            text = "Наблюдение включено: как только цель напишет в общий чат, сообщение " +
+                                "появится здесь само. Архив за 30 дней можно добрать вручную.",
+                            actionLabel = "Собрать архив",
                             onAction = { collect() },
                         )
                     }
@@ -768,12 +841,16 @@ private fun MessageCard(message: Message, onToast: (String) -> Unit) {
             )
         } else if (message.media != null) {
             Spacer(Modifier.height(6.dp))
-            Text("вложение: ${message.media}", style = MaterialTheme.typography.bodySmall, color = Hd.Muted)
+            Text(
+                mediaLabel(message.media) ?: "вложение",
+                style = MaterialTheme.typography.bodySmall,
+                color = Hd.Muted,
+            )
         }
         val meta = buildList {
-            message.media?.let { add("📎 $it") }
-            if (message.views > 0) add("👁 ${compactNumber(message.views)}")
-            if (message.replies) add("↩ ответ")
+            mediaLabel(message.media)?.let { add(it) }
+            if (message.views > 0) add("${compactNumber(message.views)} просмотров")
+            if (message.replies) add("ответ")
         }
         if (meta.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))

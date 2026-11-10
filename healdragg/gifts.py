@@ -74,8 +74,8 @@ async def crawl_gifts(
     query = (query or "").strip()
     if not query:
         raise ValueError("нужен @username, ссылка или ID пользователя")
-    depth = max(1, min(3, int(depth)))
-    max_profiles = max(1, min(50, int(max_profiles)))
+    depth = max(1, min(6, int(depth)))
+    max_profiles = max(1, min(300, int(max_profiles)))
     per_profile = max(10, min(100, int(per_profile)))
 
     account = await pool.first(sessions)
@@ -127,6 +127,13 @@ async def crawl_gifts(
                 stars = getattr(gift, "stars", None)
                 if stars is None:
                     stars = getattr(gift, "value_amount", None)
+                slug = getattr(gift, "slug", None)
+                num = getattr(gift, "num", None)
+                value_amount = getattr(gift, "value_amount", None)
+                value_currency = getattr(gift, "value_currency", None)
+                resell_amount = getattr(gift, "resell_amount", None)
+                availability_issued = getattr(gift, "availability_issued", None)
+                availability_total = getattr(gift, "availability_total", None)
                 sender_peer = getattr(saved, "from_id", None)
                 name_hidden = bool(getattr(saved, "name_hidden", False))
                 sender_id = None if name_hidden else _sender_id(sender_peer)
@@ -150,6 +157,17 @@ async def crawl_gifts(
                     date=_timestamp(getattr(saved, "date", None)),
                     is_nft=is_nft,
                     name_hidden=name_hidden,
+                    slug=str(slug) if slug else None,
+                    num=int(num) if isinstance(num, int) else None,
+                    value_amount=int(value_amount) if isinstance(value_amount, int) else None,
+                    value_currency=str(value_currency) if value_currency else None,
+                    resell_amount=int(resell_amount) if isinstance(resell_amount, int) else None,
+                    availability_issued=(
+                        int(availability_issued) if isinstance(availability_issued, int) else None
+                    ),
+                    availability_total=(
+                        int(availability_total) if isinstance(availability_total, int) else None
+                    ),
                 )
                 profile_gifts += 1
                 gifts_found += 1
@@ -167,6 +185,12 @@ async def crawl_gifts(
                             f"NFT-подарок: {title}",
                             body=(
                                 f"{display} ← {_user_label(sender, sender_id)}"
+                                + (f" · #{num}" if isinstance(num, int) else "")
+                                + (
+                                    f" · {value_amount} {value_currency}"
+                                    if isinstance(value_amount, int) and value_currency
+                                    else ""
+                                )
                                 + (f" · {stars}★" if isinstance(stars, int) else "")
                                 + (f" · «{str(text)[:120]}»" if text else "")
                             ),
@@ -224,4 +248,78 @@ async def crawl_gifts(
     }
 
 
-__all__ = ["crawl_gifts"]
+async def refresh_gifts(
+    pool: SessionPool,
+    store: Store,
+    settings: Settings,
+    *,
+    limit: int = 60,
+    per_profile: int = 100,
+    sessions: list[str] | None = None,
+    reporter: Reporter | None = None,
+) -> dict[str, Any]:
+    """Обновляет только уже известные профили: новые чаты и подарки.
+
+    Полезно, когда база собрана: не нужно заново обходить всю сеть, чтобы
+    увидеть свежие NFT и изменившиеся цены.
+    """
+    owners = store.gift_owners(limit)
+    total = len(owners)
+    if not total:
+        return {
+            "owners": 0,
+            "refreshed": 0,
+            "gifts": 0,
+            "new": 0,
+            "nft": 0,
+            "errors": 0,
+            "summary": store.gift_summary(),
+            "results": [],
+        }
+    refreshed = gifts = new = nft = errors = 0
+    results: list[dict[str, Any]] = []
+    for index, owner in enumerate(owners, 1):
+        owner_id = int(owner["owner_tg_id"])
+        query = owner.get("owner_username") or str(owner_id)
+        try:
+            result = await crawl_gifts(
+                pool,
+                store,
+                settings,
+                query,
+                depth=1,
+                max_profiles=1,
+                per_profile=per_profile,
+                sessions=sessions,
+            )
+            gifts += int(result.get("gifts", 0))
+            new += int(result.get("new", 0))
+            nft += int(result.get("nft", 0))
+            refreshed += 1
+            results.append({"owner_tg_id": owner_id, "query": query, "new": result.get("new", 0)})
+        except Exception as exc:  # noqa: BLE001
+            errors += 1
+            log.info("refresh gifts %s: %s", owner_id, exc)
+            results.append({"owner_tg_id": owner_id, "query": query, "error": str(exc)[:200]})
+        if reporter is not None:
+            await reporter(
+                {
+                    "phase": f"обновляю {index}/{total}",
+                    "done": index,
+                    "total": total,
+                    "found": new,
+                }
+            )
+    return {
+        "owners": total,
+        "refreshed": refreshed,
+        "gifts": gifts,
+        "new": new,
+        "nft": nft,
+        "errors": errors,
+        "summary": store.gift_summary(),
+        "results": results,
+    }
+
+
+__all__ = ["crawl_gifts", "refresh_gifts"]

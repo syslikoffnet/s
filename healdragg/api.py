@@ -27,7 +27,7 @@ from . import __version__
 from .activity import collect_activity
 from .config import Settings
 from .db import Store
-from .gifts import crawl_gifts
+from .gifts import crawl_gifts, refresh_gifts
 from .graph import build_graph
 from .intel import guess
 from .login import LoginError, LoginManager
@@ -91,6 +91,7 @@ class AppState:
         self.pool = SessionPool(settings, self.store)
         self.login = LoginManager(settings, self.store)
         self.jobs: dict[str, Job] = {}
+        self.live_at: dict[str, float] = {}
 
     def running(self, key: str) -> bool:
         job = self.jobs.get(key)
@@ -467,6 +468,59 @@ def create_app(settings: Settings) -> Starlette:
             "edges": state.store.target_edges(target_pk, limit=50),
         }
 
+    async def live_activity(request: Request) -> dict[str, Any]:
+        """Режим наблюдения: тихо добирает свежие сообщения цели.
+
+        Вызывается с экрана цели каждые несколько секунд. Работа ограничена
+        по времени и частоте, чтобы не дёргать Telegram и не копить запросы.
+        """
+        guard(request)
+        tg_id = request.path_params["tg_id"]
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Цель не найдена")
+        target_pk = int(target["id"])
+
+        def feed_payload(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            payload = {
+                "stats": state.store.activity_stats(target_pk),
+                "rows": state.store.activity_feed(
+                    target_pk, limit=_q_int(request, "limit", 120, 1, 300)
+                ),
+                "edges": state.store.target_edges(target_pk, limit=50),
+            }
+            if extra:
+                payload.update(extra)
+            return payload
+
+        if not state.store.session_names():
+            return feed_payload({"skipped": "нет аккаунта"})
+        if any(state.running(key) for key in ("boot", "import", f"act:{tg_id}")):
+            return feed_payload({"skipped": "занято"})
+        stamp = time.time()
+        if stamp - state.live_at.get(str(tg_id), 0) < 3.5:
+            return feed_payload({"skipped": "пауза"})
+        state.live_at[str(tg_id)] = stamp
+
+        stats: dict[str, Any] = {}
+        try:
+            stats = await collect_activity(
+                state.pool,
+                state.store,
+                settings,
+                target,
+                days=2,
+                per_chat=settings.activity_per_chat,
+                max_chats=settings.activity_max_chats,
+                reporter=None,
+                incremental=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.info("live activity %s: %s", tg_id, exc)
+        return feed_payload({"live": stats, "skipped": None})
+
     # ── фоновые задачи ──────────────────────────────────────────────────────
     async def collect_target_activity(request: Request) -> dict[str, Any]:
         guard(request)
@@ -563,6 +617,60 @@ def create_app(settings: Settings) -> Starlette:
             "total": state.store.gift_summary()["total"],
         }
 
+    async def start_gift_refresh(request: Request) -> dict[str, Any]:
+        """Обновляет уже собранные профили: новые подарки и цены NFT."""
+        guard(request)
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+        if state.running("gifts:refresh"):
+            raise HTTPException(409, "Обновление подарков уже идёт")
+        body = await _body(request)
+        limit = body.get("limit")
+        limit = int(limit) if isinstance(limit, int) else 60
+        limit = max(1, min(200, limit))
+        per_profile = body.get("per_profile")
+        per_profile = int(per_profile) if isinstance(per_profile, int) else 100
+        per_profile = max(10, min(100, per_profile))
+        if not state.store.gift_owners(1):
+            raise HTTPException(400, "Подарков в базе нет — сначала соберите хотя бы один профиль")
+
+        job = Job(key="gifts:refresh", kind="giftrefresh")
+        job.state = {"phase": "старт", "done": 0, "total": limit, "found": 0}
+        state.jobs["gifts:refresh"] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = progress
+
+        async def runner() -> None:
+            try:
+                result = await refresh_gifts(
+                    state.pool,
+                    state.store,
+                    settings,
+                    limit=limit,
+                    per_profile=per_profile,
+                    reporter=on_progress,
+                )
+                job.state = {
+                    **job.state,
+                    "phase": "готово",
+                    "done": int(result.get("owners", 0)),
+                    "total": int(result.get("owners", 0)),
+                    "found": int(result.get("new", 0)),
+                    "summary": result,
+                }
+            except asyncio.CancelledError:
+                job.state = {**job.state, "phase": "отменено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("api gift refresh failed")
+                job.error = str(exc)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name="gifts:refresh")
+        return job.as_dict()
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -579,8 +687,10 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
         depth = body.get("depth")
         depth = int(depth) if isinstance(depth, int) else 1
+        depth = max(1, min(6, depth))
         max_profiles = body.get("max_profiles")
         max_profiles = int(max_profiles) if isinstance(max_profiles, int) else 5
+        max_profiles = max(1, min(300, max_profiles))
         per_profile = body.get("per_profile")
         per_profile = int(per_profile) if isinstance(per_profile, int) else 100
         key = f"gifts:{query}"
@@ -929,12 +1039,14 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/graph", _route(target_graph)),
         Route("/api/targets/{tg_id:int}/activity", _route(target_activity)),
         Route("/api/targets/{tg_id:int}/activity/collect", _route(collect_target_activity), methods=["POST"]),
+        Route("/api/targets/{tg_id:int}/activity/live", _route(live_activity), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/scan", _route(start_scan), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/profile/refresh", _route(refresh_target_profile), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/graph", _route(gifts_graph)),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
+        Route("/api/gifts/refresh", _route(start_gift_refresh), methods=["POST"]),
         Route("/api/intel", _route(intel)),
         Route("/api/alerts", _route(alerts)),
         Route("/api/alerts/read", _route(alerts_read), methods=["POST"]),

@@ -112,3 +112,19 @@ fun genderLabel(value: String?): String? = when (value) {
     "female" -> "женский"
     else -> null
 }
+
+/** Человеческая подпись вложения из базы (gif, photo, video…). */
+fun mediaLabel(media: String?): String? = when (media?.lowercase()) {
+    null, "" -> null
+    "gif" -> "гиф"
+    "photo" -> "фото"
+    "video" -> "видео"
+    "audio" -> "аудио"
+    "sticker" -> "стикер"
+    "document" -> "файл"
+    "webpage" -> "ссылка"
+    "geo", "geolive", "venue" -> "геометка"
+    "poll" -> "опрос"
+    "contact" -> "контакт"
+    else -> media
+}

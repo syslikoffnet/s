@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.CardGiftcard
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -30,6 +31,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,7 +57,11 @@ import kotlinx.coroutines.launch
  * цель → её дарители → их дарители, с ограничением числа профилей.
  */
 @Composable
-fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
+fun GiftsScreen(
+    vm: AppViewModel,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api = vm.api
@@ -115,6 +121,19 @@ fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
         }
     }
 
+    fun refreshKnown() {
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.refreshGifts { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                onToast("Обновляю уже известные профили…")
+            }.onFailure { error = it.message ?: "Не удалось запустить обновление" }
+        }
+    }
+
     fun start() {
         val target = query.trim()
         if (target.isEmpty()) {
@@ -166,24 +185,32 @@ fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
                         singleLine = true,
                     )
                     Spacer(Modifier.height(10.dp))
-                    Text("Глубина", style = MaterialTheme.typography.labelMedium, color = Hd.Dim)
+                    Text("Глубина по сети", style = MaterialTheme.typography.labelMedium, color = Hd.Dim)
                     Row(
                         Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        listOf(
-                            1 to "профиль",
-                            2 to "друзья",
-                            3 to "глубже",
-                        ).forEach { (value, label) ->
+                        listOf(1, 2, 3, 4, 5, 6).forEach { value ->
                             FilterChip(
                                 selected = depth == value,
                                 onClick = { depth = value },
-                                label = { Text(label) },
+                                label = { Text(if (value == 6) "вся" else value.toString()) },
                                 colors = giftChipColors(),
                             )
                         }
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when (depth) {
+                            1 -> "1 — только этот профиль"
+                            2 -> "2 — профиль и те, кто ему дарил"
+                            3 -> "3 — дарители дарителей"
+                            6 -> "вся сеть: идём по дарителям, пока хватает лимита профилей"
+                            else -> "$depth — на $depth шага по сети дарителей"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Dim,
+                    )
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Сколько профилей пройти",
@@ -194,7 +221,7 @@ fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
                         Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        listOf(5, 10, 25).forEach { value ->
+                        listOf(5, 10, 25, 50, 100).forEach { value ->
                             FilterChip(
                                 selected = maxProfiles == value,
                                 onClick = { maxProfiles = value },
@@ -224,13 +251,24 @@ fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
                         }
                         Text(if (job != null) "Обход идёт…" else "Собрать подарки")
                     }
-                    if (depth > 1) {
-                        Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { refreshKnown() },
+                        enabled = !busy && job == null && summary.total > 0,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = Hd.Accent2,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text(
-                            "При глубине $depth приложение зайдёт в профили тех, кто дарил подарки, " +
-                                "и соберёт подарки уже у них.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Hd.Dim,
+                            if (summary.total > 0) "Обновить уже известные (${summary.owners})" else "Пока нечего обновлять",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelLarge,
                         )
                     }
                 }
@@ -344,7 +382,7 @@ fun GiftsScreen(vm: AppViewModel, onToast: (String) -> Unit) {
             }
 
             items(rows, key = { it.id }) { gift ->
-                GiftCard(gift = gift, onToast = onToast)
+                GiftCard(gift = gift, onToast = onToast, onOpenProfile = onOpenProfile)
             }
         }
     }
@@ -359,9 +397,14 @@ private fun giftChipColors() = FilterChipDefaults.filterChipColors(
 )
 
 @Composable
-private fun GiftCard(gift: GiftItem, onToast: (String) -> Unit) {
+private fun GiftCard(
+    gift: GiftItem,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
     val context = LocalContext.current
     val ownerLink = gift.ownerUsername?.let { "https://t.me/$it" }
+    val ownerKey = gift.ownerUsername?.let { "@$it" } ?: gift.ownerTgId.toString()
     HdCard(
         onClick = {
             if (!openLink(context, ownerLink)) {
@@ -460,6 +503,49 @@ private fun GiftCard(gift: GiftItem, onToast: (String) -> Unit) {
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+                if (gift.isNft) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (gift.num > 0) Chip("#${gift.num}", Hd.Accent)
+                        gift.priceLabel?.let { Chip(it, Hd.Warn) }
+                        if (gift.availabilityTotal > 0) {
+                            Chip(
+                                "${gift.availabilityIssued}/${gift.availabilityTotal}",
+                                Hd.Dim,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = { onOpenProfile(ownerKey) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                        ) {
+                            Text(
+                                "Профиль владельца",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                        gift.nftLink?.let { link ->
+                            TextButton(
+                                onClick = {
+                                    if (!openLink(context, link)) {
+                                        copyText(context, "nft", link)
+                                        onToast("Ссылка на NFT скопирована")
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            ) {
+                                Text(
+                                    "Открыть NFT",
+                                    color = Hd.Accent,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
+                    }
                 }
             }
             Spacer(Modifier.width(6.dp))

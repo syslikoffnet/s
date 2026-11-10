@@ -37,13 +37,78 @@ MEDIA_LIMIT = 4000
 
 
 def _media_kind(message: Any) -> str | None:
+    """Тип вложения человеческим словом: гиф, фото, видео, стикер и т.д."""
     media = getattr(message, "media", None)
     if media is None:
         return None
+    document = getattr(message, "document", None) or getattr(media, "document", None)
+    if document is not None:
+        names = {type(attr).__name__ for attr in getattr(document, "attributes", None) or []}
+        if "DocumentAttributeAnimated" in names:
+            return "gif"
+        if "DocumentAttributeVideo" in names:
+            return "video"
+        if "DocumentAttributeAudio" in names:
+            return "audio"
+        if "DocumentAttributeSticker" in names:
+            return "sticker"
+        return "document"
+    if getattr(message, "photo", None) is not None or type(media).__name__ == "MessageMediaPhoto":
+        return "photo"
     name = type(media).__name__
     if name.startswith("MessageMedia"):
         return name[len("MessageMedia") :].lower() or "media"
     return name.lower()
+
+
+async def _target_entity(client: Any, target: dict[str, Any], limiter: RateLimiter) -> Any:
+    """Сущность цели для ``from_user``.
+
+    ``InputPeerUser`` с нулевым access_hash ломает ``iter_messages``, поэтому
+    сначала пробуем имя и числовой id через кэш самого клиента.
+    """
+    candidates: list[Any] = []
+    username = target.get("username")
+    if username:
+        candidates.append(username)
+    candidates.append(int(target["tg_user_id"]))
+    for candidate in candidates:
+        try:
+            return await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("target entity %s: %s", candidate, exc)
+    return target_input_peer(target)
+
+
+def _chat_candidates(store: Store, target_pk: int, limit: int) -> list[dict[str, Any]]:
+    """Чаты, где могут быть сообщения цели.
+
+    Сначала пересечения «цель × чат», затем — все чаты сканера: если скан не
+    успел записать target_groups, общая группа всё равно найдётся.
+    """
+    chats = [g for g in store.all_target_groups(target_pk) if g.get("status") != "left"]
+    if len(chats) >= limit:
+        return chats[:limit]
+    seen = {int(g.get("group_id") or g.get("id")) for g in chats}
+    extra = store.query(
+        """
+        SELECT g.*, g.id AS group_id FROM session_groups sg
+          JOIN groups g ON g.id = sg.group_id
+         WHERE sg.is_member = 1
+         GROUP BY g.id
+         ORDER BY coalesce(g.last_message_at, 0) DESC, coalesce(g.members_count, 0) DESC
+         LIMIT ?
+        """,
+        (max(1, int(limit) * 2),),
+    )
+    for row in extra:
+        if int(row["group_id"]) in seen:
+            continue
+        chats.append(row)
+        seen.add(int(row["group_id"]))
+        if len(chats) >= limit:
+            break
+    return chats
 
 
 def _mention_ids(message: Any) -> list[int]:
@@ -76,8 +141,13 @@ async def collect_activity(
     max_chats: int = 80,
     max_replies: int = 120,
     reporter: Reporter | ProgressCallback | None = None,
+    incremental: bool = False,
 ) -> dict[str, Any]:
-    """Собирает последние сообщения цели и связи с собеседниками."""
+    """Собирает последние сообщения цели и связи с собеседниками.
+
+    ``incremental=True`` — быстрый добор для режима наблюдения: меньше чатов,
+    без разбора ответов и без чистки базы.
+    """
     names = store.session_names()
     if not names:
         raise RuntimeError("Нет сессий: healdragg session add main")
@@ -92,10 +162,13 @@ async def collect_activity(
         rep = Reporter(store, scan_id=scan_id, callback=reporter)
 
     coverage = store.session_group_map(names)
-    groups = [g for g in store.all_target_groups(target_pk) if g.get("status") != "left"]
-    groups = groups[: max(1, int(max_chats))]
     cutoff = now_ts() - max(1, int(days)) * 86400
-    target_peer = target_input_peer(target)
+    if incremental:
+        per_chat = min(int(per_chat), 25)
+        max_chats = min(int(max_chats), 40)
+        max_replies = 0
+        cutoff = now_ts() - 2 * 86400
+    groups = _chat_candidates(store, target_pk, max(1, int(max_chats)))
 
     stats: dict[str, Any] = {
         "chats": 0,
@@ -126,6 +199,7 @@ async def collect_activity(
             limiter = account.limiter or RateLimiter()
             access_hash = coverage.get(session_name, {}).get(int(group["tg_id"]))
             peer = history_peer(group, access_hash)
+            from_user = await _target_entity(account.client, target, limiter)
             stats["chats"] += 1
             await rep.update(
                 phase=f"читаю · {group.get('title') or group['tg_id']}",
@@ -135,11 +209,26 @@ async def collect_activity(
             )
             group_pk = int(group.get("group_id") or group["id"])
             try:
-                async for message in account.client.iter_messages(
-                    peer,
-                    from_user=target_peer,
-                    limit=max(1, int(per_chat)),
-                ):
+                messages_found: list[Any] = []
+                try:
+                    async for message in account.client.iter_messages(
+                        peer,
+                        from_user=from_user,
+                        limit=max(1, int(per_chat)),
+                    ):
+                        messages_found.append(message)
+                except Exception as exc:  # noqa: BLE001
+                    # access_hash мог устареть: добираем историю и фильтруем сами
+                    log.info("from_user %s: %s — читаю историю целиком", target_tg_id, exc)
+                    async for message in account.client.iter_messages(
+                        peer, limit=max(30, int(per_chat) * 4)
+                    ):
+                        sender = getattr(message, "sender_id", None) or getattr(
+                            getattr(message, "from_id", None), "user_id", None
+                        )
+                        if int(sender or 0) == target_tg_id:
+                            messages_found.append(message)
+                for message in messages_found:
                     date = int(message.date.timestamp()) if getattr(message, "date", None) else 0
                     if date and date < cutoff:
                         continue
@@ -194,10 +283,12 @@ async def collect_activity(
                 stats["errors"] += 1
                 log.warning("activity %s: %s", group.get("title") or group["tg_id"], exc)
 
-        pruned = store.prune_activity(target_pk, days=max(int(days), 30) * 3)
-        stats["pruned"] = pruned
-        created = run_detection(store, target, messages=True)
-        stats["alerts"] = len(created)
+        if incremental:
+            stats["pruned"] = 0
+            stats["alerts"] = 0
+        else:
+            stats["pruned"] = store.prune_activity(target_pk, days=max(int(days), 30) * 3)
+            stats["alerts"] = len(run_detection(store, target, messages=True))
         stats["elapsed"] = round(time.time() - started, 1)
         store.finish_scan(scan_id, status="done", stats=stats)
         await rep.update(force=True, phase="готово", found=stats["messages"])
