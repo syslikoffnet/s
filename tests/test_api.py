@@ -326,3 +326,64 @@ def test_nft_profiles_requires_session(client: TestClient) -> None:
     response = client.post("/api/gifts/nft/profiles", headers=HEADERS, json={"limit": 10})
     assert response.status_code == 409
     assert "аккаунта" in response.text.lower()
+
+
+def test_nft_csv_export(client: TestClient) -> None:
+    response = client.get("/api/gifts/nft/export.csv?chain=wallet", headers=HEADERS)
+    assert response.status_code == 200
+    assert "text/csv" in response.headers["content-type"]
+    assert "slug;title" in response.text
+
+
+def test_backup_create_download_restore(client: TestClient) -> None:
+    created = client.post("/api/backup/create", headers=HEADERS).json()
+    assert created["name"].endswith(".zip")
+    assert created["size"] > 0
+    assert created["counts"]["targets"] >= 1
+
+    listed = client.get("/api/backup", headers=HEADERS).json()
+    assert listed["latest"]["name"] == created["name"]
+
+    download = client.get("/api/backup/download", headers=HEADERS)
+    assert download.status_code == 200
+    assert download.content[:2] == b"PK"
+
+    restored = client.post("/api/backup/restore", headers=HEADERS, content=download.content)
+    assert restored.status_code == 200
+    assert restored.json()["counts"]["targets"] >= 1
+
+
+def test_session_import_api(client: TestClient) -> None:
+    import base64
+    import os
+
+    from telethon.crypto import AuthKey
+    from telethon.sessions import SQLiteSession
+
+    path = Path(client.app.state.hd.settings.home) / "upload-src.session"
+    session = SQLiteSession(str(path))
+    session.set_dc(2, "149.154.167.51", 443)
+    session.auth_key = AuthKey(os.urandom(256))
+    session.save()
+    payload = path.read_bytes()
+    path.unlink()
+
+    response = client.post(
+        "/api/sessions/import",
+        headers=HEADERS,
+        json={
+            "filename": "uploaded.session",
+            "content_b64": base64.b64encode(payload).decode(),
+        },
+    )
+    assert response.status_code == 200, response.text
+    imported = response.json()["imported"]
+    assert imported and imported[0]["name"] == "uploaded"
+
+    bad = client.post(
+        "/api/sessions/import",
+        headers=HEADERS,
+        json={"filename": "bad.session", "content_b64": base64.b64encode(b"nope").decode()},
+    )
+    assert bad.status_code == 400
+    assert "сесси" in bad.text.lower()

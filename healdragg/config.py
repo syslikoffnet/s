@@ -98,6 +98,7 @@ class Settings:
     alert_push: bool = True
     alert_interval: int = 20
     autopilot_minutes: int = 0
+    auto_backup: bool = True
     auto_activity_on_scan: bool = False
 
     page_size: int = 15
@@ -158,6 +159,7 @@ class Settings:
             alert_push=_bool("ALERT_PUSH", True),
             alert_interval=_int("ALERT_INTERVAL", 20) or 20,
             autopilot_minutes=_int("AUTOPILOT_MINUTES", 0) or 0,
+            auto_backup=_bool("AUTO_BACKUP", True),
             auto_activity_on_scan=_bool("AUTO_ACTIVITY_ON_SCAN", False),
             page_size=_int("PAGE_SIZE", 15) or 15,
             title_limit=_int("TITLE_LIMIT", 15) or 15,

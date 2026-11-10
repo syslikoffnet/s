@@ -434,6 +434,55 @@ class Store:
                 self._conn.rollback()
                 raise
 
+    def backup_to(self, dest: str | Path) -> Path:
+        """Консистентная копия базы (sqlite backup API) — можно копировать на ходу."""
+        target_path = Path(dest)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._conn.commit()
+            target = sqlite3.connect(str(target_path))
+            try:
+                self._conn.backup(target)
+            finally:
+                target.close()
+        return target_path
+
+    def reopen(self) -> None:
+        """Переоткрывает соединение (после восстановления базы из копии)."""
+        with self._lock:
+            try:
+                self._conn.close()
+            except sqlite3.Error:
+                pass
+            self._conn = sqlite3.connect(
+                str(self.path), timeout=10.0, check_same_thread=False
+            )
+            self._conn.row_factory = sqlite3.Row
+            self._configure()
+            self._migrate()
+
+    def repair_session_paths(self, sessions_dir: str | Path) -> int:
+        """Чинит абсолютные пути к .session после переустановки/восстановления."""
+        directory = Path(sessions_dir)
+        fixed = 0
+        with self.tx() as conn:
+            rows = conn.execute("SELECT id, name, session_file FROM sessions").fetchall()
+            for row in rows:
+                current = row["session_file"] or ""
+                file_name = Path(current).name if current else f"{row['name']}.session"
+                target = directory / file_name
+                if not target.exists():
+                    fallback = directory / f"{row['name']}.session"
+                    if fallback.exists():
+                        target = fallback
+                if str(target) != current:
+                    conn.execute(
+                        "UPDATE sessions SET session_file = ? WHERE id = ?",
+                        (str(target), row["id"]),
+                    )
+                    fixed += 1
+        return fixed
+
     def close(self) -> None:
         with self._lock:
             try:

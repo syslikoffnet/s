@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import net.syslikoff.healdragg.EngineService
+import org.json.JSONObject
 
 enum class EngineState { Unknown, Starting, Ready, Stopped, Error }
 
@@ -431,6 +432,48 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             onDone(runCatching { client.refreshGifts(limit = limit, perProfile = perProfile) })
+        }
+    }
+
+    // ── аккаунты из файла и резервные копии ─────────────────────────────────
+
+    fun importSession(filename: String, payload: ByteArray, onDone: (Result<SessionImportResult>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { client.importSession(filename, payload) }
+            result.onSuccess { refresh() }
+            onDone(result)
+        }
+    }
+
+    fun createBackup(onDone: (Result<BackupInfo>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch { onDone(runCatching { client.createBackup() }) }
+    }
+
+    fun downloadBackup(onDone: (Result<ByteArray>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch { onDone(runCatching { client.downloadBackup() }) }
+    }
+
+    fun restoreBackup(payload: ByteArray, onDone: (Result<JSONObject>) -> Unit) {
+        val client = api ?: run {
+            onDone(Result.failure(ApiException(0, "Движок не запущен")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching { client.restoreBackup(payload) }
+            result.onSuccess { refresh() }
+            onDone(result)
         }
     }
 

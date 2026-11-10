@@ -771,3 +771,50 @@ fun importOutcomeFrom(state: JSONObject?): ImportOutcome? {
         rows = rows,
     )
 }
+
+
+/** Результат импорта готовой сессии/tdata. */
+data class ImportedSession(
+    val name: String,
+    val tgUserId: Long,
+    val dcId: Int,
+    val source: String?,
+)
+
+data class ImportError(val file: String, val error: String)
+
+data class SessionImportResult(
+    val imported: List<ImportedSession>,
+    val errors: List<ImportError>,
+) {
+    val summary: String
+        get() = when {
+            imported.isEmpty() && errors.isEmpty() -> "Ничего не импортировано"
+            errors.isEmpty() -> "Добавлено аккаунтов: ${imported.size}"
+            imported.isEmpty() -> "Не удалось: ${errors.first().error}"
+            else -> "Добавлено ${imported.size}, ошибок ${errors.size}"
+        }
+}
+
+/** Резервная копия: база + сессии в одном zip. */
+data class BackupInfo(
+    val name: String,
+    val size: Long,
+    val createdAt: Long,
+) {
+    val sizeLabel: String get() = humanSize(size)
+
+    companion object {
+        fun from(o: JSONObject): BackupInfo = BackupInfo(
+            name = o.str("name").orEmpty(),
+            size = o.num("size"),
+            createdAt = o.num("created_at"),
+        )
+    }
+}
+
+data class BackupPage(
+    val rows: List<BackupInfo>,
+    val latest: BackupInfo?,
+    val counts: JSONObject?,
+)

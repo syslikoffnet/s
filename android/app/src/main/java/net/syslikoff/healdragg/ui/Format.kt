@@ -128,3 +128,42 @@ fun mediaLabel(media: String?): String? = when (media?.lowercase()) {
     "contact" -> "контакт"
     else -> media
 }
+
+/** Размер файла по-человечески: 12,4 МБ. */
+fun humanSize(bytes: Long): String {
+    if (bytes <= 0) return "0 Б"
+    val units = listOf("Б", "КБ", "МБ", "ГБ")
+    var value = bytes.toDouble()
+    var index = 0
+    while (value >= 1024 && index < units.lastIndex) {
+        value /= 1024
+        index++
+    }
+    return if (index == 0) "${bytes} ${units[index]}"
+    else String.format(RU, "%.1f %s", value, units[index])
+}
+
+/** Имя выбранного документа (SAF отдаёт только uri). */
+fun fileNameFrom(context: Context, uri: Uri): String {
+    runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) {
+                val name = cursor.getString(index)
+                if (!name.isNullOrBlank()) return name
+            }
+        }
+    }
+    return uri.lastPathSegment?.substringAfterLast('/') ?: "file"
+}
+
+/** Читает выбранный документ целиком (для импорта сессий и восстановления копий). */
+fun readDocument(context: Context, uri: Uri): ByteArray? =
+    runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+
+/** Записывает файл в выбранное пользователем место (SAF). true — если получилось. */
+fun writeDocument(context: Context, uri: Uri, payload: ByteArray): Boolean =
+    runCatching {
+        context.contentResolver.openOutputStream(uri)?.use { it.write(payload) }
+        true
+    }.getOrDefault(false)

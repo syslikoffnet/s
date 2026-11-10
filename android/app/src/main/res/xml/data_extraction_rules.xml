@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: то же самое для облачной копии и переноса на новый телефон. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="engine/" />
+        <exclude domain="file" path="engine/logs/" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="engine/" />
+        <exclude domain="file" path="engine/logs/" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,5 +1,7 @@
 package net.syslikoff.healdragg.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -85,6 +87,20 @@ fun GiftsScreen(
     var nftSummary by remember { mutableStateOf(NftSummary()) }
     var nftOwnersList by remember { mutableStateOf<List<NftOwner>>(emptyList()) }
     var collections by remember { mutableStateOf<List<NftCollection>>(emptyList()) }
+    var nftQuery by rememberSaveable { mutableStateOf("") }
+    var nftSort by rememberSaveable { mutableStateOf("value") }
+    var nftHasMore by remember { mutableStateOf(false) }
+    var nftMoreBusy by remember { mutableStateOf(false) }
+    var pendingCsv by remember { mutableStateOf<ByteArray?>(null) }
+    val saveCsv = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        val payload = pendingCsv
+        pendingCsv = null
+        if (uri == null || payload == null) return@rememberLauncherForActivityResult
+        val ok = writeDocument(context, uri, payload)
+        onToast(if (ok) "CSV сохранён" else "Не удалось записать CSV")
+    }
 
     suspend fun reload() {
         val client = api ?: run {
@@ -100,16 +116,6 @@ fun GiftsScreen(
                 error = null
             }
             .onFailure { error = it.message ?: "Не удалось прочитать подарки" }
-        if (mode != 0) {
-            runCatching { client.giftsNft(chain = chainArg, limit = 200) }
-                .onSuccess {
-                    nftRows = it.rows
-                    nftSummary = it.summary
-                    collections = it.collections
-                    if (mode != 2) nftOwnersList = it.owners
-                }
-                .onFailure { error = it.message ?: "Не удалось прочитать NFT-инвентарь" }
-        }
         if (mode == 2) {
             runCatching { client.nftOwners(chain = chainArg, limit = 200) }
                 .onSuccess { nftOwnersList = it }
@@ -118,7 +124,51 @@ fun GiftsScreen(
         loading = false
     }
 
+    suspend fun loadNft(reset: Boolean) {
+        val client = api ?: return
+        val chainArg = chain.ifBlank { null }
+        val query = nftQuery.trim().ifBlank { null }
+        val offset = if (reset) 0 else nftRows.size
+        runCatching { client.giftsNft(chain = chainArg, q = query, sort = nftSort, limit = 200, offset = offset) }
+            .onSuccess {
+                nftSummary = it.summary
+                collections = it.collections
+                nftRows = if (reset) it.rows else nftRows + it.rows
+                nftHasMore = it.rows.size >= 200
+                nftOwnersList = it.owners
+                error = null
+            }
+            .onFailure { error = it.message ?: "Не удалось прочитать NFT-инвентарь" }
+    }
+
+    fun loadMoreNft() {
+        if (nftMoreBusy || !nftHasMore) return
+        nftMoreBusy = true
+        scope.launch {
+            loadNft(reset = false)
+            nftMoreBusy = false
+        }
+    }
+
+    fun exportNft() {
+        scope.launch {
+            val client = api ?: return@launch
+            onToast("Готовлю CSV…")
+            runCatching { client.nftCsv(chain = chain.ifBlank { null }, q = nftQuery.trim().ifBlank { null }, sort = nftSort) }
+                .onSuccess { payload ->
+                    pendingCsv = payload
+                    saveCsv.launch("healdragg-nft.csv")
+                }
+                .onFailure { onToast(it.message ?: "Не удалось выгрузить CSV") }
+        }
+    }
+
     LaunchedEffect(mode, chain, nftOnly) { reload() }
+    LaunchedEffect(mode, chain, nftQuery, nftSort) {
+        if (mode == 0) return@LaunchedEffect
+        if (nftQuery.isNotBlank()) delay(400)
+        loadNft(reset = true)
+    }
 
     LaunchedEffect(job?.key) {
         val key = job?.key ?: return@LaunchedEffect
@@ -139,6 +189,7 @@ fun GiftsScreen(
                     onToast("Готово: подарков ${fresh.found}")
                 }
                 reload()
+                loadNft(reset = true)
                 delay(1_500)
                 job = null
                 break
@@ -430,6 +481,55 @@ fun GiftsScreen(
                     }
                 }
 
+                item("nftSearch") {
+                    HdCard(contentPadding = PaddingValues(12.dp)) {
+                        HdTextField(
+                            value = nftQuery,
+                            onValueChange = { nftQuery = it.take(80) },
+                            label = "Поиск по базе NFT",
+                            hint = "ник, id, PlushPepe, адрес кошелька",
+                            singleLine = true,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf(
+                                "value" to "Дороже",
+                                "resell" to "Ресейл",
+                                "recent" to "Новые",
+                                "num" to "По номеру",
+                            ).forEach { (value, label) ->
+                                FilterChip(
+                                    selected = nftSort == value,
+                                    onClick = { nftSort = value },
+                                    label = { Text(label) },
+                                    colors = giftChipColors(),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { exportNft() },
+                                enabled = nftRows.isNotEmpty(),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Выгрузить CSV", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                            }
+                            OutlinedButton(
+                                onClick = { scope.launch { loadNft(reset = true) } },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Обновить", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+
                 item("nftSummary") {
                     Row(
                         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -601,6 +701,31 @@ fun GiftsScreen(
                 }
                 items(nftRows, key = { "nft-${it.slug}" }) { item ->
                     NftItemCard(item = item, onToast = onToast, onOpenProfile = onOpenProfile)
+                }
+
+                if (nftHasMore) {
+                    item("nftMore") {
+                        OutlinedButton(
+                            onClick = { loadMoreNft() },
+                            enabled = !nftMoreBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                        ) {
+                            if (nftMoreBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Hd.Accent2,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(
+                                if (nftMoreBusy) "Загружаю…" else "Показать ещё",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
                 }
             }
 

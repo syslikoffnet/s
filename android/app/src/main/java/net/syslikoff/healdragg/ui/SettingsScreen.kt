@@ -1,5 +1,7 @@
 package net.syslikoff.healdragg.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +30,8 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import net.syslikoff.healdragg.AutoBackup
 import net.syslikoff.healdragg.BuildConfig
 
 @Composable
@@ -75,6 +80,115 @@ fun SettingsScreen(
     var probeResult by remember { mutableStateOf<String?>(null) }
     var probing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var backupBusy by remember { mutableStateOf(false) }
+    var restoreBusy by remember { mutableStateOf(false) }
+    var backupLabel by remember { mutableStateOf<String?>(null) }
+    var pendingBackup by remember { mutableStateOf<ByteArray?>(null) }
+
+    val saveBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        val payload = pendingBackup
+        pendingBackup = null
+        if (uri == null || payload == null) return@rememberLauncherForActivityResult
+        val ok = writeDocument(context, uri, payload)
+        backupBusy = false
+        onToast(if (ok) "Копия сохранена в выбранный файл" else "Не удалось записать файл")
+        backupLabel = if (ok) "Сохранено: ${fileNameFrom(context, uri)}" else backupLabel
+    }
+
+    val pickBackup = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) {
+            restoreBusy = false
+            return@rememberLauncherForActivityResult
+        }
+        val payload = readDocument(context, uri)
+        if (payload == null) {
+            restoreBusy = false
+            onToast("Не удалось прочитать файл копии")
+            return@rememberLauncherForActivityResult
+        }
+        vm.restoreBackup(payload) { result ->
+            restoreBusy = false
+            result.onSuccess { counts ->
+                val sessions = counts.optInt("sessions")
+                val targets = counts.optInt("targets")
+                backupLabel = "Восстановлено: целей $targets, аккаунтов $sessions"
+                onToast("Копия восстановлена")
+                vm.refresh()
+                vm.refreshSessions()
+            }.onFailure { onToast(it.message ?: "Не удалось восстановить копию") }
+        }
+    }
+
+    fun saveBackupToFile() {
+        if (backupBusy) return
+        backupBusy = true
+        vm.downloadBackup { result ->
+            result.onSuccess { payload ->
+                pendingBackup = payload
+                runCatching {
+                    saveBackup.launch("healdragg-backup-${System.currentTimeMillis() / 1000}.zip")
+                }.onFailure {
+                    backupBusy = false
+                    onToast("Не удалось открыть сохранение файла")
+                }
+            }.onFailure {
+                backupBusy = false
+                onToast(it.message ?: "Не удалось собрать копию")
+            }
+        }
+    }
+
+    fun restoreFromDownloads() {
+        if (restoreBusy) return
+        restoreBusy = true
+        val found = AutoBackup.findLatest(context)
+        if (found == null) {
+            restoreBusy = false
+            onToast("В «Загрузках» копий Healdragg не нашлось")
+            return
+        }
+        val payload = readDocument(context, found.first)
+        if (payload == null) {
+            restoreBusy = false
+            onToast("Не удалось прочитать копию из «Загрузок»")
+            return
+        }
+        vm.restoreBackup(payload) { result ->
+            restoreBusy = false
+            result.onSuccess { counts ->
+                backupLabel = "Восстановлено из ${found.second}: целей ${counts.optInt("targets")}, " +
+                    "аккаунтов ${counts.optInt("sessions")}"
+                onToast("Копия из «Загрузок» восстановлена")
+                vm.refresh()
+                vm.refreshSessions()
+            }.onFailure { onToast(it.message ?: "Не удалось восстановить копию") }
+        }
+    }
+
+    fun restoreFromFile() {
+        if (restoreBusy) return
+        restoreBusy = true
+        runCatching {
+            pickBackup.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
+        }.onFailure {
+            restoreBusy = false
+            onToast("Не удалось открыть выбор файла")
+        }
+    }
+
+    LaunchedEffect(vm.api, vm.engine) {
+        val client = vm.api ?: return@LaunchedEffect
+        runCatching { client.backups() }.onSuccess { page ->
+            page.latest?.let { latest ->
+                backupLabel = "Последняя копия: ${latest.name} · ${latest.sizeLabel}"
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().imePadding(),
@@ -403,6 +517,120 @@ fun SettingsScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = Hd.Accent, contentColor = Hd.Black),
                     modifier = Modifier.heightIn(min = 44.dp),
                 ) { Text("Сохранить ключи") }
+            }
+        }
+
+        item("label-data") { SectionLabel("Данные и аккаунты") }
+        item("backup") {
+            HdCard {
+                Text(
+                    "Резервная копия",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Hd.Text,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "В копию входит всё: цели, база чатов, лента, подарки, NFT-инвентарь и сами " +
+                        "аккаунты Telegram. После переустановки просто восстановите файл — логиниться " +
+                        "заново не нужно.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Hd.Muted,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Приложение само делает копии при запуске движка (хранится 5 последних). " +
+                        "Чтобы данные пережили удаление приложения, сохраните копию в «Загрузки» " +
+                        "или на диск.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                )
+                backupLabel?.let { label ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Hd.Accent2,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { saveBackupToFile() },
+                    enabled = !backupBusy && !restoreBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Hd.Accent,
+                        contentColor = Hd.Black,
+                    ),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                ) {
+                    if (backupBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = Hd.Black,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(
+                            Icons.Filled.Save,
+                            contentDescription = null,
+                            tint = Hd.Black,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(if (backupBusy) "Собираю копию…" else "Сохранить копию в файл")
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { restoreFromFile() },
+                    enabled = !backupBusy && !restoreBusy,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                ) {
+                    if (restoreBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = Hd.Accent2,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = Hd.Accent2,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        if (restoreBusy) "Восстанавливаю…" else "Восстановить из копии",
+                        color = Hd.Accent2,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                TextButton(
+                    onClick = { restoreFromDownloads() },
+                    enabled = !backupBusy && !restoreBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "Восстановить последнюю копию из «Загрузок»",
+                        color = Hd.Accent2,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                Text(
+                    "Приложение раз в 12 часов само кладёт копию в «Загрузки/Healdragg» — " +
+                        "этот файл переживает удаление приложения. Аккаунты грузятся отдельно: " +
+                        "«Аккаунты → Загрузить .session / tdata.zip».",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                )
             }
         }
 

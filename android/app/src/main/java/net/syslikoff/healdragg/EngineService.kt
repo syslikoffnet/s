@@ -93,6 +93,11 @@ class EngineService : Service() {
             )
             prefs.edit().putString(KEY_STATE, STATE_READY).apply()
             updateNotification(getString(R.string.engine_on))
+            // Копия в «Загрузки»: она переживёт даже удаление приложения.
+            Thread {
+                Thread.sleep(20_000)
+                runCatching { AutoBackup.maybeExport(applicationContext) }
+            }, "healdragg-autobackup-start").start()
         } catch (exc: Throwable) {
             val message = exc.message?.take(400) ?: exc.toString().take(400)
             prefs.edit()

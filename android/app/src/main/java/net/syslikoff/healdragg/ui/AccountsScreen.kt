@@ -24,6 +24,9 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -44,6 +47,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -68,6 +72,31 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
     var error by remember { mutableStateOf<String?>(null) }
     var doneHandle by remember { mutableStateOf<String?>(null) }
     var toDelete by remember { mutableStateOf<SessionInfo?>(null) }
+    var importing by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val pickSession = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val payload = readDocument(context, uri)
+        if (payload == null) {
+            onToast("Не удалось прочитать файл")
+            return@rememberLauncherForActivityResult
+        }
+        val name = fileNameFrom(context, uri)
+        importing = true
+        error = null
+        vm.importSession(name, payload) { result ->
+            importing = false
+            result.onSuccess { outcome ->
+                onToast(outcome.summary)
+                if (outcome.imported.isNotEmpty()) vm.refreshSessions()
+                if (outcome.imported.isEmpty() && outcome.errors.isNotEmpty()) {
+                    error = outcome.errors.first().error
+                }
+            }.onFailure { error = it.message ?: "Не удалось импортировать аккаунт" }
+        }
+    }
 
     fun reset() {
         flowId?.let(vm::cancelLogin)
@@ -192,6 +221,71 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                             "Номер и код обрабатывает движок на этом телефоне — они не уходят на сторонние серверы.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Hd.Muted,
+                    )
+                }
+            }
+
+            item("import") {
+                HdCard {
+                    Text(
+                        "Импорт готового аккаунта",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Уже есть сессия? Загрузите файл .session (Telethon), .json (StringSession) " +
+                            "или архив tdata из Telegram Desktop — вход по коду не понадобится. " +
+                            "Аккаунт сохранится в приложении и попадёт в резервную копию.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Hd.Muted,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                pickSession.launch(
+                                    arrayOf(
+                                        "application/octet-stream",
+                                        "application/zip",
+                                        "application/json",
+                                        "*/*",
+                                    )
+                                )
+                            }.onFailure { onToast("Не удалось открыть выбор файла") }
+                        },
+                        enabled = !importing,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                    ) {
+                        if (importing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Hd.Accent2,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        } else {
+                            Icon(
+                                Icons.Filled.UploadFile,
+                                contentDescription = null,
+                                tint = Hd.Accent2,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(
+                            if (importing) "Импортирую…" else "Загрузить .session / tdata.zip",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "tdata: заархивируйте папку tdata целиком в zip (внутри должен быть key_datas). " +
+                            "Аккаунт с паролем на tdata нужно сначала разархивировать в Telegram Desktop.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Dim,
                     )
                 }
             }

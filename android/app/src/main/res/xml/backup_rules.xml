@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 и ниже: в облачную копию попадает движок целиком (база, сессии,
+     копии, ключи), кроме логов. Восстановление возвращает аккаунты и базу. -->
+<full-backup-content>
+    <include domain="file" path="engine/" />
+    <exclude domain="file" path="engine/logs/" />
+</full-backup-content>

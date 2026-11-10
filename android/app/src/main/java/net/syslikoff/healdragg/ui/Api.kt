@@ -6,6 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import android.util.Base64
 import java.net.URLEncoder
 
 class ApiException(val code: Int, override val message: String) : Exception(message)
@@ -214,6 +215,62 @@ class Api(private val baseUrl: String, private val token: String) {
         return jsonObjects(obj(path).arr("rows")).map(NftOwner::from)
     }
 
+    /** Выгрузка NFT-инвентаря в CSV (для Excel/Sheets). */
+    suspend fun nftCsv(chain: String? = null, q: String? = null, sort: String = "value"): ByteArray {
+        val path = buildString {
+            append("api/gifts/nft/export.csv?sort=$sort&limit=100000")
+            if (!chain.isNullOrBlank()) append("&chain=$chain")
+            if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
+        }
+        return raw(path, "GET", null, "text/csv")
+    }
+
+    // ── аккаунты и резервные копии ──────────────────────────────────────────
+
+    suspend fun importSession(filename: String, payload: ByteArray): SessionImportResult {
+        val body = JSONObject()
+            .put("filename", filename)
+            .put("content_b64", Base64.encodeToString(payload, Base64.NO_WRAP))
+        val data = obj("api/sessions/import", "POST", body, IMPORT_TIMEOUT)
+        val imported = jsonObjects(data.arr("imported")).map {
+            ImportedSession(
+                name = it.str("name").orEmpty(),
+                tgUserId = it.num("tg_user_id"),
+                dcId = it.int("dc_id"),
+                source = it.str("source"),
+            )
+        }
+        val errors = jsonObjects(data.arr("errors")).map {
+            ImportError(file = it.str("file").orEmpty(), error = it.str("error").orEmpty())
+        }
+        return SessionImportResult(imported = imported, errors = errors)
+    }
+
+    suspend fun backups(): BackupPage {
+        val data = obj("api/backup")
+        val rows = jsonObjects(data.arr("backups")).map { BackupInfo.from(it) }
+        return BackupPage(
+            rows = rows,
+            latest = data.obj("latest")?.let { BackupInfo.from(it) },
+            counts = data.obj("counts"),
+        )
+    }
+
+    suspend fun createBackup(): BackupInfo =
+        BackupInfo.from(obj("api/backup/create", "POST", null, BACKUP_TIMEOUT))
+
+    suspend fun downloadBackup(): ByteArray = raw("api/backup/download", "GET", null, "application/zip")
+
+    suspend fun restoreBackup(payload: ByteArray): JSONObject {
+        val data = JSONObject(
+            String(
+                raw("api/backup/restore", "POST", payload, "application/zip", BACKUP_TIMEOUT),
+                Charsets.UTF_8,
+            )
+        )
+        return data.obj("counts") ?: JSONObject()
+    }
+
     suspend fun startNftProfiles(limit: Int = 200, depth: Int = 2): Job {
         val body = JSONObject().put("limit", limit).put("depth", depth)
         return Job.from(obj("api/gifts/nft/profiles", "POST", body))
@@ -327,6 +384,42 @@ class Api(private val baseUrl: String, private val token: String) {
 
     private suspend fun array(path: String): JSONArray = JSONArray(request(path))
 
+    private suspend fun raw(
+        path: String,
+        method: String = "GET",
+        body: ByteArray? = null,
+        contentType: String = "application/octet-stream",
+        timeoutMillis: Int = BACKUP_TIMEOUT,
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val url = URL(root + path)
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 5_000
+            readTimeout = timeoutMillis
+            if (token.isNotBlank()) setRequestProperty("X-Api-Token", token)
+        }
+        try {
+            if (body != null) {
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", contentType)
+                conn.outputStream.use { it.write(body) }
+            }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+            if (code !in 200..299) {
+                throw ApiException(code, humanError(code, String(bytes, Charsets.UTF_8)))
+            }
+            bytes
+        } catch (exc: ApiException) {
+            throw exc
+        } catch (exc: Exception) {
+            throw ApiException(0, exc.message ?: "движок недоступен")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private suspend fun request(
         path: String,
         method: String = "GET",
@@ -371,14 +464,21 @@ class Api(private val baseUrl: String, private val token: String) {
         const val PROFILE_TIMEOUT = 60_000
         // Живой добор сообщений: несколько чатов подряд, поэтому с запасом.
         const val LIVE_TIMEOUT = 35_000
+        // Импорт сессии/tdata: файл передаётся base64 в теле запроса.
+        const val IMPORT_TIMEOUT = 180_000
+        // Бэкап может быть большим: база + сессии.
+        const val BACKUP_TIMEOUT = 180_000
     }
 
     private fun humanError(code: Int, raw: String): String {
         val trimmed = raw.trim()
         if (trimmed.startsWith("{")) {
             runCatching {
-                val detail = JSONObject(trimmed).optString("detail", "")
-                if (detail.isNotBlank()) return detail
+                val json = JSONObject(trimmed)
+                for (key in listOf("error", "detail", "message")) {
+                    val value = json.optString(key, "")
+                    if (value.isNotBlank()) return value
+                }
             }
         }
         if (trimmed.isNotEmpty() && trimmed.length < 300) return trimmed

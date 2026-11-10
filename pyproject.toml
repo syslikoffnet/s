@@ -44,6 +44,8 @@ addopts = "-q"
 [tool.ruff]
 line-length = 110
 target-version = "py310"
+# Вендоренный opentele (MIT) не переписываем под наш стиль.
+extend-exclude = ["healdragg/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

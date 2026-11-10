@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hmac
+import io
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -25,6 +27,7 @@ from starlette.routing import Route
 
 from . import __version__
 from .activity import collect_activity
+from .backup import create_backup, list_backups, restore_backup
 from .config import Settings
 from .db import Store
 from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts
@@ -34,6 +37,7 @@ from .login import LoginError, LoginManager
 from .manual import import_groups, parse_batch
 from .profile import photo_base64, refresh_profile
 from .scan import bootstrap, resolve_and_store_target, scan_target
+from .session_import import decode_payload, import_upload_async
 from .textfmt import (
     render_account_chats,
     render_catalog,
@@ -233,11 +237,34 @@ async def _body(request: Request) -> dict[str, Any]:
 
 
 def _route(fn: Any) -> Any:
-    """JSON-ответ по умолчанию: dict/list → JSONResponse, Response — как есть."""
+    """JSON-ответ по умолчанию: dict/list → JSONResponse, Response — как есть.
+
+    Любое исключение превращается в понятный JSON: приложение показывает
+    текст ошибки, а не «internal error» без деталей.
+    """
 
     @wraps(fn)
     async def wrapper(request: Request) -> Any:
-        result = await fn(request)
+        try:
+            result = await fn(request)
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc), "ok": False}, status_code=400)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — последний рубеж
+            log.exception("api %s %s", request.method, request.url.path)
+            message = str(exc).strip() or exc.__class__.__name__
+            return JSONResponse(
+                {
+                    "error": f"Внутренняя ошибка: {message[:300]}",
+                    "kind": exc.__class__.__name__,
+                    "path": request.url.path,
+                    "ok": False,
+                },
+                status_code=500,
+            )
         if isinstance(result, Response):
             return result
         return JSONResponse(result)
@@ -251,6 +278,22 @@ def create_app(settings: Settings) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(_: Starlette):
+        repaired = state.store.repair_session_paths(settings.sessions_dir)
+        if repaired:
+            log.info("починил пути к сессиям: %s", repaired)
+        auto_backup: asyncio.Task | None = None
+        if settings.auto_backup:
+            async def _backup_once() -> None:
+                await asyncio.sleep(8)
+                try:
+                    created = await asyncio.to_thread(
+                        create_backup, state.store, 5, "auto"
+                    )
+                    log.info("авто-копия: %s (%s)", created["name"], created["size"])
+                except Exception:  # noqa: BLE001 — копия не должна ронять сервер
+                    log.exception("авто-копия не удалась")
+
+            auto_backup = asyncio.create_task(_backup_once(), name="auto-backup")
         autopilot_task: asyncio.Task | None = None
         if settings.autopilot_minutes > 0:
             from .autopilot import loop as autopilot_loop
@@ -262,6 +305,12 @@ def create_app(settings: Settings) -> Starlette:
         try:
             yield
         finally:
+            if auto_backup:
+                auto_backup.cancel()
+                try:
+                    await auto_backup
+                except asyncio.CancelledError:
+                    pass
             if autopilot_task:
                 autopilot_task.cancel()
                 try:
@@ -307,6 +356,73 @@ def create_app(settings: Settings) -> Starlette:
             }
             for s in state.store.list_sessions()
         ]
+
+    async def session_import(request: Request) -> dict[str, Any]:
+        """Импорт готового аккаунта: .session, StringSession .json или tdata.zip."""
+        guard(request)
+        body = await _body(request)
+        filename = str(body.get("filename") or "").strip() or "session.session"
+        content = body.get("content_b64")
+        if not isinstance(content, str) or not content:
+            raise HTTPException(400, "нужен файл: filename + content_b64")
+        try:
+            payload = decode_payload(content)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        try:
+            result = await import_upload_async(
+                filename, payload, state.store, settings.sessions_dir
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if result.get("imported"):
+            try:
+                await asyncio.to_thread(create_backup, state.store, keep=8, label="import")
+            except Exception:  # noqa: BLE001 — копия не должна ломать импорт
+                log.exception("бэкап после импорта не удался")
+        return result
+
+    async def backup_list(request: Request) -> dict[str, Any]:
+        guard(request)
+        rows = list_backups(state.store)
+        return {
+            "backups": rows,
+            "latest": rows[0] if rows else None,
+            "counts": {
+                **state.store.table_counts(),
+                "nft": state.store.nft_summary()["total"],
+            },
+            "db_bytes": state.store.path.stat().st_size if state.store.path.exists() else 0,
+        }
+
+    async def backup_create(request: Request) -> dict[str, Any]:
+        guard(request)
+        return await asyncio.to_thread(create_backup, state.store, keep=10, label="manual")
+
+    async def backup_download(request: Request) -> Response:
+        guard(request)
+        name = (request.query_params.get("name") or "").strip()
+        rows = list_backups(state.store)
+        if not rows:
+            created = await asyncio.to_thread(create_backup, state.store, keep=10, label="manual")
+            return FileResponse(created["path"], filename=created["name"])
+        chosen = next((row for row in rows if row["name"] == name), rows[0] if not name else None)
+        if chosen is None:
+            raise HTTPException(404, "копия не найдена")
+        return FileResponse(chosen["path"], filename=chosen["name"], media_type="application/zip")
+
+    async def backup_restore(request: Request) -> dict[str, Any]:
+        """Принимает zip копии телом запроса и восстанавливает базу и аккаунты."""
+        guard(request)
+        payload = await request.body()
+        if not payload:
+            raise HTTPException(400, "пустой файл копии")
+        try:
+            result = await asyncio.to_thread(restore_backup, payload, state.store)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        log.warning("восстановление из копии: %s", result)
+        return result
 
     async def session_start(request: Request) -> dict[str, Any]:
         guard(request)
@@ -664,6 +780,49 @@ def create_app(settings: Settings) -> Starlette:
             "rows": state.store.nft_owners(chain=chain, q=query, limit=limit, offset=offset),
             "summary": state.store.nft_summary(),
         }
+
+    async def gifts_nft_csv(request: Request) -> Response:
+        """Выгрузка найденных NFT в CSV — открывается в Excel/Sheets."""
+        guard(request)
+        chain = _q_chain(request)
+        query = (request.query_params.get("q") or "").strip() or None
+        sort = (request.query_params.get("sort") or "value").strip()
+        limit = _q_int(request, "limit", 5000, 1, 100_000)
+        rows = state.store.nft_items(
+            chain=chain, q=query, sort=sort, limit=limit, offset=0
+        )
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, delimiter=";")
+        writer.writerow([
+            "slug", "title", "num", "где_лежит", "owner_tg_id", "owner_username",
+            "owner_name", "owner_address", "gift_address", "value_amount",
+            "value_currency", "value_usd", "resell_amount", "issued", "total", "seen_at",
+        ])
+        for row in rows:
+            writer.writerow([
+                row.get("slug"),
+                row.get("title"),
+                row.get("num"),
+                "кошелёк" if row.get("on_chain") else "telegram",
+                row.get("owner_tg_id"),
+                row.get("owner_username"),
+                row.get("owner_name"),
+                row.get("owner_address"),
+                row.get("gift_address"),
+                row.get("value_amount"),
+                row.get("value_currency"),
+                row.get("value_usd"),
+                row.get("resell_amount"),
+                row.get("availability_issued"),
+                row.get("availability_total"),
+                row.get("seen_at"),
+            ])
+        body = buffer.getvalue().encode("utf-8-sig")
+        return Response(
+            body,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="healdragg-nft.csv"'},
+        )
 
     async def start_nft_chain(request: Request) -> dict[str, Any]:
         """Массовый обход коллекций уникальных подарков: добираем владельцев."""
@@ -1184,6 +1343,11 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/health", _route(health)),
         Route("/api/stats", _route(stats)),
         Route("/api/sessions", _route(sessions)),
+        Route("/api/sessions/import", _route(session_import), methods=["POST"]),
+        Route("/api/backup", _route(backup_list)),
+        Route("/api/backup/create", _route(backup_create), methods=["POST"]),
+        Route("/api/backup/download", _route(backup_download)),
+        Route("/api/backup/restore", _route(backup_restore), methods=["POST"]),
         Route("/api/session/start", _route(session_start), methods=["POST"]),
         Route("/api/session/code", _route(session_code), methods=["POST"]),
         Route("/api/session/password", _route(session_password), methods=["POST"]),
@@ -1206,6 +1370,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/graph", _route(gifts_graph)),
         Route("/api/gifts/nft", _route(gifts_nft)),
         Route("/api/gifts/nft/owners", _route(gifts_nft_owners)),
+        Route("/api/gifts/nft/export.csv", _route(gifts_nft_csv)),
         Route("/api/gifts/chain", _route(start_nft_chain), methods=["POST"]),
         Route("/api/gifts/nft/profiles", _route(start_nft_profiles), methods=["POST"]),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
