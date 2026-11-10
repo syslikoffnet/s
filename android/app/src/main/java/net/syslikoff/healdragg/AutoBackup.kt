@@ -1,5 +1,6 @@
 package net.syslikoff.healdragg
 
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
@@ -29,6 +30,7 @@ object AutoBackup {
     private const val PREFIX = "healdragg-backup-"
     private const val MIN_INTERVAL = 12 * 60 * 60 * 1000L
 
+    @SuppressLint("NewApi")
     fun maybeExport(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -37,6 +39,7 @@ object AutoBackup {
         Thread({ export(context) }, "healdragg-autobackup").start()
     }
 
+    @SuppressLint("NewApi")
     private fun export(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val token = prefs.getString("api_token", "").orEmpty()
@@ -77,6 +80,7 @@ object AutoBackup {
     }
 
     /** Оставляет несколько последних копий, чтобы «Загрузки» не пухли. */
+    @SuppressLint("NewApi")
     private fun prune(context: Context, keep: Int) {
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
         val projection = arrayOf(
@@ -106,6 +110,7 @@ object AutoBackup {
      * Самая свежая копия в «Загрузках» — путь восстановления после переустановки.
      * Возвращает uri и человекочитаемое имя.
      */
+    @SuppressLint("NewApi")
     fun findLatest(context: Context): Pair<Uri, String>? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
@@ -135,6 +140,7 @@ object AutoBackup {
     }
 
     /** Есть ли вообще папка с копиями (для подсказок в настройках). */
+    @SuppressLint("NewApi")
     fun folderExists(context: Context): Boolean =
         File(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
