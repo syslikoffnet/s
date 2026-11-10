@@ -89,21 +89,22 @@ jobs:
           names = root.namelist()
           pyc = [n for n in names if n.endswith(".pyc")]
           py = [n for n in names if n.endswith(".py")]
-          zips = [n for n in names if n.startswith("assets/chaquopy/") and n.endswith(".zip")]
+          zips = [
+              n for n in names
+              if n.startswith("assets/chaquopy/") and n.endswith((".zip", ".imy"))
+          ]
           for name in zips:
               inner = zipfile.ZipFile(io.BytesIO(root.read(name)))
               pyc += [n for n in inner.namelist() if n.endswith(".pyc")]
               py += [n for n in inner.namelist() if n.endswith(".py")]
           engine_py = [n for n in py if "healdragg" in n]
-          interesting = [n for n in names if "chaquopy" in n or n.endswith(".zip") or n.endswith(".pyc")]
-          print("chaquopy zips:", zips)
-          print("interesting:", interesting[:40])
+          print("chaquopy archives:", zips)
           print(f"python: {len(pyc)} .pyc, {len(py)} .py, движок .py: {len(engine_py)}")
           if engine_py:
               print("\n".join(engine_py[:10]))
               raise SystemExit("в APK попали .py исходники движка")
           if not pyc:
-              print("ПРЕДУПРЕЖДЕНИЕ: .pyc не найдены по текущему шаблону")
+              raise SystemExit("в APK нет .pyc движка")
           PY
           gh pr comment 1 --body-file /tmp/apk-check.txt || true
 
