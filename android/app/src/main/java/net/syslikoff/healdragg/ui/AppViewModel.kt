@@ -8,7 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.Job as CoroutineJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -67,7 +67,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val isLocal: Boolean
         get() = baseUrl == LOCAL_URL || baseUrl.startsWith(LOCAL_HOST)
 
-    private var pollJob: Job? = null
+    private var pollJob: CoroutineJob? = null
     private var firstLoad = true
 
     init {

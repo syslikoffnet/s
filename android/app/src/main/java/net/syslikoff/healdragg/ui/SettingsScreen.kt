@@ -275,6 +275,7 @@ fun EngineStateBadge(state: EngineState) {
 
 @Composable
 fun EngineLogDialog(text: String, onDismiss: () -> Unit, onToast: (String) -> Unit) {
+    val context = LocalContext.current
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Лог движка") },

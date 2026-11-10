@@ -282,6 +282,7 @@ private fun TabIcon(item: Tab, vm: AppViewModel) {
     }
 }
 
+@Composable
 private fun railColors() = androidx.compose.material3.NavigationRailItemDefaults.colors(
     selectedIconColor = Hd.Accent,
     selectedTextColor = Hd.Accent,

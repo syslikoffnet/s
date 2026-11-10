@@ -24,8 +24,7 @@ class Api(private val baseUrl: String, private val token: String) {
         false
     }
 
-    suspend fun targets(): List<Target> =
-        array("api/targets").mapNotNull { it as? JSONObject }.map(Target::from)
+    suspend fun targets(): List<Target> = jsonObjects(array("api/targets")).map(Target::from)
 
     suspend fun stats(): Stats = Stats.from(obj("api/stats"))
 
@@ -95,8 +94,7 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun collect(tgId: Long): Job = Job.from(obj("api/targets/$tgId/activity/collect", "POST"))
 
-    suspend fun jobs(): List<Job> =
-        array("api/jobs").mapNotNull { it as? JSONObject }.map(Job::from)
+    suspend fun jobs(): List<Job> = jsonObjects(array("api/jobs")).map(Job::from)
 
     suspend fun cancelJob(key: String): Boolean {
         val safe = URLEncoder.encode(key, "UTF-8")
@@ -119,6 +117,14 @@ class Api(private val baseUrl: String, private val token: String) {
     }
 
     // ── транспорт ────────────────────────────────────────────────────────────
+
+    private fun jsonObjects(arr: JSONArray): List<JSONObject> {
+        val out = ArrayList<JSONObject>(arr.length())
+        for (i in 0 until arr.length()) {
+            arr.optJSONObject(i)?.let(out::add)
+        }
+        return out
+    }
 
     private suspend fun obj(
         path: String,
