@@ -78,6 +78,7 @@ fun SearchScreen(
     var nftBusy by remember { mutableStateOf(false) }
     var liveNft by remember { mutableStateOf<Pair<String, NftItem>?>(null) }
     var liveError by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var offerQuery by rememberSaveable { mutableStateOf<String?>(null) }
     val (normalized, canOpenProfile) = searchInput(query)
     val client = vm.api
     val pending = normalized != vm.targetQuery
@@ -125,6 +126,13 @@ fun SearchScreen(
         if (client != null && vm.targets.isEmpty() && !vm.targetPageLoading) vm.refresh(force = true)
     }
 
+    offerQuery?.let { slug ->
+        BackHandler { offerQuery = null }
+        OfferCandidatesScreen(vm, onBack = { offerQuery = null }, onOpenAccounts = onOpenAccounts,
+            onOpenProfile = { key -> offerQuery = null; onOpenProfile(key) }, initialQuery = slug)
+        return
+    }
+
     if (mapOpen) {
         BackHandler(enabled = !profileOpen) { onMapChange(false) }
         GlobalMapScreen(api = client, onBack = { onMapChange(false) }, onOpenProfile = onOpenProfile, onToast = onToast)
@@ -162,7 +170,7 @@ fun SearchScreen(
                 }, enabled = !nftBusy, modifier = Modifier.fillMaxWidth()) { Text(if (nftBusy) "Ищу NFT в Telegram…" else "Найти этот NFT в Telegram") }
             }
             liveError?.takeIf { it.first == normalized }?.let { failure -> item("nft-error") { ErrorBanner(failure.second) } }
-            liveNft?.takeIf { it.first == normalized }?.let { found -> item("nft-live") { NftItemCard(found.second, client, onToast, onOpenProfile) } }
+            liveNft?.takeIf { it.first == normalized }?.let { found -> item("nft-live") { NftItemCard(found.second, client, onToast, onOpenProfile, onOffer = { offerQuery = it }) } }
             if (!vm.hasSessions && vm.engine == EngineState.Ready) item("connect") {
                 OutlinedButton(onClick = onOpenAccounts, modifier = Modifier.fillMaxWidth()) { Text("Подключить аккаунт Telegram") }
             }
@@ -250,9 +258,9 @@ fun SearchScreen(
                     val result = giftResults
                     if (result != null && result.gifts.isEmpty() && result.nft.isEmpty()) item("gifts-empty") { Text("В сохранённых подарках не найдено.", color = Hd.Muted) }
                     if (result != null) {
-                        items(result.gifts, key = { "gift-${it.id}" }) { gift -> GiftCard(gift, client, onToast, onOpenProfile) }
+                        items(result.gifts, key = { "gift-${it.id}" }) { gift -> GiftCard(gift, client, onToast, onOpenProfile, onOffer = { offerQuery = it }) }
                         val slugs = result.gifts.mapNotNull { it.slug }.toSet()
-                        items(result.nft.filterNot { it.slug in slugs }, key = { "nft-${it.slug}" }) { nft -> NftItemCard(nft, client, onToast, onOpenProfile) }
+                        items(result.nft.filterNot { it.slug in slugs }, key = { "nft-${it.slug}" }) { nft -> NftItemCard(nft, client, onToast, onOpenProfile, onOffer = { offerQuery = it }) }
                     }
                 }
             }

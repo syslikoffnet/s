@@ -99,6 +99,7 @@ fun GiftsScreen(
     val api = vm.api
     val currentApi by rememberUpdatedState(api)
     var showOfferCandidates by rememberSaveable { mutableStateOf(false) }
+    var offerQuery by rememberSaveable { mutableStateOf("") }
     var selectedOwnerId by rememberSaveable { mutableStateOf<Long?>(null) }
     var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
     val owner = selectedOwner?.takeIf { it.tgId == selectedOwnerId } ?: selectedOwnerId?.let {
@@ -190,7 +191,7 @@ fun GiftsScreen(
 
     if (showOfferCandidates) {
         BackHandler { showOfferCandidates = false }
-        OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts, onOpenProfile = { key ->
+        OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts, initialQuery = offerQuery, onOpenProfile = { key ->
             showOfferCandidates = false
             onOpenProfile(key)
         })
@@ -198,7 +199,8 @@ fun GiftsScreen(
     }
     owner?.let {
         BackHandler { selectedOwner = null; selectedOwnerId = null }
-        OwnerGiftsScreen(vm, it, onBack = { selectedOwner = null; selectedOwnerId = null }, onToast = onToast, onOpenProfile = onOpenProfile)
+        OwnerGiftsScreen(vm, it, onBack = { selectedOwner = null; selectedOwnerId = null }, onToast = onToast, onOpenProfile = onOpenProfile,
+            onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
         return
     }
 
@@ -575,7 +577,8 @@ fun GiftsScreen(
                 }
 
                 items(rows, key = { it.id }) { gift ->
-                    GiftCard(gift = gift, api = api, onToast = onToast, onOpenProfile = onOpenProfile)
+                    GiftCard(gift = gift, api = api, onToast = onToast, onOpenProfile = onOpenProfile,
+                        onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
                 }
             }
 
@@ -746,7 +749,7 @@ fun GiftsScreen(
                         OutlinedButton(onClick = { mode = 3; taskSection = TASK_COLLECTIONS }, modifier = Modifier.weight(1f)) {
                             Text("По коллекциям", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                         }
-                        OutlinedButton(onClick = { showOfferCandidates = true }, modifier = Modifier.weight(1f)) {
+                        OutlinedButton(onClick = { offerQuery = ""; showOfferCandidates = true }, modifier = Modifier.weight(1f)) {
                             Text("Подбор офферов", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                         }
                     }
@@ -802,7 +805,8 @@ fun GiftsScreen(
                 }
                 if (!nftLoading && lastNftKey == nftKey()) {
                     items(nftRows, key = { "nft-${it.slug}" }) { item ->
-                        NftItemCard(item = item, api = api, onToast = onToast, onOpenProfile = onOpenProfile)
+                        NftItemCard(item = item, api = api, onToast = onToast, onOpenProfile = onOpenProfile,
+                            onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
                     }
                 }
 
@@ -1565,6 +1569,7 @@ internal fun GiftCard(
     api: Api?,
     onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
+    onOffer: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var detailsOpen by remember(gift.id) { mutableStateOf(false) }
@@ -1692,6 +1697,11 @@ internal fun GiftCard(
                                 style = MaterialTheme.typography.labelMedium,
                             )
                         }
+                        if (onOffer != null && !gift.slug.isNullOrBlank()) {
+                            TextButton(onClick = { onOffer(gift.slug) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                Text("Подбор оффера", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                         gift.nftLink?.let { link ->
                             TextButton(
                                 onClick = {
@@ -1741,6 +1751,7 @@ internal fun NftItemCard(
     api: Api?,
     onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
+    onOffer: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var detailsOpen by remember(item.slug) { mutableStateOf(false) }
@@ -1821,6 +1832,11 @@ internal fun NftItemCard(
                             color = Hd.Accent2,
                             style = MaterialTheme.typography.labelMedium,
                         )
+                    }
+                    if (onOffer != null) {
+                        TextButton(onClick = { onOffer(item.slug) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                            Text("Подбор оффера", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                     TextButton(
                         onClick = {
@@ -1934,6 +1950,7 @@ private fun NftOwnerCard(
 private fun OwnerGiftsScreen(
     vm: AppViewModel, owner: NftOwner, onBack: () -> Unit, onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
+    onOffer: (String) -> Unit,
 ) {
     val api = vm.api
     val scope = rememberCoroutineScope()
@@ -2092,7 +2109,7 @@ private fun OwnerGiftsScreen(
             Text("Для этого профиля пока нет сохранённых подарков.", color = Hd.Muted)
         }
         items(rows, key = { "gift-${it.id}" }) { gift ->
-            GiftCard(gift, api, onToast, onOpenProfile)
+            GiftCard(gift, api, onToast, onOpenProfile, onOffer)
         }
         if (rows.size < total) item("more-gifts") {
             OutlinedButton(onClick = {
@@ -2106,7 +2123,7 @@ private fun OwnerGiftsScreen(
         }
         val knownSlugs = rows.mapNotNull { it.slug }.toSet()
         items(inventory.filterNot { it.slug in knownSlugs }, key = { "inventory-${it.slug}" }) { nft ->
-            NftItemCard(nft, api, onToast, onOpenProfile)
+            NftItemCard(nft, api, onToast, onOpenProfile, onOffer)
         }
     }
 }

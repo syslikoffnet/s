@@ -184,7 +184,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
     fun ProfileScreen(tgId: Long) {
         screenStates.SaveableStateProvider("profile-$tgId") {
             TargetDetailScreen(vm = vm, tgId = tgId, onBack = backProfile,
-                onToast = toast, onOpenProfile = openProfile)
+                onToast = toast, onOpenProfile = openProfile, onOpenAccounts = { showAccounts = true })
         }
     }
 

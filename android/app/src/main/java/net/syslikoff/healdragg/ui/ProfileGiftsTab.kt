@@ -27,7 +27,8 @@ import kotlinx.coroutines.launch
 
 /** Только сохранённые наблюдения: отправленные подарки видны лишь в собранных профилях получателей. */
 @Composable
-fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (String) -> Unit) {
+fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (String) -> Unit,
+    onOffer: (String) -> Unit) {
     val api = vm.api
     val scope = rememberCoroutineScope()
     var direction by remember(tgId) { mutableStateOf("received") }
@@ -140,7 +141,7 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
         if (loading) LoadingBlock()
         if (!loading && pageError == null && rows.isEmpty()) Text("Записей пока нет; это не означает, что подарков нет.", color = Hd.Muted)
         rows.forEach { gift ->
-            GiftCard(gift, api, onToast, onOpenProfile)
+            GiftCard(gift, api, onToast, onOpenProfile, onOffer)
             if (!gift.nameHidden && gift.fromTgId > 0 && gift.fromTgId != tgId) {
                 OutlinedButton(onClick = { onOpenProfile(gift.fromTgId.toString()) }) { Text("Открыть указанного дарителя") }
             }

@@ -907,3 +907,16 @@ def test_nft_profiles_job_exposes_inner_progress_and_completion(client: TestClie
     assert job["finished"] and job["state"]["phase"] == "готово"
     assert job["state"]["done"] == 3 and job["state"]["total"] == 10
     assert job["state"]["found"] == 4 and job["state"]["errors"] == 1
+
+
+def test_offer_preview_is_authenticated_and_never_sends(client: TestClient):
+    store = client.app.state.hd.store
+    store.upsert_nft_item("Offer-1", owner_tg_id=17, owner_username="seller17", value_usd=1000)
+    params = {"currency": "star", "usd_per_unit": "0.02", "markup_percent": "10",
+              "max_per_offer": 1000, "total_budget": 1000, "max_offers": 5}
+    assert client.post("/api/offers/preview", json=params).status_code == 401
+    data = client.post("/api/offers/preview", json=params, headers=HEADERS)
+    assert data.status_code == 200
+    assert data.json()["rows"][0]["amount"] == 550
+    assert client.post("/api/offers/preview", json={**params, "send": True}, headers=HEADERS).status_code == 400
+    assert not client.app.state.hd.jobs

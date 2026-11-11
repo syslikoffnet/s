@@ -1,5 +1,7 @@
 package net.syslikoff.healdragg.ui
 
+import androidx.activity.compose.BackHandler
+
 import android.graphics.BitmapFactory
 import android.util.Base64
 
@@ -96,6 +98,7 @@ fun TargetDetailScreen(
     onBack: () -> Unit,
     onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
+    onOpenAccounts: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -104,6 +107,7 @@ fun TargetDetailScreen(
     var target by remember(tgId) { mutableStateOf(vm.targetByTgId(tgId)) }
     var error by remember(tgId) { mutableStateOf<String?>(null) }
     var tab by rememberSaveable(tgId) { mutableStateOf(DetailTab.Chats) }
+    var offerQuery by rememberSaveable(tgId) { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -271,6 +275,13 @@ fun TargetDetailScreen(
                     loadChats(reset = false)
                 }
             }
+    }
+
+    offerQuery?.let { slug ->
+        BackHandler { offerQuery = null }
+        OfferCandidatesScreen(vm, onBack = { offerQuery = null }, onOpenAccounts = onOpenAccounts,
+            onOpenProfile = { key -> offerQuery = null; onOpenProfile(key) }, initialQuery = slug)
+        return
     }
 
     LazyColumn(
@@ -688,7 +699,7 @@ fun TargetDetailScreen(
                 GraphTab(api = api, tgId = tgId, onToast = onToast, onOpenProfile = onOpenProfile)
             }
             DetailTab.Gifts -> item("profile-gifts") {
-                ProfileGiftsTab(vm, tgId, onToast, onOpenProfile)
+                ProfileGiftsTab(vm, tgId, onToast, onOpenProfile, onOffer = { offerQuery = it })
             }
         }
     }

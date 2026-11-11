@@ -37,11 +37,13 @@ import java.math.BigDecimal
 
 /** Только локальный предварительный просмотр. Отправка предложений не реализована. */
 @Composable
-fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (String) -> Unit, onOpenAccounts: () -> Unit) {
+fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (String) -> Unit,
+    onOpenAccounts: () -> Unit, initialQuery: String = "") {
     val api = vm.api
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    var query by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable(initialQuery) { mutableStateOf(initialQuery) }
+    var exactSlug by rememberSaveable(initialQuery) { mutableStateOf(initialQuery.isNotBlank()) }
     var maxCount by rememberSaveable { mutableStateOf("") }
     var minimum by rememberSaveable { mutableStateOf("") }
     var backdrop by rememberSaveable { mutableStateOf("") }
@@ -56,10 +58,20 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
     var busy by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var currency by rememberSaveable { mutableStateOf("star") }
+    var usdRate by rememberSaveable { mutableStateOf("") }
+    var markup by rememberSaveable { mutableStateOf("0") }
+    var perOffer by rememberSaveable { mutableStateOf("") }
+    var budget by rememberSaveable { mutableStateOf("") }
+    var maxOffers by rememberSaveable { mutableStateOf("5") }
+    var planJson by rememberSaveable { mutableStateOf<String?>(null) }
+    val plan = remember(planJson) { planJson?.let { JSONObject(it) } }
+    var planBusy by remember { mutableStateOf(false) }
 
     fun filters(): JSONObject {
         val body = JSONObject().put("query", query.trim()).put("location", location)
             .put("gender", gender).put("country", country).put("backdrop", backdrop.trim()).put("limit", 40)
+        if (exactSlug && query.trim() == initialQuery) body.put("slug_exact", initialQuery)
         if (maxCount.isNotBlank()) {
             val count = maxCount.trim().toIntOrNull()
             require(count != null && count in 0..1_000_000) { "Введите целое число NFT от 0 до 1000000" }
@@ -108,6 +120,31 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
         }
     }
 
+    fun preview() {
+        if (planBusy) return
+        val client = api ?: run { error = "Движок не запущен"; return }
+        val body = try {
+            val currentFilters = filters().apply { remove("limit") }
+            val per = perOffer.toIntOrNull() ?: throw IllegalArgumentException("Укажите максимум на NFT")
+            val total = budget.toIntOrNull() ?: throw IllegalArgumentException("Укажите общий бюджет")
+            val count = maxOffers.toIntOrNull() ?: throw IllegalArgumentException("Укажите количество")
+            JSONObject().put("filters", currentFilters).put("currency", currency)
+                .put("usd_per_unit", usdRate.trim().replace(',', '.'))
+                .put("markup_percent", markup.trim().replace(',', '.'))
+                .put("max_per_offer", per).put("total_budget", total).put("max_offers", count)
+                .put("one_per_owner", true)
+        } catch (e: IllegalArgumentException) { error = e.message; return }
+        planBusy = true
+        planJson = null
+        error = null
+        scope.launch {
+            try { planJson = client.offerPreview(body).toString() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось рассчитать план" }
+            finally { planBusy = false }
+        }
+    }
+
     LaunchedEffect(api) { if (api != null && !loaded) load(true) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -123,7 +160,8 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 TextButton(onClick = onOpenAccounts) { Text("Бизнес-бот @echidbot: проверить или подключить") }
                 Text("Откройте карточку нужного аккаунта и проверьте бота. Подключение требует отдельного согласия и само по себе не отправляет предложения.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.height(8.dp))
-                HdTextField(query, { query = it }, "Владелец или NFT", hint = "Имя, @ник, ID или название")
+                HdTextField(query, { query = it; exactSlug = false }, "Владелец или NFT", hint = "Имя, @ник, ID или название")
+                if (exactSlug) Text("Только выбранный NFT. Измените поиск, чтобы расширить выборку.", color = Hd.Accent, style = MaterialTheme.typography.labelSmall)
                 HdTextField(maxCount, { maxCount = it }, "Не больше NFT в базе", hint = "Например, 1 или 2", keyboard = KeyboardType.Number)
                 TextButton(onClick = { advancedOpen = !advancedOpen }) {
                     Text(if (advancedOpen) "Скрыть дополнительные фильтры" else "Дополнительные фильтры ▾")
@@ -150,7 +188,45 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 Text("Число NFT — только найденное в базе, не полный инвентарь. Пол и страна — предположения по имени. Адрес не доказывает владельца, отсутствие адреса не доказывает владение в Telegram. Оценка и владелец могут устареть.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
+        item("plan-settings") {
+            HdCard {
+                Text("Автоподбор партии · черновик", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                Text("Подбирает по фильтрам выше, не более одного NFT на владельца. Это не отправка и не актуальная цена.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = currency == "star", onClick = { currency = "star" }, label = { Text("star") })
+                    FilterChip(selected = currency == "gram", onClick = { currency = "gram" }, label = { Text("gram") })
+                }
+                HdTextField(usdRate, { usdRate = it }, "USD за 1 $currency", hint = "Укажите курс вручную", keyboard = KeyboardType.Decimal)
+                HdTextField(markup, { markup = it }, "Добавить к оценке, %", keyboard = KeyboardType.Decimal)
+                HdTextField(perOffer, { perOffer = it }, "Максимум за один NFT, $currency", keyboard = KeyboardType.Number)
+                HdTextField(budget, { budget = it }, "Общий лимит партии, $currency", keyboard = KeyboardType.Number)
+                HdTextField(maxOffers, { maxOffers = it }, "Максимум предложений", keyboard = KeyboardType.Number)
+                Text("Цена округляется вверх до целых единиц. Записи без оценки или username пропускаются. Курс и оценка могут устареть.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+                Button(onClick = { preview() }, enabled = !planBusy, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (planBusy) "Подбираю…" else "Рассчитать черновик")
+                }
+            }
+        }
         error?.let { message -> item("error") { Text(message, color = Hd.Bad) } }
+        plan?.let { draft ->
+            val draftRows = draft.arr("rows")
+            item("plan-summary") {
+                HdCard {
+                    Text("Черновик: ${draftRows.length()} · сумма ${draft.optLong("total_amount")} ${draft.optString("currency")}", color = Hd.Text, style = MaterialTheme.typography.titleMedium)
+                    Text("${draft.optString("notice")} Перед ручной отправкой в @echidbot проверьте каждый NFT, продавца, сумму и курс. Черновик отражает параметры на момент расчёта.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+                    Text("Проверено записей: ${draft.optInt("examined")}" + if (draft.optBoolean("truncated")) " · выборка ограничена" else "", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                    val skipped = draft.optJSONObject("skipped")
+                    if (skipped != null) Text("Пропущено: без цены ${skipped.optInt("no_price")}, без username ${skipped.optInt("no_username")}, повтор владельца ${skipped.optInt("same_owner")}, выше лимита ${skipped.optInt("over_per_offer")}, не вошло в бюджет ${skipped.optInt("over_budget")}, некорректная ссылка ${skipped.optInt("invalid_slug")}", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            items((0 until draftRows.length()).mapNotNull { draftRows.optJSONObject(it) }, key = { "plan-${it.optString("slug")}" }) { row ->
+                HdCard {
+                    Text("${row.optString("slug")} · @${row.optString("owner_username")}", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
+                    Text("Черновик: ${row.optLong("amount")} ${row.optString("currency")} · старая оценка $${BigDecimal.valueOf(row.optLong("value_usd_cents"), 2).toPlainString()}", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(row.optString("command"))) }) { Text("Скопировать команду для проверки") }
+                }
+            }
+        }
         if (loaded && rows.isEmpty()) item("empty") { Text("Подходящих наблюдений нет", color = Hd.Muted) }
         items(rows, key = { it.optString("slug") }) { row ->
             val slug = row.optString("slug")

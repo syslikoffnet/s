@@ -1696,6 +1696,14 @@ def create_app(settings: Settings) -> Starlette:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    async def offer_plan(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        try:
+            return await _safe_io(offers.preview_batch, state.store, body)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -2184,6 +2192,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/profile/refresh", _route(refresh_target_profile), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
         Route("/api/offers/candidates", _route(offer_candidates), methods=["POST"]),
+        Route("/api/offers/preview", _route(offer_plan), methods=["POST"]),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),
