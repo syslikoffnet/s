@@ -352,7 +352,13 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun giftArt(giftId: Long): ByteArray =
         raw("api/gifts/art/$giftId", timeoutMillis = 45_000)
 
-    suspend fun giftRuns(): List<JSONObject> = jsonObjects(obj("api/gifts/runs").arr("rows"))
+    suspend fun giftRuns(limit: Int = 100): List<JSONObject> =
+        jsonObjects(obj("api/gifts/runs?attention=true&limit=$limit").arr("rows"))
+
+    suspend fun giftRunIssues(id: Long, offset: Int): Pair<List<JSONObject>, Int> {
+        val data = obj("api/gifts/runs/$id/issues?limit=25&offset=$offset")
+        return jsonObjects(data.arr("rows")) to data.int("total")
+    }
 
     suspend fun resumeGiftRun(id: Long): Job = Job.from(obj("api/gifts/runs/$id/resume", "POST"))
 

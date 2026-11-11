@@ -1326,6 +1326,8 @@ class Store:
                     status = "hidden" if row["is_nft"] else "hidden_or_sold"
                     conn.execute("UPDATE gifts SET presence = ? WHERE id = ?", (status, row["id"]))
             conn.execute("DELETE FROM gift_heavy_profiles WHERE owner_tg_id = ?", (owner,))
+            conn.execute("UPDATE gift_crawl_queue SET state = 'done', error = NULL "
+                         "WHERE tg_id = ? AND state = 'deferred'", (owner,))
             conn.execute(
                 "INSERT INTO gift_profile_state(owner_tg_id, completed_at) VALUES (?, ?) "
                 "ON CONFLICT(owner_tg_id) DO UPDATE SET completed_at = excluded.completed_at",
@@ -1357,9 +1359,22 @@ class Store:
     def gift_crawl(self, run_id: int) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM gift_crawl_runs WHERE id = ?", (run_id,))
 
-    def gift_crawls(self, statuses: tuple[str, ...] = ("running", "paused", "error")) -> list[dict[str, Any]]:
+    def gift_crawls(self, statuses: tuple[str, ...] = ("running", "paused", "error"), *,
+                    limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
         marks = ",".join("?" for _ in statuses)
-        return self.query(f"SELECT * FROM gift_crawl_runs WHERE status IN ({marks}) ORDER BY id DESC", statuses)
+        sql = f"SELECT * FROM gift_crawl_runs WHERE status IN ({marks}) ORDER BY id DESC"
+        if limit is None:
+            return self.query(sql, statuses)
+        return self.query(sql + " LIMIT ? OFFSET ?", (*statuses, max(1, min(limit, 500)), max(0, offset)))
+
+    def gift_crawls_needing_attention(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT * FROM gift_crawl_runs AS r WHERE r.status IN ('running', 'error') "
+            "OR (r.status = 'paused' AND r.initialized = 0) "
+            "OR (r.status IN ('paused', 'done') AND EXISTS (SELECT 1 FROM gift_crawl_queue AS q "
+            "WHERE q.run_id = r.id AND q.state IN ('pending', 'unavailable', 'deferred'))) "
+            "ORDER BY r.id DESC LIMIT ? OFFSET ?", (max(1, min(limit, 500)), max(0, offset)),
+        )
 
     def gift_crawl_status(self, run_id: int, status: str, error: str | None = None) -> None:
         with self.tx() as conn:
@@ -1376,6 +1391,14 @@ class Store:
             conn.execute(
                 """INSERT INTO gift_crawl_queue(run_id, tg_id, username, access_hash, level)
                    VALUES (?, ?, ?, ?, ?) ON CONFLICT(run_id, tg_id) DO UPDATE SET
+                   state=CASE WHEN state = 'unavailable' AND
+                       ((excluded.username IS NOT NULL AND excluded.username IS NOT username) OR
+                        (excluded.access_hash IS NOT NULL AND excluded.access_hash IS NOT access_hash))
+                       THEN 'pending' ELSE state END,
+                   error=CASE WHEN state = 'unavailable' AND
+                       ((excluded.username IS NOT NULL AND excluded.username IS NOT username) OR
+                        (excluded.access_hash IS NOT NULL AND excluded.access_hash IS NOT access_hash))
+                       THEN NULL ELSE error END,
                    username=coalesce(excluded.username, username),
                    access_hash=coalesce(excluded.access_hash, access_hash),
                    level=min(level, excluded.level)""",
@@ -1421,6 +1444,18 @@ class Store:
         return {"pending": counts.get("pending", 0), "done": counts.get("done", 0),
                 "deferred": counts.get("deferred", 0), "unavailable": counts.get("unavailable", 0),
                 "total": sum(counts.values())}
+
+    def gift_crawl_issues(self, run_id: int, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT tg_id, username, level, state, error FROM gift_crawl_queue "
+            "WHERE run_id = ? AND state IN ('unavailable', 'deferred') "
+            "ORDER BY CASE state WHEN 'unavailable' THEN 0 ELSE 1 END, level, tg_id LIMIT ? OFFSET ?",
+            (run_id, max(1, min(int(limit), 100)), max(0, int(offset))),
+        )
+
+    def gift_profile_deferred(self, owner: int) -> bool:
+        return bool(self.scalar("SELECT EXISTS(SELECT 1 FROM gift_heavy_profiles WHERE owner_tg_id = ?)",
+                                (owner,), 0))
 
     def gift_profile_known(self, owner: int) -> bool:
         return bool(self.scalar(

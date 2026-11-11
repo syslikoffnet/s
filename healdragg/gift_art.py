@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import io
+import json
 import logging
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +36,15 @@ def _document(data: bytes | None) -> Document | None:
 
 def _format(data: bytes) -> str | None:
     if data.startswith(b"\x1f\x8b"):
-        return "tgs"
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+                decoded = stream.read(8_000_001)
+            if len(decoded) > 8_000_000:
+                return None
+            content = json.loads(decoded)
+            return "tgs" if isinstance(content, dict) and isinstance(content.get("layers"), list) else None
+        except (OSError, EOFError, ValueError, RecursionError, zlib.error):
+            return None
     if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
         return "webp"
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -49,6 +61,7 @@ class GiftArt:
         self.pool = pool
         self._catalog_lock = asyncio.Lock()
         self._catalog_at = float("-inf")
+        self._catalog_retry_at = float("-inf")
         self._downloads = asyncio.Semaphore(3)
         self._locks: dict[int, asyncio.Lock] = {}
 
@@ -66,10 +79,15 @@ class GiftArt:
 
     async def _catalog(self, account: Any, *, force: bool = False) -> None:
         async with self._catalog_lock:
-            if time.monotonic() - self._catalog_at < (30 if force else 300):
+            now = time.monotonic()
+            if now < self._catalog_retry_at or now - self._catalog_at < (30 if force else 300):
                 return
             limiter = account.limiter or RateLimiter()
-            response = await limiter.call(lambda: account.client(GetStarGiftsRequest(hash=0)))
+            try:
+                response = await limiter.call(lambda: account.client(GetStarGiftsRequest(hash=0)))
+            except Exception:
+                self._catalog_retry_at = time.monotonic() + 30
+                raise
             for gift in getattr(response, "gifts", None) or []:
                 doc = getattr(gift, "sticker", None)
                 gift_id = getattr(gift, "id", None)

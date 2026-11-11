@@ -11,5 +11,5 @@
 * :mod:`healdragg.api`    — REST + веб-панель для Android-приложения.
 """
 
-__version__ = "1.9.6"
+__version__ = "1.9.7"
 __all__ = ["__version__"]

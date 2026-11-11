@@ -15,6 +15,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -85,38 +86,45 @@ internal fun RegularGiftArtwork(
 ) {
     val art by produceState<RegularArt?>(initialValue = null, key1 = api, key2 = giftId) {
         if (api == null || giftId <= 0) return@produceState
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                val bytes = api.giftArt(giftId)
-                if (bytes.size < 4 || bytes.size > 2_000_000) return@runCatching null
-                if (bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
-                    val json = java.util.zip.GZIPInputStream(bytes.inputStream()).use { stream ->
-                        val output = ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        while (true) {
-                            val n = stream.read(buffer)
-                            if (n < 0) break
-                            if (output.size() + n > 8_000_000) return@runCatching null
-                            output.write(buffer, 0, n)
+        var retryDelay = 15_000L
+        while (value == null) {
+            value = withContext(Dispatchers.IO) {
+                runCatching {
+                    val bytes = api.giftArt(giftId)
+                    if (bytes.size < 4 || bytes.size > 2_000_000) return@runCatching null
+                    if (bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+                        val json = java.util.zip.GZIPInputStream(bytes.inputStream()).use { stream ->
+                            val output = ByteArrayOutputStream()
+                            val buffer = ByteArray(8192)
+                            while (true) {
+                                val n = stream.read(buffer)
+                                if (n < 0) break
+                                if (output.size() + n > 8_000_000) return@runCatching null
+                                output.write(buffer, 0, n)
+                            }
+                            output.toByteArray()
                         }
-                        output.toByteArray()
+                        val composition = com.airbnb.lottie.LottieCompositionFactory
+                            .fromJsonInputStreamSync(json.inputStream(), "gift-$giftId").value
+                        composition?.let { RegularArt(composition = it) }
+                    } else {
+                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                        if (opts.outWidth <= 0 || opts.outHeight <= 0 || opts.outWidth > 4096 || opts.outHeight > 4096) {
+                            return@runCatching null
+                        }
+                        val sample = BitmapFactory.Options().apply {
+                            inSampleSize = maxOf(1, maxOf(opts.outWidth, opts.outHeight) / 512)
+                        }
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, sample)?.asImageBitmap()
+                        bitmap?.let { RegularArt(bitmap = it) }
                     }
-                    val composition = com.airbnb.lottie.LottieCompositionFactory
-                        .fromJsonInputStreamSync(json.inputStream(), "gift-$giftId").value
-                    composition?.let { RegularArt(composition = it) }
-                } else {
-                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-                    if (opts.outWidth <= 0 || opts.outHeight <= 0 || opts.outWidth > 4096 || opts.outHeight > 4096) {
-                        return@runCatching null
-                    }
-                    val sample = BitmapFactory.Options().apply {
-                        inSampleSize = maxOf(1, maxOf(opts.outWidth, opts.outHeight) / 512)
-                    }
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, sample)?.asImageBitmap()
-                    bitmap?.let { RegularArt(bitmap = it) }
-                }
-            }.getOrNull()
+                }.getOrNull()
+            }
+            if (value == null) {
+                delay(retryDelay)
+                retryDelay = (retryDelay * 2).coerceAtMost(120_000L)
+            }
         }
     }
     when {

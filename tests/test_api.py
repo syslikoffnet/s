@@ -535,3 +535,51 @@ def test_heavy_watch_requires_valid_session_and_cancels(client: TestClient, monk
     assert client.post(endpoint, headers=HEADERS, json={"session": "chosen"}).status_code == 409
     cancelled = client.post("/api/jobs/gifts%3Aheavy%3A991/cancel", headers=HEADERS)
     assert cancelled.status_code == 200 and cancelled.json()["ok"] is True
+
+
+def test_gift_runs_and_issue_details(client: TestClient):
+    store = client.app.state.hd.store  # type: ignore[attr-defined]
+    old = store.create_gift_crawl("old", 8, 50, 100)
+    store.gift_crawl_enqueue(old, 12, 1, "donor", 987654321)
+    store.gift_crawl_finish_item(old, 12, "unavailable", "нет доступа")
+    store.gift_crawl_status(old, "done")
+    newer = store.create_gift_crawl("other", 8, 50, 100)
+    store.gift_crawl_status(newer, "done")
+    # Завершённые обходы без проблем не прячут более ранние незавершённые.
+    runs = client.get("/api/gifts/runs?attention=true&limit=1", headers=HEADERS).json()["rows"]
+    assert runs[0]["id"] == old
+    assert client.get(f"/api/gifts/runs/{old}/issues").status_code == 401
+    response = client.get(f"/api/gifts/runs/{old}/issues?limit=1", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["rows"][0] == {
+        "tg_id": 12, "username": "donor", "level": 1, "state": "unavailable", "error": "нет доступа"
+    }
+    assert client.get("/api/gifts/runs/999999/issues", headers=HEADERS).status_code == 404
+
+
+def test_resume_prioritizes_pending_before_retrying_failures(client: TestClient, monkeypatch):
+    import asyncio
+
+    async def hold_crawl(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("healdragg.api.crawl_gifts", hold_crawl)
+    store = client.app.state.hd.store  # type: ignore[attr-defined]
+    store.add_session("active", "active.session")
+    run_id = store.create_gift_crawl("1", 8, 1, 100)
+    store.gift_crawl_enqueue(run_id, 1, 0)
+    store.gift_crawl_finish_item(run_id, 1, "unavailable", "попробовать позже")
+    store.gift_crawl_enqueue(run_id, 2, 1)
+    store.gift_crawl_status(run_id, "paused")
+    response = client.post(f"/api/gifts/runs/{run_id}/resume", headers=HEADERS)
+    assert response.status_code == 200
+    counts = store.gift_crawl_counts(run_id)
+    assert counts["pending"] == 1 and counts["unavailable"] == 1
+    assert store.gift_crawl_next(run_id)["tg_id"] == 2
+    assert client.post(f"/api/jobs/gifts:run:{run_id}/cancel", headers=HEADERS).status_code == 200
+
+    store.gift_crawl_finish_item(run_id, 2, "done")
+    assert client.post(f"/api/gifts/runs/{run_id}/resume", headers=HEADERS).status_code == 200
+    assert store.gift_crawl_counts(run_id)["pending"] == 1
+    assert store.gift_crawl_next(run_id)["tg_id"] == 1

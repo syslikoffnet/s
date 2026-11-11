@@ -311,3 +311,40 @@ async def test_scan_saves_original_sticker_reference(setup):
     client.pages[(1, "")] = page([ordinary])
     await scan(setup, 1)
     assert store.gift_sticker(44) == bytes(document)
+
+
+def test_unavailable_queue_retries_only_after_new_contact_info(store: Store):
+    run_id = store.create_gift_crawl("1", 8, 100, 100)
+    store.gift_crawl_enqueue(run_id, 20, 2)
+    store.gift_crawl_finish_item(run_id, 20, "unavailable", "нет данных")
+    store.gift_crawl_enqueue(run_id, 20, 1)
+    assert store.gift_crawl_counts(run_id)["unavailable"] == 1
+    store.gift_crawl_enqueue(run_id, 20, 1, "donor", 123)
+    assert store.gift_crawl_next(run_id)["tg_id"] == 20
+    assert store.gift_crawl_next(run_id)["level"] == 1
+    store.gift_crawl_finish_item(run_id, 20, "unavailable", "нет доступа")
+    store.gift_crawl_enqueue(run_id, 20, 1, "donor", 123)
+    assert store.gift_crawl_counts(run_id)["unavailable"] == 1
+
+
+async def test_known_heavy_profile_stays_deferred_until_completed(setup):
+    store, client, pool, settings = setup
+    store.defer_gift_profile(1, None, "Профиль", 2000)
+    client.pages[(1, "")] = page([])
+    run_id = store.create_gift_crawl("1", 8, 50, 100)
+    await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=50,
+                      run_id=run_id, skip_known=True)
+    assert store.gift_crawl_counts(run_id)["deferred"] == 1
+    assert client.calls == []
+    store.finish_gift_snapshot(1, set())
+    assert store.gift_crawl_counts(run_id)["deferred"] == 0
+    assert store.gift_crawl_counts(run_id)["done"] == 1
+
+
+async def test_duplicate_snapshot_is_not_marked_done(setup):
+    store, client, pool, settings = setup
+    client.pages[(1, "")] = page([gift(1), gift(1)], count=2)
+    run_id = store.create_gift_crawl("1", 8, 50, 100)
+    await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=50, run_id=run_id)
+    assert store.gift_crawl_counts(run_id)["unavailable"] == 1
+    assert not store.gift_profile_known(1)

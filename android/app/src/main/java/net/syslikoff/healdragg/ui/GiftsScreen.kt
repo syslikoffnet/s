@@ -98,7 +98,8 @@ fun GiftsScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
-    var savedRun by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var savedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var savedRunLimit by remember { mutableStateOf(100) }
     var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
     var summary by remember { mutableStateOf(GiftSummary()) }
     var loading by remember { mutableStateOf(true) }
@@ -230,17 +231,14 @@ fun GiftsScreen(
     }
 
     // При возврате на экран получаем состояние из движка, а не из remember.
-    LaunchedEffect(api) {
+    LaunchedEffect(api, savedRunLimit) {
         val client = api ?: return@LaunchedEffect
         while (true) {
             val active = runCatching { client.jobs().firstOrNull {
                 !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles")
             } }.getOrNull()
             if (job == null && active != null) job = active
-            savedRun = runCatching { client.giftRuns().firstOrNull {
-                it.optString("status") in listOf("paused", "error") ||
-                    (it.optString("status") == "done" && (it.optJSONObject("queue")?.optInt("unavailable") ?: 0) > 0)
-            } }.getOrNull()
+            runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
             delay(3_000)
         }
     }
@@ -250,7 +248,9 @@ fun GiftsScreen(
         val client = api ?: return@LaunchedEffect
         while (true) {
             delay(2_500)
-            val fresh = runCatching { client.jobs().firstOrNull { it.key == key } }.getOrNull()
+            val poll = runCatching { client.jobs().firstOrNull { it.key == key } }
+            if (poll.isFailure) continue  // временный сбой API не скрывает текущий обход
+            val fresh = poll.getOrNull()
             if (fresh == null) {
                 job = null
                 break
@@ -513,26 +513,27 @@ fun GiftsScreen(
                 }
             }
 
-            if (job == null) savedRun?.let { run ->
-                item("savedRun") {
-                    val counts = run.optJSONObject("queue")
-                    HdCard(contentPadding = PaddingValues(14.dp)) {
-                        Text("Сохранённый обход: ${run.optString("query")}", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "Готово: ${counts?.optInt("done") ?: 0} · в очереди: ${counts?.optInt("pending") ?: 0} · " +
-                                "недоступно: ${counts?.optInt("unavailable") ?: 0} · отложено: ${counts?.optInt("deferred") ?: 0}",
-                            style = MaterialTheme.typography.labelSmall, color = Hd.Muted,
-                        )
-                        run.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let {
-                            Text(it, style = MaterialTheme.typography.labelSmall, color = Hd.Bad)
+            items(
+                savedRuns.filter { it.optLong("id") != job?.state?.optLong("run_id") },
+                key = { "saved-run-${it.optLong("id")}" },
+            ) { run ->
+                GiftCrawlCard(
+                    run = run, api = api, canResume = !busy && job == null,
+                    onOpenProfile = onOpenProfile,
+                    onResume = {
+                        scope.launch {
+                            val client = api ?: return@launch
+                            runCatching { client.resumeGiftRun(run.optLong("id")) }
+                                .onSuccess { job = it; savedRuns = savedRuns.filterNot { row -> row.optLong("id") == run.optLong("id") } }
+                                .onFailure { error = it.message ?: "Не удалось продолжить обход" }
                         }
-                        OutlinedButton(onClick = {
-                            scope.launch {
-                                runCatching { api?.resumeGiftRun(run.optLong("id")) }
-                                    .onSuccess { job = it; savedRun = null }
-                                    .onFailure { error = it.message ?: "Не удалось продолжить обход" }
-                            }
-                        }) { Text("Продолжить и повторить недоступные") }
+                    },
+                )
+            }
+            if (savedRuns.size >= savedRunLimit && savedRunLimit < 500) {
+                item("more-saved-runs") {
+                    TextButton(onClick = { savedRunLimit = (savedRunLimit + 100).coerceAtMost(500) }) {
+                        Text("Показать ещё сохранённые обходы")
                     }
                 }
             }
@@ -1038,6 +1039,86 @@ fun GiftsScreen(
                 }
                 items(nftOwnersList, key = { "owner-${it.tgId}" }) { owner ->
                     NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = { selectedOwner = owner })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GiftCrawlCard(
+    run: org.json.JSONObject,
+    api: Api?,
+    canResume: Boolean,
+    onResume: () -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val runId = run.optLong("id")
+    val counts = run.optJSONObject("queue")
+    val problemCount = (counts?.optInt("unavailable") ?: 0) + (counts?.optInt("deferred") ?: 0)
+    var expanded by remember(runId) { mutableStateOf(false) }
+    var issues by remember(runId) { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var total by remember(runId) { mutableStateOf(0) }
+    var loading by remember(runId) { mutableStateOf(false) }
+    var issueError by remember(runId) { mutableStateOf<String?>(null) }
+    fun loadIssues(reset: Boolean) {
+        val client = api ?: return
+        if (loading) return
+        loading = true
+        scope.launch {
+            runCatching { client.giftRunIssues(runId, if (reset) 0 else issues.size) }
+                .onSuccess { (rows, count) ->
+                    issues = if (reset) rows else (issues + rows).distinctBy { it.optLong("tg_id") }
+                    total = count
+                    issueError = null
+                }
+                .onFailure { issueError = it.message ?: "Не удалось загрузить список" }
+            loading = false
+        }
+    }
+    HdCard(contentPadding = PaddingValues(14.dp)) {
+        Text("Сохранённый обход: ${run.optString("query")}", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Готово: ${counts?.optInt("done") ?: 0} · в очереди: ${counts?.optInt("pending") ?: 0} · " +
+                "недоступно: ${counts?.optInt("unavailable") ?: 0} · отложено: ${counts?.optInt("deferred") ?: 0}",
+            style = MaterialTheme.typography.labelSmall, color = Hd.Muted,
+        )
+        run.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = Hd.Bad)
+        }
+        val pending = counts?.optInt("pending") ?: 0
+        val unavailable = counts?.optInt("unavailable") ?: 0
+        if (run.optString("status") != "running" &&
+            (pending > 0 || unavailable > 0 || run.optString("status") in listOf("paused", "error"))) {
+            OutlinedButton(onClick = onResume, enabled = canResume) {
+                Text(if (pending > 0 || unavailable == 0) "Продолжить обход" else "Повторить недоступные")
+            }
+        }
+        if (problemCount > 0) {
+            TextButton(onClick = {
+                expanded = !expanded
+                if (expanded) loadIssues(reset = true)
+            }) { Text(if (expanded) "Скрыть список" else "Показать недоступные и отложенные") }
+        }
+        if (expanded) {
+            if (loading && issues.isEmpty()) Text("Загружаю список…", color = Hd.Muted)
+            issueError?.let { Text(it, color = Hd.Bad, style = MaterialTheme.typography.labelSmall) }
+            issues.forEach { issue ->
+                val id = issue.optLong("tg_id")
+                val username = issue.optString("username").takeIf { it.isNotBlank() && it != "null" }
+                val label = username?.let { "@$it · ID $id" } ?: "ID $id"
+                TextButton(onClick = { onOpenProfile(username?.let { "@$it" } ?: id.toString()) }) { Text(label) }
+                val reason = if (issue.optString("state") == "deferred") {
+                    "Отложен: профиль с большим числом подарков"
+                } else {
+                    issue.optString("error").takeIf { it.isNotBlank() && it != "null" } ?: "Профиль недоступен"
+                }
+                Text(reason, style = MaterialTheme.typography.labelSmall, color = Hd.Muted)
+            }
+            if (issues.size < total) {
+                TextButton(enabled = !loading, onClick = { loadIssues(reset = false) }) {
+                    Text(if (loading) "Загружаю…" else "Показать ещё (${issues.size} из $total)")
                 }
             }
         }

@@ -372,11 +372,13 @@ async def crawl_gifts(
                             queue.append((entity, level + 1))
                     except Exception as exc:  # noqa: BLE001
                         log.debug("даритель %s недоступен: %s", sender_id, exc)
+            deferred = store.gift_profile_deferred(owner_id)
             if run_id is not None:
-                store.gift_crawl_finish_item(run_id, owner_id, "done")
+                store.gift_crawl_finish_item(run_id, owner_id, "deferred" if deferred else "done")
             scanned += 1
             results.append({"owner_tg_id": owner_id, "owner_username": username,
-                            "owner_name": display, "level": level, "skipped_known": True})
+                            "owner_name": display, "level": level, "skipped_known": True,
+                            "deferred": deferred})
             if reporter is not None:
                 await reporter({"phase": f"известный профиль · {display}", "done": scanned,
                                 "total": min(max_profiles, scanned + len(queue)), "found": new_count})
@@ -559,8 +561,8 @@ async def crawl_gifts(
             store.touch_gifts(owner_id)
 
         if run_id is not None:
-            if not error and response is not None and not complete:
-                error = "Профиль прочитан не полностью: достигнут лимит или прервана выдача"
+            if not error and response is not None and (not complete or not snapshot_valid):
+                error = "Профиль прочитан не полностью или выдача содержит повторяющиеся записи"
             state_name = "unavailable" if error else ("deferred" if heavy_count is not None else "done")
             store.gift_crawl_finish_item(run_id, owner_id, state_name, error)
 

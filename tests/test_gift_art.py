@@ -96,3 +96,30 @@ def test_art_endpoint_auth_and_binary(tmp_path, monkeypatch):
         assert response.content == data
         assert response.headers["content-type"] == "application/x-tgsticker"
         assert client.get("/api/gifts/art/4321", headers={"X-Api-Token": "secret"}).status_code == 404
+
+
+async def test_broken_tgs_cache_is_refetched(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    client = FakeClient()
+    art = GiftArt(tmp_path, store, FakePool(client))
+    art.directory.mkdir()
+    (art.directory / "1234.tgs").write_bytes(b"\x1f\x8b\x08broken")
+    assert await art.get(1234) == (client.image, "tgs")
+    assert client.download_calls == 1
+    store.close()
+
+
+async def test_catalog_failure_has_a_cooldown(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+
+    class Offline(FakeClient):
+        async def __call__(self, request):
+            self.catalog_calls += 1
+            raise RuntimeError("нет сети")
+
+    client = Offline()
+    art = GiftArt(tmp_path, store, FakePool(client))
+    assert await art.get(1) is None
+    assert await art.get(2) is None
+    assert client.catalog_calls == 1
+    store.close()

@@ -1242,7 +1242,8 @@ def create_app(settings: Settings) -> Starlette:
         async def on_progress(progress: dict[str, Any]) -> None:
             counts = state.store.gift_crawl_counts(run_id)
             job.state = {**progress, "run_id": run_id, "queue": counts,
-                         "done": counts["done"], "total": counts["total"]}
+                         "done": counts["done"] + counts["unavailable"] + counts["deferred"],
+                         "total": counts["total"]}
 
         async def runner() -> None:
             try:
@@ -1258,7 +1259,8 @@ def create_app(settings: Settings) -> Starlette:
                 status = "paused" if counts["pending"] else "done"
                 state.store.gift_crawl_status(run_id, status)
                 job.state = {"phase": "остановлено по лимиту" if status == "paused" else "готово",
-                             "done": counts["done"], "total": counts["total"],
+                             "done": counts["done"] + counts["unavailable"] + counts["deferred"],
+                             "total": counts["total"],
                              "found": result["gifts"], "new": result["new"],
                              "queue": counts, "run_id": run_id}
             except asyncio.CancelledError:
@@ -1278,8 +1280,24 @@ def create_app(settings: Settings) -> Starlette:
 
     async def gift_crawl_runs(request: Request) -> dict[str, Any]:
         guard(request)
-        runs = state.store.gift_crawls(("running", "paused", "error", "done"))[:30]
-        return {"rows": [{**run, "queue": state.store.gift_crawl_counts(int(run["id"]))} for run in runs]}
+        limit = _q_int(request, "limit", 100, 1, 500)
+        offset = _q_int(request, "offset", 0, 0, 1_000_000)
+        runs = (state.store.gift_crawls_needing_attention(limit=limit, offset=offset)
+                if _q_bool(request, "attention") else
+                state.store.gift_crawls(("running", "paused", "error", "done"), limit=limit, offset=offset))
+        return {"rows": [{**run, "queue": state.store.gift_crawl_counts(int(run["id"]))} for run in runs],
+                "offset": offset, "has_more": len(runs) == limit}
+
+    async def gift_crawl_issues(request: Request) -> dict[str, Any]:
+        guard(request)
+        run_id = int(request.path_params["run_id"])
+        if not state.store.gift_crawl(run_id):
+            raise HTTPException(404, "Обход не найден")
+        limit = _q_int(request, "limit", 50, 1, 100)
+        offset = _q_int(request, "offset", 0, 0, 1_000_000)
+        counts = state.store.gift_crawl_counts(run_id)
+        return {"rows": state.store.gift_crawl_issues(run_id, limit=limit, offset=offset),
+                "total": counts["unavailable"] + counts["deferred"], "offset": offset}
 
     async def resume_gift_crawl(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1291,10 +1309,12 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(409, "Нет активного аккаунта Telegram")
         if state.running(f"gifts:run:{run_id}"):
             raise HTTPException(409, "Обход уже идёт")
-        # Недоступные аккаунты пробуются повторно только по явной команде.
-        with state.store.tx() as conn:
-            conn.execute("UPDATE gift_crawl_queue SET state = 'pending', error = NULL "
-                         "WHERE run_id = ? AND state = 'unavailable'", (run_id,))
+        # Сначала проходим ещё не обработанную очередь, иначе повторные ошибки
+        # могут бесконечно вытеснять новые профили при небольшом лимите.
+        if not state.store.gift_crawl_counts(run_id)["pending"]:
+            with state.store.tx() as conn:
+                conn.execute("UPDATE gift_crawl_queue SET state = 'pending', error = NULL "
+                             "WHERE run_id = ? AND state = 'unavailable'", (run_id,))
         state.store.gift_crawl_status(run_id, "running")
         return launch_gift_crawl(run_id).as_dict()
 
@@ -1655,6 +1675,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/nft/profiles", _route(start_nft_profiles), methods=["POST"]),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
         Route("/api/gifts/runs", _route(gift_crawl_runs)),
+        Route("/api/gifts/runs/{run_id:int}/issues", _route(gift_crawl_issues)),
         Route("/api/gifts/runs/{run_id:int}/resume", _route(resume_gift_crawl), methods=["POST"]),
         Route("/api/gifts/refresh", _route(start_gift_refresh), methods=["POST"]),
         Route("/api/intel", _route(intel)),
