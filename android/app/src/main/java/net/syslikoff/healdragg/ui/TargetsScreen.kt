@@ -84,7 +84,7 @@ fun TargetsScreen(
     LaunchedEffect(query) {
         if (query != vm.targetQuery) {
             delay(300)
-            vm.setTargetQuery(query)
+            vm.changeTargetQuery(query)
         }
     }
     LaunchedEffect(Unit) {

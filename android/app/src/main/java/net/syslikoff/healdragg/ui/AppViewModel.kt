@@ -350,7 +350,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setTargetQuery(query: String) {
+    fun changeTargetQuery(query: String) {
         if (targetQuery == query) return
         targetQuery = query
         targets = emptyList()
