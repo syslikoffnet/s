@@ -441,3 +441,29 @@ async def test_discovery_rejects_resale_from_another_collection(tmp_path):
     assert store.nft_chain_run(run)["discovery_index"] == 0
     assert store.nft_chain_run(run)["inflight"] == "discovery:resale:8"
     store.close()
+
+
+async def test_discovery_skips_only_explicit_invalid_gift(tmp_path):
+    settings = settings_for(tmp_path)
+    store = Store(settings.db_path)
+    run = store.create_nft_chain_run(12, True, None, None)
+    calls = []
+
+    class Client:
+        async def __call__(self, request):
+            if type(request).__name__ == "GetStarGiftsRequest":
+                return SimpleNamespace(gifts=[SimpleNamespace(id=8, availability_total=3),
+                                              SimpleNamespace(id=9, availability_total=3)])
+            if type(request).__name__ == "GetResaleStarGiftsRequest":
+                calls.append(request.gift_id)
+                if request.gift_id == 8:
+                    raise RPCError(request, "STARGIFT_INVALID", 400)
+                return SimpleNamespace(gifts=[unique(2)], users=[])
+            return UniqueStarGift(gift=unique(int(request.slug.rsplit("-", 1)[1])), chats=[], users=[])
+
+    await crawl_nft_chain(pool_for(Client()), store, settings, requests=12, run_id=run)
+    assert calls == [8, 9]
+    assert store.nft_chain_run(run)["errors"] == 1
+    assert store.nft_chain_run(run)["new_items"] == 3
+    assert store.nft_chain_run(run)["discovery_index"] == 2
+    store.close()

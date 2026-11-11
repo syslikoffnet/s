@@ -2131,10 +2131,11 @@ class Store:
             conn.execute("UPDATE nft_chain_runs SET discovery_ids=?, inflight=NULL, updated_at=? WHERE id=?",
                          (json.dumps(entries, ensure_ascii=False), now_ts(), run_id))
 
-    def advance_nft_chain_discovery(self, run_id: int, index: int) -> None:
+    def advance_nft_chain_discovery(self, run_id: int, index: int, error: str | None = None) -> None:
         with self.tx() as conn:
-            conn.execute("UPDATE nft_chain_runs SET discovery_index=?, inflight=NULL, updated_at=? WHERE id=?",
-                         (index, now_ts(), run_id))
+            conn.execute("UPDATE nft_chain_runs SET discovery_index=?, inflight=NULL, errors=errors+?, "
+                         "last_error=coalesce(?, last_error), updated_at=? WHERE id=?",
+                         (index, int(bool(error)), error, now_ts(), run_id))
 
     def finish_nft_chain_discovery(self, run_id: int) -> None:
         with self.tx() as conn:

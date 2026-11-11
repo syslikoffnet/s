@@ -802,7 +802,7 @@ async def _discover_collections(
     start_used = used
     entries = json.loads(run["discovery_ids"]) if run and run.get("discovery_ids") else None
     index = int(run.get("discovery_index") or 0) if run else 0
-    found = new_items = 0
+    found = new_items = discovery_errors = 0
     retrying = bool(run and str(run.get("inflight") or "").startswith("discovery:"))
 
     async def report(phase: str) -> None:
@@ -834,10 +834,24 @@ async def _discover_collections(
             break
         used += 1
         await report(f"проверяю продажи коллекции {index + 1}/{len(entries)}")
-        resale = await limiter.call(
-            lambda gift_id=gift_id: client(GetResaleStarGiftsRequest(gift_id=gift_id, offset="", limit=1)),
-            attempts=1,
-        )
+        try:
+            resale = await limiter.call(
+                lambda gift_id=gift_id: client(GetResaleStarGiftsRequest(gift_id=gift_id, offset="", limit=1)),
+                attempts=1,
+            )
+        except RPCError as exc:
+            # Официальный отказ для конкретного gift_id; ошибка сети, лимит или
+            # любая другая причина оставляют эту позицию для продолжения.
+            if getattr(exc, "message", None) != "STARGIFT_INVALID" or getattr(exc, "code", None) != 400:
+                raise
+            index += 1
+            discovery_errors += 1
+            retrying = False
+            if run_id is not None:
+                store.advance_nft_chain_discovery(
+                    run_id, index, f"Telegram не поддерживает продажи подарка {gift_id}; он пропущен.")
+            await report(f"коллекция {index}/{len(entries)} недоступна для поиска продаж")
+            continue
         retrying = False
         for item in getattr(resale, "gifts", None) or []:
             if not isinstance(item, StarGiftUnique):
@@ -866,7 +880,7 @@ async def _discover_collections(
     if run_id is not None:
         store.finish_nft_chain_discovery(run_id)
     return {"requests": used - start_used, "collections": found, "new": new_items,
-            "catalog_checked": index, "catalog_total": len(entries), "errors": 0}
+            "catalog_checked": index, "catalog_total": len(entries), "errors": discovery_errors}
 
 
 async def resolve_unique_gift(pool: SessionPool, store: Store, slug: str) -> dict[str, Any]:
