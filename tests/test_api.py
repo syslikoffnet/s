@@ -767,3 +767,25 @@ def test_profile_gifts_cursor_stable_while_dates_change(client: TestClient) -> N
     assert client.get(base + "&before=xyz", headers=HEADERS).status_code == 400
     assert client.get(base + "&before=1&offset=1", headers=HEADERS).status_code == 400
     assert client.get(base + "&before=999999999999999999999999", headers=HEADERS).status_code == 400
+
+
+def test_alert_notification_snapshot_uses_id_not_count_or_date(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.mark_alerts_read()
+    old = store.add_alert("test", "old", ts=9999999999)
+    first = client.get("/api/alerts?unread=true&limit=1", headers=HEADERS).json()["notification"]
+    assert first["id"] == old and first["unread"] == 1 and first["stream_id"]
+    store.mark_alerts_read([old])
+    new = store.add_alert("test", "new", ts=1)
+    payload = client.get("/api/alerts?unread=true&limit=1", headers=HEADERS).json()
+    assert payload["notification"]["id"] == new
+    assert payload["notification"]["title"] == "new"
+    assert payload["notification"]["unread"] == 1
+    assert payload["notification"]["stream_id"] == first["stream_id"]
+    # Оставшаяся старая запись с будущей датой не должна скрыть новый ID.
+    store.add_alert("test", "future", ts=9999999999)
+    latest = store.add_alert("test", "latest", ts=2)
+    payload = client.get("/api/alerts?unread=true&limit=1", headers=HEADERS).json()
+    assert payload["rows"][0]["title"] == "future"
+    assert payload["notification"]["id"] == latest
+    assert client.get("/api/alerts").status_code == 401

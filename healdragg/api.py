@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
@@ -116,6 +117,8 @@ class AppState:
             if not restored:
                 raise
             self.store = Store(settings.db_path)
+            # В старой копии могли переиспользоваться уже показанные ID.
+            self.store.set_meta("alerts_stream_id", uuid4().hex)
         self.pool = SessionPool(settings, self.store)
         self.gift_art = GiftArt(settings.home, self.store, self.pool)
         self.login = LoginManager(settings, self.store)
@@ -844,6 +847,7 @@ def create_app(settings: Settings) -> Starlette:
                 unread_only=_q_bool(request, "unread"),
             ),
             "unread": state.store.count_alerts(),
+            "notification": state.store.alert_notification_snapshot(),
         }
 
     async def alerts_read(request: Request) -> dict[str, Any]:

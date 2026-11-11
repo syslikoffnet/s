@@ -82,6 +82,7 @@ def test_restore_rolls_back_on_error_after_replacing_db(tmp_path, monkeypatch):
 
     store = Store(tmp_path / "app.db")
     store.upsert_target(10, username="original")
+    original_stream = store.alert_notification_snapshot()["stream_id"]
     other = Store(tmp_path / "other.db")
     other.upsert_target(20, username="replacement")
     raw = Path(create_backup(other)["path"]).read_bytes()
@@ -101,6 +102,7 @@ def test_restore_rolls_back_on_error_after_replacing_db(tmp_path, monkeypatch):
         with pytest.raises(OSError, match="disk error"):
             restore_backup(raw, store)
         assert store.get_target(10)["username"] == "original"
+        assert store.alert_notification_snapshot()["stream_id"] == original_stream
         assert store.get_target(20) is None
         assert not (tmp_path / ".healdragg-restore").exists()
     finally:
@@ -269,5 +271,25 @@ b.restore_backup(Path(sys.argv[2]).read_bytes(), store)
         assert store.get_target(20) is None
         with sqlite3.connect(old_sessions / "main.session") as conn:
             assert conn.execute("SELECT value FROM marker").fetchone()[0] == "old-key"
+    finally:
+        store.close()
+
+
+def test_alert_stream_changes_on_restore_and_survives_reopen(tmp_path):
+    store = Store(tmp_path / "app.db")
+    try:
+        old = store.alert_notification_snapshot()["stream_id"]
+        store.add_alert("test", "one")
+        payload = Path(create_backup(store)["path"]).read_bytes()
+        store.add_alert("test", "two")
+        restore_backup(payload, store)
+        restored = store.alert_notification_snapshot()
+        assert restored["stream_id"] != old
+        assert restored["title"] == "one"
+        store.close()
+        store.reopen()
+        assert store.alert_notification_snapshot()["stream_id"] == restored["stream_id"]
+        store.add_alert("test", "new after rollback")
+        assert store.alert_notification_snapshot()["id"] > restored["id"]
     finally:
         store.close()

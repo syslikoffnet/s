@@ -54,7 +54,7 @@ jobs:
         working-directory: android
         run: |
           set -o pipefail
-          gradle assembleDebug assembleRelease --no-daemon --stacktrace --console=plain \
+          gradle testDebugUnitTest assembleDebug assembleRelease --no-daemon --stacktrace --console=plain \
             2>&1 | tee "$GITHUB_WORKSPACE/gradle-build.log"
 
       - name: Локальные артефакты

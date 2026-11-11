@@ -25,6 +25,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .util import group_link, now_ts
 
@@ -447,6 +448,9 @@ class Store:
             if version is None:
                 self.set_meta("schema_version", str(SCHEMA_VERSION))
                 self.set_meta("created_at", str(now_ts()))
+            # Стабильный идентификатор потока алертов отделяет разные базы и серверы.
+            self._conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('alerts_stream_id', ?)",
+                               (uuid4().hex,))
             self._conn.commit()
 
     def _apply_script(self, script: str) -> list[str]:
@@ -2294,6 +2298,20 @@ class Store:
             sql += " WHERE a.read = 0"
         sql += " ORDER BY a.ts DESC, a.id DESC LIMIT ?"
         return self.query(sql, (int(limit),))
+
+    def alert_notification_snapshot(self) -> dict[str, Any]:
+        """Последний непрочитанный по ID и счётчик из одного снимка SQLite."""
+        row = self.query_one("""
+            SELECT m.value AS stream_id,
+                   (SELECT COUNT(*) FROM alerts WHERE read = 0) AS unread,
+                   a.id, a.title, a.body
+              FROM meta AS m
+              LEFT JOIN alerts AS a ON a.id = (SELECT MAX(id) FROM alerts WHERE read = 0)
+             WHERE m.key = 'alerts_stream_id'
+        """)
+        if row is None:
+            raise RuntimeError("Не найден идентификатор потока уведомлений")
+        return row
 
     def count_alerts(self, *, unread_only: bool = True) -> int:
         if unread_only:

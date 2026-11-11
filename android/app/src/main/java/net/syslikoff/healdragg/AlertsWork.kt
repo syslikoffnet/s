@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
@@ -46,18 +47,35 @@ class AlertWorker(context: Context, params: WorkerParameters) : Worker(context, 
             null
         } ?: return Result.success()
 
-        val unread = payload.optInt("unread", 0)
-        if (unread == 0) {
-            prefs.edit().putInt(KEY_UNREAD, 0).apply()
+        // Новые серверы возвращают атомарный снимок по ID (порядок по времени
+        // может отличаться). Старый сервер: максимум ID среди полученных строк.
+        val snapshot = payload.optJSONObject("notification")
+        val first = if (snapshot != null) snapshot else {
+            val rows = payload.optJSONArray("rows")
+            var latest: JSONObject? = null
+            for (i in 0 until (rows?.length() ?: 0)) {
+                val candidate = rows?.optJSONObject(i) ?: continue
+                if (candidate.optLong("id", 0) > (latest?.optLong("id", 0) ?: 0)) latest = candidate
+            }
+            latest
+        }
+        val unread = if (snapshot != null) snapshot.optInt("unread", -1) else payload.optInt("unread", -1)
+        val alertId = first?.optLong("id", 0) ?: 0
+        val stream = snapshot?.optString("stream_id").orEmpty().ifBlank { "legacy" }
+        if (!AlertNotificationPolicy.shouldNotify(
+                unread, alertId, base, stream, prefs.getString(KEY_SOURCE, null),
+                prefs.getString(KEY_STREAM, null), prefs.getLong(KEY_LAST_ID, 0),
+            )) return Result.success()
+        // Настройки сервера могли измениться пока выполнялся сетевой запрос.
+        if (prefs.getString(KEY_URL, "").orEmpty() != base || prefs.getString(KEY_TOKEN, "").orEmpty() != token) {
             return Result.success()
         }
-        if (prefs.getInt(KEY_UNREAD, -1) == unread) return Result.success()
-
-        val first = payload.optJSONArray("rows")?.optJSONObject(0)
         val title = first?.optString("title").orEmpty().ifBlank { "🔔 Новые алерты" }
         val body = first?.optString("body").orEmpty().ifBlank { "Непрочитанных: $unread" }
         if (Notifications.show(applicationContext, title, body)) {
-            prefs.edit().putInt(KEY_UNREAD, unread).apply()
+            // Не продвигаем курсор, если уведомление не было показано.
+            prefs.edit().putString(KEY_SOURCE, base).putString(KEY_STREAM, stream)
+                .putLong(KEY_LAST_ID, alertId).remove(KEY_UNREAD).commit()
         }
         return Result.success()
     }
@@ -83,6 +101,9 @@ class AlertWorker(context: Context, params: WorkerParameters) : Worker(context, 
         const val KEY_URL = "base_url"
         const val KEY_TOKEN = "api_token"
         const val KEY_UNREAD = "notified_unread"
+        const val KEY_SOURCE = "notified_source"
+        const val KEY_STREAM = "notified_stream"
+        const val KEY_LAST_ID = "notified_alert_id"
     }
 }
 
@@ -97,11 +118,15 @@ object Notifications {
             return false
         }
         val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager.getNotificationChannel(CHANNEL) == null) {
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL, "Алерты Healdragg", NotificationManager.IMPORTANCE_HIGH),
             )
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE
+        ) return false
         val intent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         val pending = PendingIntent.getActivity(

@@ -358,6 +358,8 @@ def restore_backup(payload: bytes | BinaryIO, store: Store, sessions_dir: Path |
                     if file_name not in names:
                         conn.execute("UPDATE sessions SET status='needs_login', last_error=? WHERE name=?",
                                      ("В копии отсутствует файл сессии", name))
+            # После отката базы ID могут повториться; потребители начинают новый поток.
+            store.set_meta("alerts_stream_id", uuid4().hex)
             # Задачи из архива не должны самопроизвольно обращаться к Telegram.
             with store.tx() as conn:
                 conn.execute("UPDATE gift_crawl_runs SET status='paused' WHERE status='running'")

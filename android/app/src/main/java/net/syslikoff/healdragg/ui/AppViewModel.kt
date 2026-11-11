@@ -421,7 +421,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { client.markAlertsRead() }.onSuccess { left ->
                 unread = left
                 alerts = alerts.map { it.copy(read = true) }
-                prefs.edit().putInt(KEY_UNREAD, left).apply()
             }
         }
     }
@@ -773,17 +772,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return value
     }
 
-    fun saveUnread(count: Int) {
-        prefs.edit().putInt(KEY_UNREAD, count).apply()
-    }
-
     companion object {
         const val PREFS = "healdragg"
         const val KEY_URL = "base_url"
         const val KEY_TOKEN = "api_token"
         const val KEY_API_ID = "tg_api_id"
         const val KEY_API_HASH = "tg_api_hash"
-        const val KEY_UNREAD = "notified_unread"
         const val KEY_ENGINE_STATE = "engine_state"
         const val KEY_ENGINE_ERROR = "engine_error"
         const val KEY_MD3 = "material3"
