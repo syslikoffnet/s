@@ -29,7 +29,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import __version__, business
+from . import __version__, business, offers
 from .activity import collect_activity
 from .backup import (
     MAX_ARCHIVE_BYTES,
@@ -1674,6 +1674,14 @@ def create_app(settings: Settings) -> Starlette:
         assert config is not None
         return launch_heavy_task(config).as_dict()
 
+    async def offer_candidates(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        try:
+            return await _safe_io(offers.candidates, state.store, body)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -2161,6 +2169,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/scan", _route(start_scan), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/profile/refresh", _route(refresh_target_profile), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
+        Route("/api/offers/candidates", _route(offer_candidates), methods=["POST"]),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),

@@ -214,6 +214,7 @@ CREATE TABLE IF NOT EXISTS gifts (
     UNIQUE(owner_tg_id, saved_id, gift_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gifts_owner ON gifts(owner_tg_id, date DESC);
+CREATE INDEX IF NOT EXISTS idx_gifts_owner_slug ON gifts(owner_tg_id, slug, seen_at DESC, id DESC) WHERE slug IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_gifts_from  ON gifts(from_tg_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
@@ -278,6 +279,7 @@ CREATE TABLE IF NOT EXISTS nft_items (
     resell_amount INTEGER,
     availability_issued INTEGER,
     availability_total  INTEGER,
+    backdrop_name TEXT,
     seen_at       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_nft_chain  ON nft_items(on_chain, seen_at DESC);
@@ -405,7 +407,10 @@ class Store:
 
     # ── инфраструктура ──────────────────────────────────────────────────────
     def _configure(self) -> None:
+        from .offers import backdrop_from_raw
+
         self._conn.create_function("hd_casefold", 1, lambda value: str(value or "").casefold(), deterministic=True)
+        self._conn.create_function("hd_backdrop", 1, backdrop_from_raw, deterministic=True)
         for pragma in (
             "PRAGMA journal_mode=WAL",
             "PRAGMA synchronous=NORMAL",
@@ -568,6 +573,9 @@ class Store:
         for column, ddl in gift_additions.items():
             if column not in gift_cols:
                 self._soft(f"ALTER TABLE gifts ADD COLUMN {column} {ddl}")
+        nft_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(nft_items)")}
+        if "backdrop_name" not in nft_cols:
+            self._soft("ALTER TABLE nft_items ADD COLUMN backdrop_name TEXT")
         heavy_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gift_heavy_tasks)")}
         if heavy_cols and "session_tg_id" not in heavy_cols:
             self._soft("ALTER TABLE gift_heavy_tasks ADD COLUMN session_tg_id INTEGER")
@@ -1843,6 +1851,7 @@ class Store:
             "resell_amount": fields.get("resell_amount"),
             "availability_issued": fields.get("availability_issued"),
             "availability_total": fields.get("availability_total"),
+            "backdrop_name": fields.get("backdrop_name"),
         }
         with self.tx() as conn:
             exists = conn.execute(

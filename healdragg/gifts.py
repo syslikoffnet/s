@@ -125,12 +125,15 @@ def _unique_meta(gift: Any) -> dict[str, Any]:
     resell = _stars_amount(getattr(gift, "resell_amount", None))
     value_amount = _as_int(getattr(gift, "value_amount", None))
     value_currency = getattr(gift, "value_currency", None)
+    backdrop = next((getattr(attr, "name", None) for attr in (getattr(gift, "attributes", None) or [])
+                     if type(attr).__name__ == "StarGiftAttributeBackdrop"), None)
     if value_amount is None:
         value_amount = _as_int(getattr(gift, "stars", None))
         if value_amount is not None:
             value_currency = "STARS"
     return {
         "slug": str(slug) if slug else None,
+        "backdrop_name": str(backdrop) if backdrop else None,
         "num": _as_int(getattr(gift, "num", None)),
         "title": str(getattr(gift, "title", "") or "") or None,
         "gift_id": _as_int(getattr(gift, "gift_id", None))
@@ -193,6 +196,7 @@ def _remember_meta(
         resell_amount=meta.get("resell_amount"),
         availability_issued=meta.get("availability_issued"),
         availability_total=meta.get("availability_total"),
+        backdrop_name=meta.get("backdrop_name"),
     )
 
 

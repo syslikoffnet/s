@@ -857,3 +857,15 @@ def test_offer_session_is_listed_but_not_selected_for_scanning(client: TestClien
     assert "writer" not in store.session_names()
     assert client.post("/api/gifts/chain", headers=HEADERS, json={}).status_code == 409
     assert client.post("/api/session/start", headers=HEADERS, json={"purpose": "invalid"}).status_code == 400
+
+
+def test_offer_candidates_api_is_read_only_and_validated(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.upsert_nft_item("Sample-9", owner_tg_id=123, owner_username="seller", value_usd=1000)
+    assert client.post("/api/offers/candidates", json={}).status_code == 401
+    data = client.post("/api/offers/candidates", headers=HEADERS, json={"query": "@seller"})
+    assert data.status_code == 200
+    assert [r["slug"] for r in data.json()["rows"]] == ["Sample-9"]
+    assert client.post("/api/offers/candidates", headers=HEADERS, json={"limit": True}).status_code == 400
+    assert client.post("/api/offers/candidates", headers=HEADERS, json={"gender": []}).status_code == 400
+    assert client.post("/api/offers/candidates", headers=HEADERS, json={"send": True}).status_code == 400

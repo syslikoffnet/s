@@ -70,6 +70,9 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun sessions(): List<SessionInfo> = jsonObjects(array("api/sessions")).map(SessionInfo::from)
 
+    suspend fun offerCandidates(filters: JSONObject): JSONObject =
+        obj("api/offers/candidates", "POST", filters, PROFILE_TIMEOUT)
+
     suspend fun businessBot(name: String, connect: Boolean = false): JSONObject {
         val path = "api/sessions/${URLEncoder.encode(name, "UTF-8")}/business-bot"
         return if (connect) obj(path, "POST", JSONObject().put("confirm", true), PROFILE_TIMEOUT)

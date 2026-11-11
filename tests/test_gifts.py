@@ -272,3 +272,18 @@ def test_nft_value_sort_never_mixes_local_fiat_currencies(store):
     store.upsert_nft_item("Known-2", value_amount=50000, value_currency="INR", value_usd=200)
     store.upsert_nft_item("Unknown-1", value_amount=9999999, value_currency="INR")
     assert [row["slug"] for row in store.nft_items(sort="value")] == ["Known-2", "Known-1", "Unknown-1"]
+
+
+def test_nft_backdrop_is_recorded_from_telegram(store: Store) -> None:
+    from healdragg.gifts import _remember_meta, _unique_meta
+
+    backdrop = types.StarGiftAttributeBackdrop(
+        name="Black", backdrop_id=3, center_color=0, edge_color=0, pattern_color=0, text_color=0,
+        rarity=types.StarGiftAttributeRarity(permille=10),
+    )
+    gift = types.StarGiftUnique(id=1, gift_id=2, title="Example", slug="Example-1", num=1,
+                                attributes=[backdrop], availability_issued=1, availability_total=10,
+                                owner_id=types.PeerUser(42))
+    meta = _unique_meta(gift)
+    _remember_meta(store, meta, owner_tg_id=42, owner_username="alice", owner_name="Alice")
+    assert store.nft_items()[0]["backdrop_name"] == "Black"

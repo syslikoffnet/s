@@ -84,6 +84,15 @@ fun GiftsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api = vm.api
+    var showOfferCandidates by rememberSaveable { mutableStateOf(false) }
+    if (showOfferCandidates) {
+        BackHandler { showOfferCandidates = false }
+        OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenProfile = { key ->
+            showOfferCandidates = false
+            onOpenProfile(key)
+        })
+        return
+    }
     var selectedOwnerId by rememberSaveable { mutableStateOf<Long?>(null) }
     var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
     val owner = selectedOwner?.takeIf { it.tgId == selectedOwnerId } ?: selectedOwnerId?.let {
@@ -685,6 +694,12 @@ fun GiftsScreen(
             error?.let { message ->
                 item("error") {
                     ErrorBanner(message = message, onRetry = { scope.launch { reload() } })
+                }
+            }
+
+            item("offer-candidates") {
+                OutlinedButton(onClick = { showOfferCandidates = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Подбор для предложений")
                 }
             }
 
