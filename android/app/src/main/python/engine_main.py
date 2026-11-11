@@ -28,6 +28,7 @@ LOG_FILE = "engine.log"
 _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _server: Any = None
+_stop_requested = threading.Event()
 _started_at = 0.0
 _error = ""
 _home: Path | None = None
@@ -102,13 +103,14 @@ def start(
     token: str,
     port: int = 8080,
 ) -> str:
-    """Поднять панель в фоне. Повторный вызов перезапускает движок."""
+    """Поднять панель в фоне или дождаться завершения старой остановки."""
     global _thread, _started_at, _error, _home, _port
 
     with _lock:
         if _thread is not None and _thread.is_alive():
-            return "already"
+            return "stopping" if _stop_requested.is_set() else "already"
 
+        _stop_requested.clear()
         _home = Path(home)
         _home.mkdir(parents=True, exist_ok=True)
         _prepare_logging(_home)
@@ -134,6 +136,10 @@ def _serve() -> None:
 
         settings = load_settings()
         app = create_app(settings)
+        if _stop_requested.is_set():
+            # Lifespan ещё не запускался, но create_app уже открыл SQLite.
+            asyncio.run(app.state.hd.close())
+            return
         config = uvicorn.Config(
             app,
             host=HOST,
@@ -142,47 +148,100 @@ def _serve() -> None:
             access_log=False,
             log_config=None,
         )
-        _server = uvicorn.Server(config)
-        asyncio.run(_serve_async(_server))
-        log.info("движок остановлен")
+        server = uvicorn.Server(config)
+        # stop() может прийти, пока импортируются зависимости или создаётся API.
+        # Публикация сервера и проверка запроса остановки атомарны.
+        with _lock:
+            _server = server
+            if _stop_requested.is_set():
+                server.should_exit = True
+        asyncio.run(_serve_async(server))
+        if not _stop_requested.is_set():
+            _error = "Сервер неожиданно остановился"
+            log.error(_error)
+        else:
+            log.info("движок остановлен")
     except BaseException as exc:  # noqa: BLE001 — падение должно быть видно в приложении
-        _error = f"{exc.__class__.__name__}: {exc}"
-        log.error("движок упал: %s\n%s", _error, traceback.format_exc())
+        if not _stop_requested.is_set():
+            _error = f"{exc.__class__.__name__}: {exc}"
+            log.error("движок упал: %s\n%s", _error, traceback.format_exc())
     finally:
-        _server = None
+        with _lock:
+            _server = None
 
 
 async def _serve_async(server: Any) -> None:
-    await server.serve()
+    # Uvicorn 0.27 завершает serve() без shutdown(), если stop пришёл во время
+    # startup. Гарантируем lifespan.shutdown и закрытие слушающего сокета.
+    original_shutdown = server.shutdown
+    shutdown_called = False
+
+    async def tracked_shutdown(*args: Any, **kwargs: Any) -> None:
+        nonlocal shutdown_called
+        shutdown_called = True
+        await original_shutdown(*args, **kwargs)
+
+    server.shutdown = tracked_shutdown
+    try:
+        await server.serve()
+    finally:
+        if server.started and not shutdown_called:
+            await tracked_shutdown()
 
 
-def stop() -> None:
-    """Попросить сервер завершиться и дождаться потока."""
+def stop(wait_seconds: float = 10) -> bool:
+    """Запросить остановку, в том числе когда сервер ещё не создан.
+
+    При нулевом времени ожидания не блокирует вызывающий поток Android.
+    """
     global _thread
 
     with _lock:
+        _stop_requested.set()
         server = _server
         thread = _thread
-    if server is not None:
-        server.should_exit = True
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=10)
-    if thread is None or not thread.is_alive():
+        if server is not None:
+            server.should_exit = True
+    if thread is not None and thread.is_alive() and wait_seconds > 0:
+        thread.join(timeout=wait_seconds)
+    stopped = thread is None or not thread.is_alive()
+    if stopped:
         with _lock:
-            _thread = None
+            if _thread is thread:
+                _thread = None
+    return stopped
 
 
 def status() -> dict[str, Any]:
-    """Состояние для Kotlin: работает ли движок и что с ним не так."""
-    alive = bool(_thread is not None and _thread.is_alive())
-    return {
-        "running": alive,
-        "host": HOST,
-        "port": _port,
-        "uptime": round(time.time() - _started_at, 1) if _started_at else 0.0,
-        "error": _error,
-        "log": str(_home / "logs" / LOG_FILE) if _home else "",
-    }
+    """Различает запущенный поток, готовый API и запрошенную остановку."""
+    with _lock:
+        alive = bool(_thread is not None and _thread.is_alive())
+        stopping = alive and _stop_requested.is_set()
+        ready = bool(alive and not stopping and _server is not None and _server.started)
+        return {
+            "running": alive,
+            "ready": ready,
+            "stopping": stopping,
+            "host": HOST,
+            "port": _port,
+            "uptime": round(time.time() - _started_at, 1) if _started_at else 0.0,
+            "error": _error,
+            "log": str(_home / "logs" / LOG_FILE) if _home else "",
+        }
+
+
+def service_state() -> str:
+    """Короткое состояние для фонового сервиса Android."""
+    current = status()
+    if current["stopping"]:
+        return "stopping"
+    if current["ready"]:
+        return "ready"
+    if current["running"]:
+        return "starting"
+    if current["error"]:
+        return "error: " + current["error"]
+    return "stopped"
 
 
 def log_tail(lines: int = 200) -> str:

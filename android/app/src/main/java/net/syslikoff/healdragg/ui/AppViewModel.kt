@@ -103,6 +103,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         get() = baseUrl == LOCAL_URL || baseUrl.startsWith(LOCAL_HOST)
 
     private var pollJob: CoroutineJob? = null
+    private var engineStartJob: CoroutineJob? = null
     private var firstLoad = true
 
     init {
@@ -175,17 +176,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         baseUrl = LOCAL_URL
         rebuildApi()
         EngineService.start(getApplication())
-        viewModelScope.launch {
+        engineStartJob?.cancel()
+        engineStartJob = viewModelScope.launch {
             val deadline = System.currentTimeMillis() + 90_000
             while (System.currentTimeMillis() < deadline) {
                 delay(1_000)
-                if (api?.health() == true) {
+                val alive = api?.health() == true
+                if (!isActive) return@launch
+                val state = prefs.getString(KEY_ENGINE_STATE, "").orEmpty()
+                if (alive && state == EngineService.STATE_READY) {
                     engine = EngineState.Ready
                     engineBusy = false
                     refresh(force = true)
                     return@launch
                 }
-                val state = prefs.getString(KEY_ENGINE_STATE, "").orEmpty()
                 if (state == EngineService.STATE_ERROR) {
                     engineError = prefs.getString(KEY_ENGINE_ERROR, "").orEmpty()
                     engine = EngineState.Error
@@ -200,6 +204,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun stopEngine() {
+        engineStartJob?.cancel()
+        engineStartJob = null
         EngineService.stop(getApplication())
         engine = EngineState.Stopped
         engineBusy = false
@@ -271,8 +277,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun probe() {
         val alive = api?.health() == true
-        offline = !alive
-        if (alive) {
+        val state = prefs.getString(KEY_ENGINE_STATE, "").orEmpty()
+        val available = alive && (!isLocal || state == EngineService.STATE_READY)
+        offline = !available
+        if (available) {
             if (engine != EngineState.Ready) {
                 engine = EngineState.Ready
                 engineBusy = false
@@ -283,7 +291,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!displayLoaded) loadDisplay()
             refreshAlerts()
         } else {
-            val state = prefs.getString(KEY_ENGINE_STATE, "").orEmpty()
             engine = when {
                 engineBusy || state == EngineService.STATE_STARTING -> EngineState.Starting
                 state == EngineService.STATE_ERROR -> EngineState.Error

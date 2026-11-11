@@ -25,6 +25,10 @@ class EngineService : Service() {
     private val prefs by lazy { getSharedPreferences(PREFS, MODE_PRIVATE) }
     @Volatile
     private var worker: Thread? = null
+    @Volatile
+    private var generation = 0
+    @Volatile
+    private var latestStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -34,14 +38,17 @@ class EngineService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
         if (intent?.action == ACTION_STOP) {
-            shutdown()
+            shutdown(markStopped = true)
             stopForegroundCompat()
             stopSelf()
             return START_NOT_STICKY
         }
 
-        startForegroundCompat(getString(R.string.engine_starting))
+        val notificationText = if (worker?.isAlive == true && prefs.getString(KEY_STATE, "") == STATE_READY)
+            getString(R.string.engine_on) else getString(R.string.engine_starting)
+        startForegroundCompat(notificationText)
 
         val apiId = prefs.getString(KEY_API_ID, "").orEmpty().trim()
         val apiHash = prefs.getString(KEY_API_HASH, "").orEmpty().trim()
@@ -71,57 +78,80 @@ class EngineService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            worker = Thread({ runEngine(apiId, apiHash) }, "healdragg-engine-start").also { it.start() }
+            synchronized(engineControl) {
+                val current = ++generation
+                worker = Thread({ runEngine(apiId, apiHash, current) }, "healdragg-engine-start").also { it.start() }
+            }
         }
         return START_STICKY
     }
 
-    private fun runEngine(apiId: String, apiHash: String) {
+    private fun runEngine(apiId: String, apiHash: String, current: Int) {
         try {
-            if (!Python.isStarted()) {
-                Python.start(AndroidPlatform(applicationContext))
-            }
             val home = File(filesDir, "engine").apply { mkdirs() }
             val module = Python.getInstance().getModule("engine_main")
-            module.callAttr(
-                "start",
-                home.absolutePath,
-                apiId,
-                apiHash,
-                ensureToken(),
-                PORT,
-            )
-            prefs.edit().putString(KEY_STATE, STATE_READY).apply()
-            updateNotification(getString(R.string.engine_on))
-            // Копия в «Загрузки»: она переживёт даже удаление приложения.
-            val backupThread = Thread {
-                Thread.sleep(20_000)
-                runCatching { AutoBackup.maybeExport(applicationContext) }
+            val deadline = System.currentTimeMillis() + 90_000
+            // После быстрого «стоп → старт» старый сервер ещё может освобождать базу и порт.
+            while (true) {
+                val outcome = synchronized(engineControl) {
+                    if (generation != current) return
+                    module.callAttr("start", home.absolutePath, apiId, apiHash, ensureToken(), PORT).toString()
+                }
+                if (outcome != "stopping") break
+                if (System.currentTimeMillis() >= deadline) error("Предыдущий запуск не завершился")
+                Thread.sleep(250)
             }
-            backupThread.name = "healdragg-autobackup-start"
-            backupThread.start()
+            var ready = false
+            while (generation == current) {
+                val state = module.callAttr("service_state").toString()
+                when {
+                    state == "ready" && !ready -> {
+                        synchronized(engineControl) {
+                            if (generation != current) return
+                            prefs.edit().putString(KEY_STATE, STATE_READY).apply()
+                            updateNotification(getString(R.string.engine_on))
+                        }
+                        ready = true
+                        val backupThread = Thread {
+                            Thread.sleep(20_000)
+                            if (generation == current) runCatching { AutoBackup.maybeExport(applicationContext) }
+                        }
+                        backupThread.name = "healdragg-autobackup-start"
+                        backupThread.start()
+                    }
+                    state.startsWith("error: ") -> error(state.removePrefix("error: "))
+                    state == "stopped" || state == "stopping" -> error("Движок неожиданно остановился")
+                    !ready && System.currentTimeMillis() >= deadline -> error("Движок не запустился за 90 секунд")
+                }
+                Thread.sleep(500)
+            }
         } catch (exc: Throwable) {
-            val message = exc.message?.take(400) ?: exc.toString().take(400)
-            prefs.edit()
-                .putString(KEY_STATE, STATE_ERROR)
-                .putString(KEY_ERROR, message)
-                .apply()
-            updateNotification(getString(R.string.engine_failed))
-            shutdown()
-            stopForegroundCompat()
-            stopSelf()
+            synchronized(engineControl) {
+                if (generation != current) return
+                val message = exc.message?.take(400) ?: exc.toString().take(400)
+                prefs.edit().putString(KEY_STATE, STATE_ERROR).putString(KEY_ERROR, message).apply()
+                updateNotification(getString(R.string.engine_failed))
+                shutdown(markStopped = false)
+                stopForegroundCompat()
+                stopSelf(latestStartId)
+            }
         }
     }
 
-    private fun shutdown() {
-        try {
-            if (Python.isStarted()) {
-                Python.getInstance().getModule("engine_main").callAttr("stop")
+    private fun shutdown(markStopped: Boolean) {
+        synchronized(engineControl) {
+            generation++
+            worker = null
+            try {
+                if (Python.isStarted()) {
+                    // Не держим главный поток Android в ожидании завершения запросов.
+                    Python.getInstance().getModule("engine_main").callAttr("stop", 0.0)
+                }
+            } catch (_: Throwable) {
+                // движок мог не успеть стартовать
             }
-        } catch (_: Throwable) {
-            // движок мог не успеть стартовать — молча гасим
+            if (markStopped) prefs.edit().putString(KEY_STATE, STATE_STOPPED).apply()
         }
-        prefs.edit().putString(KEY_STATE, STATE_STOPPED).apply()
     }
 
     private fun ensureToken(): String {
@@ -134,7 +164,7 @@ class EngineService : Service() {
     }
 
     override fun onDestroy() {
-        shutdown()
+        shutdown(markStopped = false)
         super.onDestroy()
     }
 
@@ -207,6 +237,7 @@ class EngineService : Service() {
         const val ACTION_STOP = "net.syslikoff.healdragg.ENGINE_STOP"
         const val PORT = 8080
 
+        private val engineControl = Any()
         private const val CHANNEL = "engine"
         private const val NOTIF_ID = 42
         private const val PREFS = "healdragg"
