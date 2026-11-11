@@ -55,6 +55,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -95,6 +96,7 @@ fun GiftsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api = vm.api
+    val currentApi by rememberUpdatedState(api)
     var showOfferCandidates by rememberSaveable { mutableStateOf(false) }
     var selectedOwnerId by rememberSaveable { mutableStateOf<Long?>(null) }
     var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
@@ -102,8 +104,8 @@ fun GiftsScreen(
         NftOwner(tgId = it, username = null, name = null, nft = 0, onChain = 0, hosted = 0, seenAt = 0)
     }
     var query by rememberSaveable { mutableStateOf("") }
-    var depth by rememberSaveable { mutableStateOf(2) }
-    var maxProfiles by rememberSaveable { mutableStateOf(250) }
+    var depth by rememberSaveable { mutableStateOf(8) }
+    var maxProfiles by rememberSaveable { mutableStateOf(50_000) }
     var nftOnly by rememberSaveable { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -153,8 +155,9 @@ fun GiftsScreen(
         }
     }
     var chain by rememberSaveable { mutableStateOf("") }
+    var giftChain by rememberSaveable { mutableStateOf("") }
     var chainRequests by rememberSaveable { mutableStateOf(2_000) }
-    var profileBudget by rememberSaveable { mutableStateOf(100) }
+    var profileBudget by rememberSaveable { mutableStateOf(200) }
     var nftRows by remember { mutableStateOf<List<NftItem>>(emptyList()) }
     var nftSummary by remember { mutableStateOf(NftSummary()) }
     var nftOwnersList by remember { mutableStateOf<List<NftOwner>>(emptyList()) }
@@ -206,16 +209,16 @@ fun GiftsScreen(
         val requestOwners = mode == 2
         val requestedOwner = ownerQuery.trim().ifBlank { null }
         val onlyNft = nftOnly
+        val giftChainArg = giftChain.ifBlank { null }
         loading = true
         try {
-            // Фильтр расположения принадлежит NFT, а не соседним вкладкам.
-            val page = client.gifts(nftOnly = onlyNft)
-            if (generation != reloadGeneration) return
+            val page = client.gifts(nftOnly = onlyNft, chain = giftChainArg)
+            if (generation != reloadGeneration || client !== currentApi || onlyNft != nftOnly || giftChainArg != giftChain.ifBlank { null }) return
             rows = page.rows
             summary = page.summary
             if (requestOwners) {
                 val owners = client.giftOwners(q = requestedOwner, limit = 500)
-                if (generation != reloadGeneration) return
+                if (generation != reloadGeneration || client !== currentApi || requestedOwner != ownerQuery.trim().ifBlank { null }) return
                 nftOwnersList = owners
                 ownerTotal = owners.size
             }
@@ -243,7 +246,7 @@ fun GiftsScreen(
         try {
             val page = client.giftsNft(chain = chainArg, q = query, sort = sort, limit = 200,
                 offset = offset, resaleOnly = resale, collection = collection)
-            if (generation != nftGeneration || requestedKey != nftKey() || client !== api) return
+            if (generation != nftGeneration || requestedKey != nftKey() || client !== currentApi) return
             lastNftKey = requestedKey
             lastNftClient = client
             nftSummary = page.summary
@@ -254,7 +257,7 @@ fun GiftsScreen(
         } catch (exc: CancellationException) {
             throw exc
         } catch (exc: Exception) {
-            if (generation == nftGeneration && requestedKey == nftKey() && client === api)
+            if (generation == nftGeneration && requestedKey == nftKey() && client === currentApi)
                 error = exc.message ?: "Не удалось прочитать базу NFT"
         } finally {
             if (reset && generation == nftGeneration) nftLoading = false
@@ -290,7 +293,7 @@ fun GiftsScreen(
         }
     }
 
-    LaunchedEffect(api, mode, nftOnly, ownerQuery) {
+    LaunchedEffect(api, mode, nftOnly, giftChain, ownerQuery) {
         if (mode == 2 && ownerQuery.isNotBlank()) delay(400)
         reload()
     }
@@ -521,6 +524,16 @@ fun GiftsScreen(
                             label = { Text("NFT · ${summary.nft}") },
                             colors = giftChipColors(),
                         )
+                    }
+                }
+
+                item("gift-address-filter") {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("" to "Любой адрес", "wallet" to "Есть адрес", "telegram" to "Без адреса").forEach { (value, label) ->
+                            FilterChip(selected = giftChain == value, onClick = { giftChain = value },
+                                label = { Text(label) }, colors = giftChipColors())
+                        }
                     }
                 }
 
@@ -1229,7 +1242,7 @@ fun GiftsScreen(
                             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            listOf(100, 500, 2_000, 10_000).forEach { value ->
+                            listOf(100, 200, 500, 2_000, 10_000).forEach { value ->
                                 FilterChip(
                                     selected = profileBudget == value,
                                     onClick = { profileBudget = value },
