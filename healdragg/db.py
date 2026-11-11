@@ -1864,6 +1864,12 @@ class Store:
                     f"INSERT INTO nft_items({names}) VALUES({marks})",
                     (slug, *columns.values(), now_ts()),
                 )
+                # Счётчик и вставка едины: после сбоя повторный запрос не
+                # потеряет и не продублирует уже добавленный результат.
+                run_id = fields.get("chain_run_id")
+                if run_id is not None:
+                    conn.execute("UPDATE nft_chain_runs SET new_items=new_items+1, updated_at=? WHERE id=?",
+                                 (now_ts(), run_id))
                 return True
             authoritative = bool(fields.get("ownership_observed"))
             assignments = ", ".join(
@@ -2136,7 +2142,7 @@ class Store:
                          (now_ts(), run_id))
 
     def finish_nft_chain_item(self, run_id: int, base: str, *, cursor: int,
-                              created: bool, owner: bool, on_chain: bool, error: str | None = None) -> None:
+                              owner: bool, on_chain: bool, error: str | None = None) -> None:
         with self.tx() as conn:
             conn.execute(
                 "UPDATE nft_collections SET cursor=?, scanned=scanned+1, owners=owners+?, "
@@ -2144,9 +2150,9 @@ class Store:
                 "WHERE slug_base=?", (cursor, int(owner), int(on_chain), int(bool(error)), error, now_ts(), base),
             )
             conn.execute(
-                "UPDATE nft_chain_runs SET inflight=NULL, new_items=new_items+?, errors=errors+?, "
+                "UPDATE nft_chain_runs SET inflight=NULL, errors=errors+?, "
                 "last_error=coalesce(?, last_error), updated_at=? WHERE id=?",
-                (int(created), int(bool(error)), error, now_ts(), run_id),
+                (int(bool(error)), error, now_ts(), run_id),
             )
 
     def set_nft_chain_status(self, run_id: int, status: str, error: str | None = None) -> None:

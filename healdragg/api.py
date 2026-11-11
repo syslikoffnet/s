@@ -1310,21 +1310,30 @@ def create_app(settings: Settings) -> Starlette:
                 if not current:
                     raise ValueError("Задача поиска NFT не найдена")
                 if int(current["used"]) >= budget and current.get("inflight"):
-                    message = "Лимит исчерпан во время прерванного запроса. Для повтора начните новый поиск."
+                    message = "Лимит исчерпан во время прерванного запроса. Добавьте запросы для продолжения."
                     state.store.set_nft_chain_status(run_id, "paused", message)
                     job.error = message
                     return
                 job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
                 async with state.gift_access(job):
-                    await crawl_nft_chain(
+                    result = await crawl_nft_chain(
                         state.pool, state.store, settings, requests=budget, reporter=on_progress,
                         discover=bool(run["discover"]), slug=run["slug"], total=run["total"], run_id=run_id,
                     )
                 current = state.store.nft_chain_run(run_id) or run
-                state.store.set_nft_chain_status(run_id, "done")
-                job.state = {"phase": "готово", "done": int(current["used"]), "total": budget,
-                             "found": int(current["new_items"]), "errors": int(current["errors"]),
-                             "run_id": run_id}
+                found = int(current["new_items"])
+                if not result["collections_known"]:
+                    message = ("Коллекции не найдены: каталог и текущие продажи не дали подходящих данных. "
+                               "Попробуйте собрать подарки профилей или открыть точную ссылку NFT.")
+                elif not found and result["items"]:
+                    message = "Новых NFT нет: найденные номера уже есть в базе."
+                elif not found:
+                    message = "Новых NFT нет: в продажах новых записей не найдено, номера могли быть уже пройдены или лимит исчерпан."
+                else:
+                    message = None
+                state.store.set_nft_chain_status(run_id, "done", message or current.get("last_error"))
+                job.state = {"phase": message or "готово", "done": int(current["used"]), "total": budget,
+                             "found": found, "errors": int(current["errors"]), "run_id": run_id}
             except asyncio.CancelledError:
                 # Стоп записывается обработчиком; закрытие процесса оставляет задачу активной.
                 job.state = {**job.state, "phase": "остановлено"}

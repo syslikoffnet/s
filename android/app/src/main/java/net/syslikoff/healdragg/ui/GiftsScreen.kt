@@ -297,7 +297,7 @@ fun GiftsScreen(
                     error = fresh.error
                     onToast("Обход прервался: ${fresh.error}")
                 } else {
-                    onToast("Готово: подарков ${fresh.found}")
+                    onToast(if (fresh.kind == "giftchain") "Поиск завершён: новых NFT ${fresh.found}" else "Готово: подарков ${fresh.found}")
                 }
                 reload()
                 loadNft(reset = true)
@@ -522,7 +522,8 @@ fun GiftsScreen(
                                     buildString {
                                         append(current.phase)
                                         if (current.total > 0) append(" · ${current.done}/${current.total}")
-                                        if (current.found > 0) append(" · подарков ${current.found}")
+                                        if (current.kind == "giftchain") append(" · новых NFT ${current.found}")
+                                        else if (current.found > 0) append(" · подарков ${current.found}")
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Hd.Muted,
@@ -894,7 +895,7 @@ fun GiftsScreen(
                     val used = run.optInt("used")
                     val budget = run.optInt("budget")
                     HdCard {
-                        Text("Поиск NFT #$id · $used / $budget", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
+                        Text("Поиск NFT #$id · запросы $used / $budget · новых NFT ${run.optInt("new_items")}", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
                         run.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
                         Text("Позиции коллекций общие: продолжение учитывает результаты других поисков.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -935,8 +936,8 @@ fun GiftsScreen(
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Необязательный поиск NFT по номерам коллекций, независимо от выбранного профиля. " +
-                                "Найденные NFT и доступные владельцы попадают в общую базу. " +
+                            "Поиск сначала проверяет каталог подарков и их текущие продажи, затем номера известных коллекций. " +
+                                "Найденные NFT и доступные владельцы попадают в общую базу. Каталог и данные владельцев могут быть неполными. " +
                                 "Это может занять много времени и запросов Telegram. " +
                                 "После перезапуска приложения активный поиск продолжится. После «Стоп» его можно продолжить вручную. " +
                                 "Лимит учитывает вызовы поиска; Telegram может повторить запрос внутри соединения.",
@@ -964,7 +965,7 @@ fun GiftsScreen(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Каждый запрос проверяет один номер. Скорость зависит от Telegram и ограничений аккаунта.",
+                            "Лимит расходуется также на каталог и продажи; новые NFT — только те, которых ещё не было в базе. Скорость зависит от Telegram.",
                             style = MaterialTheme.typography.labelSmall,
                             color = Hd.Dim,
                         )

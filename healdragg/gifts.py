@@ -8,9 +8,8 @@
    таблицу: у каждой вещи ровно один владелец, поэтому инвентарь удобно
    фильтровать по тому, где лежит NFT — в кошельке TON (``on_chain``) или
    внутри аккаунта Telegram.
-3. **Сеть коллекций** — перебираем коллекции уникальных подарков по номерам
-   (``slug`` = ``<коллекция>-<номер>``) и добираем владельцев: так база
-   наполняется почти всеми пользователями, у кого есть NFT.
+3. **Сеть коллекций** — проверяем известные коллекции и номера подарков.
+   Каталог, владение и результаты поиска могут быть неполными.
 """
 
 from __future__ import annotations
@@ -162,6 +161,7 @@ def _remember_meta(
     owner_tg_id: int | None,
     owner_username: str | None,
     owner_name: str | None,
+    chain_run_id: int | None = None,
 ) -> bool:
     """Пишет уникальную вещь в инвентарь и заводит её коллекцию."""
     slug = meta.get("slug")
@@ -197,6 +197,7 @@ def _remember_meta(
         availability_issued=meta.get("availability_issued"),
         availability_total=meta.get("availability_total"),
         backdrop_name=meta.get("backdrop_name"),
+        chain_run_id=chain_run_id,
     )
 
 
@@ -793,6 +794,7 @@ async def _discover_collections(
     reserve: Callable[[str], bool],
     *,
     run_id: int | None = None,
+    reporter: Reporter | None = None,
 ) -> dict[str, Any]:
     """Каталог подарков и первые страницы ресейла; прогресс задачи пишется в БД."""
     run = store.nft_chain_run(run_id) if run_id is not None else None
@@ -800,12 +802,18 @@ async def _discover_collections(
     start_used = used
     entries = json.loads(run["discovery_ids"]) if run and run.get("discovery_ids") else None
     index = int(run.get("discovery_index") or 0) if run else 0
-    found = 0
+    found = new_items = 0
     retrying = bool(run and str(run.get("inflight") or "").startswith("discovery:"))
+
+    async def report(phase: str) -> None:
+        if reporter is not None:
+            await reporter({"phase": phase, "done": used, "total": budget, "found": new_items})
+
     if entries is None:
         if (used >= budget and not retrying) or not reserve("discovery:catalog"):
             return {"requests": 0, "collections": 0, "errors": 0}
         used += 1
+        await report("получаю каталог подарков")
         catalog = await limiter.call(lambda: client(GetStarGiftsRequest(hash=0)), attempts=1)
         entries = []
         for gift in getattr(catalog, "gifts", None) or []:
@@ -817,6 +825,7 @@ async def _discover_collections(
                                 "total": _as_int(getattr(gift, "availability_total", None))})
         if run_id is not None:
             store.save_nft_chain_catalog(run_id, entries)
+        await report(f"каталог: {len(entries)} подарков для проверки")
         retrying = False
     while index < len(entries) and (used < budget or retrying):
         entry = entries[index]
@@ -824,6 +833,7 @@ async def _discover_collections(
         if not reserve(f"discovery:resale:{gift_id}"):
             break
         used += 1
+        await report(f"проверяю продажи коллекции {index + 1}/{len(entries)}")
         resale = await limiter.call(
             lambda gift_id=gift_id: client(GetResaleStarGiftsRequest(gift_id=gift_id, offset="", limit=1)),
             attempts=1,
@@ -836,18 +846,27 @@ async def _discover_collections(
             base = _slug_base(meta.get("slug"))
             if not base:
                 continue
-            store.upsert_nft_collection(
-                base, gift_id=gift_id, title=meta.get("title") or entry.get("title"),
-                total=meta.get("availability_total") or entry.get("total"),
-            )
+            if meta.get("gift_id") != gift_id:
+                raise ValueError("Telegram вернул NFT другой коллекции; позиция сохранена")
+            # Найденная в продаже вещь сама является результатом, а не только
+            # подсказкой для будущего перебора номеров.
+            owner = meta.get("owner_tg_id")
+            user = next((u for u in getattr(resale, "users", []) or []
+                         if isinstance(u, User) and u.id == owner), None)
+            created = _remember_meta(store, meta, owner_tg_id=owner,
+                                     owner_username=getattr(user, "username", None),
+                                     owner_name=meta.get("owner_name"), chain_run_id=run_id)
+            new_items += int(created)
             found += 1
             break
         index += 1
         if run_id is not None:
             store.advance_nft_chain_discovery(run_id, index)
+        await report(f"проверены продажи {index}/{len(entries)} · найдено коллекций {found}")
     if run_id is not None:
         store.finish_nft_chain_discovery(run_id)
-    return {"requests": used - start_used, "collections": found, "errors": 0}
+    return {"requests": used - start_used, "collections": found, "new": new_items,
+            "catalog_checked": index, "catalog_total": len(entries), "errors": 0}
 
 
 async def resolve_unique_gift(pool: SessionPool, store: Store, slug: str) -> dict[str, Any]:
@@ -925,6 +944,7 @@ async def crawl_nft_chain(
     if discover and (run is None or not run["discovery_done"]):
         discovery = await _discover_collections(
             client, limiter, store, max(1, min(80, budget // 4 or 1)), reserve, run_id=run_id,
+            reporter=reporter,
         )
 
     items = new_items = owners = on_chain = hosted = errors = 0
@@ -960,6 +980,9 @@ async def crawl_nft_chain(
         item_slug = f"{base}-{num}"
         if not reserve(item_slug):
             break
+        if reporter is not None:
+            await reporter({"phase": f"проверяю {item_slug}", "done": used, "total": budget,
+                            "found": new_items + discovery.get("new", 0)})
         invalid = False
         try:
             response = await limiter.call(lambda item_slug=item_slug: client(GetUniqueStarGiftRequest(slug=item_slug)),
@@ -981,13 +1004,17 @@ async def crawl_nft_chain(
                 raise ValueError("Telegram вернул неожиданный формат NFT; позиция сохранена")
             items += 1
             meta = _unique_meta(gift)
+            if str(meta.get("slug") or "").casefold() != item_slug.casefold():
+                raise ValueError("Telegram вернул другой NFT; позиция сохранена")
             owner_tg_id = meta.get("owner_tg_id")
             username = None
             if owner_tg_id:
+                user = next((u for u in getattr(response, "users", []) or []
+                             if isinstance(u, User) and u.id == owner_tg_id), None)
                 existing = store.get_target(owner_tg_id)
-                username = existing.get("username") if existing else None
+                username = getattr(user, "username", None) or (existing.get("username") if existing else None)
             created = _remember_meta(store, meta, owner_tg_id=owner_tg_id, owner_username=username,
-                                     owner_name=meta.get("owner_name"))
+                                     owner_name=meta.get("owner_name"), chain_run_id=run_id)
             new_items += int(created)
             owner_found = bool(owner_tg_id)
             owners += int(owner_found)
@@ -995,8 +1022,7 @@ async def crawl_nft_chain(
             on_chain += int(chain)
             hosted += int(not chain)
         if run_id is not None:
-            store.finish_nft_chain_item(run_id, base, cursor=num + 1, created=created,
-                                        owner=owner_found, on_chain=chain, error=last_error if invalid else None)
+            store.finish_nft_chain_item(run_id, base, cursor=num + 1, owner=owner_found, on_chain=chain, error=last_error if invalid else None)
         else:
             store.advance_nft_collection(base, cursor=num + 1, scanned=1, owners=int(owner_found),
                                          on_chain=int(chain), error=last_error if invalid else None)
@@ -1004,14 +1030,14 @@ async def crawl_nft_chain(
             latest = store.query_one("SELECT total FROM nft_collections WHERE slug_base = ?", (base,))
             if latest and num >= int(latest["total"]):
                 collections_done += 1
-        if reporter is not None and (used % 10 == 0 or used >= budget or num >= collection_total):
+        if reporter is not None:
             await reporter({"phase": f"{base}: {num} из {collection_total}",
-                            "done": used, "total": budget, "found": new_items})
+                            "done": used, "total": budget, "found": new_items + discovery.get("new", 0)})
 
     summary = store.gift_summary()
     return {"requests": used - start_used, "budget": budget, "discovery": discovery,
             "collections": collections_done, "collections_known": len(store.nft_collections(500)),
-            "items": items, "new": new_items, "owners": owners, "on_chain": on_chain,
+            "items": items, "new": new_items + discovery.get("new", 0), "owners": owners, "on_chain": on_chain,
             "hosted": hosted, "errors": errors, "last_error": last_error, "summary": summary,
             "inventory": store.nft_summary(), "progress": store.nft_collections(50)}
 

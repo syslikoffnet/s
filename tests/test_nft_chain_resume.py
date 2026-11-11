@@ -319,3 +319,125 @@ async def test_resume_old_inflight_after_another_search_advanced_collection(tmp_
     assert calls == ["Bear-2", "Bear-3"]
     assert store.nft_chain_run(run)["inflight"] is None
     store.close()
+
+
+async def test_discovery_saves_resale_nft_and_reports_progress(tmp_path):
+    settings = settings_for(tmp_path)
+    store = Store(settings.db_path)
+    run = store.create_nft_chain_run(8, True, None, None)
+    progress = []
+
+    class Client:
+        async def __call__(self, request):
+            if type(request).__name__ == "GetStarGiftsRequest":
+                return SimpleNamespace(gifts=[SimpleNamespace(id=9, availability_total=3)])
+            if type(request).__name__ == "GetResaleStarGiftsRequest":
+                return SimpleNamespace(gifts=[unique(2)], users=[types.User(id=102, username="seller")])
+            return UniqueStarGift(gift=unique(int(request.slug.rsplit("-", 1)[1])), chats=[],
+                                  users=[types.User(id=102, username="seller")])
+
+    async def report(data):
+        progress.append(dict(data))
+
+    result = await crawl_nft_chain(pool_for(Client()), store, settings, requests=8, reporter=report, run_id=run)
+    assert result["new"] == 3
+    assert store.nft_chain_run(run)["new_items"] == 3
+    assert {row["slug"] for row in store.nft_items()} == {"Bear-1", "Bear-2", "Bear-3"}
+    assert store.query_one("SELECT owner_username FROM nft_items WHERE slug='Bear-2'")["owner_username"] == "seller"
+    assert any("каталог" in event["phase"] for event in progress)
+    assert any("продажи" in event["phase"] and event["found"] == 1 for event in progress)
+    assert any("Bear-1" in event["phase"] for event in progress)
+    store.close()
+
+
+async def test_discovery_count_survives_restart_after_insert(tmp_path, monkeypatch):
+    settings = settings_for(tmp_path)
+    store = Store(settings.db_path)
+    run = store.create_nft_chain_run(8, True, None, None)
+    advance = store.advance_nft_chain_discovery
+    fail = True
+
+    def interrupt(run_id, index):
+        nonlocal fail
+        if fail:
+            fail = False
+            raise OSError("ошибка записи позиции")
+        advance(run_id, index)
+
+    monkeypatch.setattr(store, "advance_nft_chain_discovery", interrupt)
+
+    class Client:
+        async def __call__(self, request):
+            if type(request).__name__ == "GetStarGiftsRequest":
+                return SimpleNamespace(gifts=[SimpleNamespace(id=9, availability_total=3)])
+            if type(request).__name__ == "GetResaleStarGiftsRequest":
+                return SimpleNamespace(gifts=[unique(2)], users=[])
+            return UniqueStarGift(gift=unique(int(request.slug.rsplit("-", 1)[1])), chats=[], users=[])
+
+    with pytest.raises(OSError, match="позиции"):
+        await crawl_nft_chain(pool_for(Client()), store, settings, requests=8, run_id=run)
+    assert store.nft_chain_run(run)["new_items"] == 1
+    assert store.nft_chain_run(run)["inflight"] == "discovery:resale:9"
+    await crawl_nft_chain(pool_for(Client()), store, settings, requests=8, run_id=run)
+    assert store.nft_chain_run(run)["new_items"] == 3
+    assert len(store.nft_items()) == 3
+    store.close()
+
+
+async def test_wrong_nft_response_never_advances_or_saves(tmp_path):
+    settings = settings_for(tmp_path)
+    store = Store(settings.db_path)
+    store.upsert_nft_collection("Bear", total=3)
+    run = store.create_nft_chain_run(3, False, None, None)
+
+    class Client:
+        async def __call__(self, request):
+            return UniqueStarGift(gift=unique(2), chats=[], users=[])
+
+    with pytest.raises(ValueError, match="другой NFT"):
+        await crawl_nft_chain(pool_for(Client()), store, settings, requests=3, discover=False, run_id=run)
+    assert store.nft_items() == []
+    assert store.next_nft_collection()["cursor"] == 1
+    assert store.nft_chain_run(run)["inflight"] == "Bear-1"
+    store.close()
+
+
+def test_empty_collection_discovery_explains_result(tmp_path, monkeypatch):
+    import time
+
+    settings = settings_for(tmp_path)
+
+    async def crawl(*args, **kwargs):
+        return {"collections_known": 0, "items": 0}
+
+    monkeypatch.setattr("healdragg.api.crawl_nft_chain", crawl)
+    app = create_app(settings)
+    app.state.hd.store.add_session("chosen", "chosen.session")
+    with TestClient(app) as client:
+        run = client.post("/api/gifts/chain", headers=HEADERS, json={"requests": 10}).json()["state"]["run_id"]
+        for _ in range(100):
+            state = client.get("/api/gifts/chain", headers=HEADERS).json()["task"]
+            if state["status"] == "done":
+                break
+            time.sleep(.01)
+        assert state["id"] == run and state["status"] == "done"
+        assert "Коллекции не найдены" in state["last_error"]
+
+
+async def test_discovery_rejects_resale_from_another_collection(tmp_path):
+    settings = settings_for(tmp_path)
+    store = Store(settings.db_path)
+    run = store.create_nft_chain_run(8, True, None, None)
+
+    class Client:
+        async def __call__(self, request):
+            if type(request).__name__ == "GetStarGiftsRequest":
+                return SimpleNamespace(gifts=[SimpleNamespace(id=8, availability_total=3)])
+            return SimpleNamespace(gifts=[unique(1)], users=[])
+
+    with pytest.raises(ValueError, match="другой коллекции"):
+        await crawl_nft_chain(pool_for(Client()), store, settings, requests=8, run_id=run)
+    assert store.nft_items() == []
+    assert store.nft_chain_run(run)["discovery_index"] == 0
+    assert store.nft_chain_run(run)["inflight"] == "discovery:resale:8"
+    store.close()
