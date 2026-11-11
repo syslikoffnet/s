@@ -31,6 +31,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,6 +78,8 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
     var doneHandle by remember { mutableStateOf<String?>(null) }
     var toDelete by remember { mutableStateOf<SessionInfo?>(null) }
     var importing by remember { mutableStateOf(false) }
+    var accountPurpose by rememberSaveable { mutableStateOf("scan") }
+    var importPurpose by remember { mutableStateOf("scan") }
     var businessSession by remember { mutableStateOf<SessionInfo?>(null) }
     var businessData by remember { mutableStateOf<JSONObject?>(null) }
     var businessError by remember { mutableStateOf<String?>(null) }
@@ -95,7 +98,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
         val name = fileNameFrom(context, uri)
         importing = true
         error = null
-        vm.importSession(name, payload) { result ->
+        vm.importSession(name, payload, importPurpose) { result ->
             importing = false
             result.onSuccess { outcome ->
                 onToast(outcome.summary)
@@ -122,7 +125,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
         if (busy) return
         busy = true
         error = null
-        vm.startLogin(phone.trim()) { result ->
+        vm.startLogin(phone.trim(), accountPurpose) { result ->
             busy = false
             result.onSuccess { flow ->
                 flowId = flow.id
@@ -234,6 +237,19 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                 }
             }
 
+            item("account-purpose") {
+                HdCard {
+                    Text("Назначение нового аккаунта", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = accountPurpose == "scan", enabled = step == LoginStep.Idle && !importing,
+                            onClick = { accountPurpose = "scan" }, label = { Text("Парсинг") })
+                        FilterChip(selected = accountPurpose == "offers", enabled = step == LoginStep.Idle && !importing,
+                            onClick = { accountPurpose = "offers" }, label = { Text("Предложения") })
+                    }
+                    Text("Аккаунт предложений не участвует в парсинге. Используйте разные Telegram-аккаунты, а не два файла одной сессии. Отправка предложений ещё не включена.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
             item("import") {
                 HdCard {
                     Text(
@@ -252,6 +268,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                     Spacer(Modifier.height(10.dp))
                     OutlinedButton(
                         onClick = {
+                            importPurpose = accountPurpose
                             runCatching {
                                 pickSession.launch(
                                     arrayOf(
@@ -683,6 +700,7 @@ private fun SessionRow(session: SessionInfo, onDelete: () -> Unit, onBusiness: (
                 Text(
                     text = buildString {
                         append(if (session.active) "активен" else session.status)
+                        append(if (session.purpose == "offers") " · предложения" else " · парсинг")
                         if (session.groupsCount > 0) append(" · чатов: ${session.groupsCount}")
                         append(" · файл: ${session.name}")
                     },

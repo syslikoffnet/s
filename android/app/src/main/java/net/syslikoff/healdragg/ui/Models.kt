@@ -362,6 +362,7 @@ data class SessionInfo(
     val status: String,
     val groupsCount: Int,
     val lastUsedAt: Long,
+    val purpose: String = "scan",
 ) {
     val active: Boolean get() = status.equals("active", ignoreCase = true)
 
@@ -376,6 +377,7 @@ data class SessionInfo(
             status = o.str("status") ?: "active",
             groupsCount = o.int("groups_count"),
             lastUsedAt = o.num("last_used_at"),
+            purpose = o.str("purpose") ?: "scan",
         )
     }
 }

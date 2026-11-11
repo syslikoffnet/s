@@ -562,13 +562,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── аккаунты из файла и резервные копии ─────────────────────────────────
 
-    fun importSession(filename: String, payload: ByteArray, onDone: (Result<SessionImportResult>) -> Unit) {
+    fun importSession(filename: String, payload: ByteArray, purpose: String = "scan", onDone: (Result<SessionImportResult>) -> Unit) {
         val client = api ?: run {
             onDone(Result.failure(ApiException(0, "Движок не запущен")))
             return
         }
         viewModelScope.launch {
-            val result = runCatching { client.importSession(filename, payload) }
+            val result = runCatching { client.importSession(filename, payload, purpose) }
             result.onSuccess { refresh() }
             onDone(result)
         }
@@ -705,12 +705,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── вход в Telegram ──────────────────────────────────────────────────────
 
-    fun startLogin(phone: String, onDone: (Result<LoginFlow>) -> Unit) {
+    fun startLogin(phone: String, purpose: String = "scan", onDone: (Result<LoginFlow>) -> Unit) {
         val client = api ?: run {
             onDone(Result.failure(ApiException(0, "Движок не запущен")))
             return
         }
-        viewModelScope.launch { onDone(runCatching { client.startLogin(phone) }) }
+        viewModelScope.launch { onDone(runCatching { client.startLogin(phone, purpose = purpose) }) }
     }
 
     fun submitLoginCode(id: String, code: String, onDone: (Result<LoginFlow>) -> Unit) {

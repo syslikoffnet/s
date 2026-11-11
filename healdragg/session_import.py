@@ -63,12 +63,14 @@ def session_info(path: Path) -> dict[str, Any] | None:
     return _read_session(path)
 
 
-def _store_session(store: Store, name: str, target: Path, info: dict[str, Any], **extra: Any) -> dict[str, Any]:
+def _store_session(store: Store, name: str, target: Path, info: dict[str, Any], *,
+                   purpose: str = "scan", **extra: Any) -> dict[str, Any]:
     store.add_session(
         name,
         str(target),
         tg_user_id=info.get("user_id") if isinstance(info.get("user_id"), int) else None,
         status="active",
+        purpose=purpose,
     )
     return {
         "name": name,
@@ -95,11 +97,12 @@ def _import_single(
     payload: bytes,
     store: Store,
     sessions_dir: Path,
+    *, purpose: str = "scan",
 ) -> dict[str, Any]:
     """Один файл: .session или .json. Возвращает описание результата."""
     suffix = Path(filename).suffix.lower()
     if suffix == ".json":
-        return _import_json(filename, payload, store, sessions_dir)
+        return _import_json(filename, payload, store, sessions_dir, purpose=purpose)
     if suffix not in {"", ".session", ".db"} and not suffix.startswith(".sess"):
         raise ValueError("поддерживаются .session, .json и tdata.zip")
     base = _safe_name(filename, "session")
@@ -109,7 +112,7 @@ def _import_single(
     if info is None:
         target.unlink(missing_ok=True)
         raise ValueError("файл не похож на Telethon-сессию: нет ключа авторизации")
-    return _store_session(store, name, target, info, source=suffix.lstrip(".") or "session")
+    return _store_session(store, name, target, info, purpose=purpose, source=suffix.lstrip(".") or "session")
 
 
 def _import_json(
@@ -117,6 +120,7 @@ def _import_json(
     payload: bytes,
     store: Store,
     sessions_dir: Path,
+    *, purpose: str = "scan",
 ) -> dict[str, Any]:
     raw = payload.decode("utf-8", "replace").strip()
     session: StringSession | None = None
@@ -153,7 +157,7 @@ def _import_json(
     sqlite.save()
     sqlite.close()
     info = _read_session(target) or {"dc_id": session.dc_id, "user_id": None}
-    return _store_session(store, name, target, info, source="json")
+    return _store_session(store, name, target, info, purpose=purpose, source="json")
 
 
 def import_upload(
@@ -161,8 +165,11 @@ def import_upload(
     payload: bytes,
     store: Store,
     sessions_dir: Path,
+    *, purpose: str = "scan",
 ) -> dict[str, Any]:
     """Разбирает загруженный файл и регистрирует все найденные аккаунты."""
+    if purpose not in {"scan", "offers"}:
+        raise ValueError("Неизвестное назначение сессии")
     if not payload:
         raise ValueError("пустой файл")
     if len(payload) > MAX_UPLOAD:
@@ -185,13 +192,14 @@ def import_upload(
                 name,
                 target,
                 {"dc_id": info.get("dc_id"), "user_id": info.get("user_id")},
+                purpose=purpose,
                 source="tdata",
                 accounts=info.get("accounts"),
             )
             return {"imported": [entry], "skipped": [], "errors": []}
-        return _import_zip(filename, payload, store, sessions_dir)
+        return _import_zip(filename, payload, store, sessions_dir, purpose=purpose)
 
-    entry = _import_single(filename, payload, store, sessions_dir)
+    entry = _import_single(filename, payload, store, sessions_dir, purpose=purpose)
     return {"imported": [entry], "skipped": [], "errors": []}
 
 
@@ -200,6 +208,7 @@ def _import_zip(
     payload: bytes,
     store: Store,
     sessions_dir: Path,
+    *, purpose: str = "scan",
 ) -> dict[str, Any]:
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -224,7 +233,7 @@ def _import_zip(
                 if archive.getinfo(name).file_size > 100 * 1024 * 1024:
                     raise ValueError("Файл сессии больше 100 МБ")
                 data = archive.read(name)
-                result = _import_single(Path(name).name, data, store, sessions_dir)
+                result = _import_single(Path(name).name, data, store, sessions_dir, purpose=purpose)
                 imported.append(result)
             except ValueError as exc:
                 errors.append({"file": name, "error": str(exc)})

@@ -227,3 +227,30 @@ def test_tdata_limits_total_uncompressed_size(tmp_path: Path, monkeypatch) -> No
     raw[position + 24:position + 28] = (601 * 1024 * 1024).to_bytes(4, "little")
     with pytest.raises(ValueError, match="велик"):
         tdata._safe_extract(bytes(raw), tmp_path)
+
+
+def test_import_offers_session_is_reserved_atomically(home) -> None:
+    store, sessions = home
+    payload = _make_session(Path(str(sessions) + "-offer-src.session"))
+    result = import_upload("offer.session", payload, store, sessions, purpose="offers")
+    name = result["imported"][0]["name"]
+    assert store.get_session(name)["purpose"] == "offers"
+    assert name not in store.session_names()
+    assert name in store.session_names(only_active=False)
+    # Обычное обновление состояния сессии не меняет назначение.
+    store.add_session(name, str(sessions / f"{name}.session"), username="writer")
+    assert store.get_session(name)["purpose"] == "offers"
+
+
+def test_backup_restores_reserved_session_purpose(home, tmp_path: Path) -> None:
+    store, sessions = home
+    payload = _make_session(Path(str(sessions) + "-src.session"))
+    import_upload("writer.session", payload, store, sessions, purpose="offers")
+    created = create_backup(store, sessions_dir=sessions)
+    fresh = Store(tmp_path / "other" / "app.db")
+    try:
+        restore_backup(Path(created["path"]).read_bytes(), fresh)
+        assert fresh.get_session("writer")["purpose"] == "offers"
+        assert fresh.session_names() == []
+    finally:
+        fresh.close()

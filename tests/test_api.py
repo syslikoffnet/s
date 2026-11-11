@@ -847,3 +847,13 @@ def test_archive_gift_run_preserves_queue_and_requires_stop(client: TestClient, 
     assert client.post(f"/api/gifts/runs/{run}/archive", headers=HEADERS, json={"archived": True}).status_code == 409
     assert client.post(f"/api/jobs/gifts:run:{run}/cancel", headers=HEADERS).json()["ok"]
     assert store.gift_crawl_next(run)["tg_id"] == 42
+
+
+def test_offer_session_is_listed_but_not_selected_for_scanning(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.add_session("writer", "writer.session", purpose="offers")
+    rows = client.get("/api/sessions", headers=HEADERS).json()
+    assert next(row for row in rows if row["name"] == "writer")["purpose"] == "offers"
+    assert "writer" not in store.session_names()
+    assert client.post("/api/gifts/chain", headers=HEADERS, json={}).status_code == 409
+    assert client.post("/api/session/start", headers=HEADERS, json={"purpose": "invalid"}).status_code == 400

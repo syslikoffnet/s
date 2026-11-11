@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     first_name   TEXT,
     phone        TEXT,
     status       TEXT NOT NULL DEFAULT 'new',
+    purpose      TEXT NOT NULL DEFAULT 'scan',
     last_error   TEXT,
     added_at     INTEGER NOT NULL,
     last_used_at INTEGER
@@ -519,6 +520,9 @@ class Store:
             "(CASE WHEN tg_id < 0 THEN -tg_id - 1000000000000 ELSE tg_id END) || '/1' "
             "WHERE link IS NULL AND kind IN ('channel', 'supergroup') AND tg_id <> 0"
         )
+        session_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "purpose" not in session_cols:
+            self._soft("ALTER TABLE sessions ADD COLUMN purpose TEXT NOT NULL DEFAULT 'scan'")
         target_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(targets)")}
         target_additions = {
             "photo_path": "TEXT",
@@ -717,21 +721,25 @@ class Store:
         first_name: str | None = None,
         phone: str | None = None,
         status: str = "active",
+        purpose: str | None = None,
     ) -> int:
+        if purpose not in (None, "scan", "offers"):
+            raise ValueError("Неизвестное назначение сессии")
         with self.tx() as conn:
             conn.execute(
                 """
-                INSERT INTO sessions(name, session_file, tg_user_id, username, first_name, phone, status, added_at)
-                VALUES(?,?,?,?,?,?,?,?)
+                INSERT INTO sessions(name, session_file, tg_user_id, username, first_name, phone, status, added_at, purpose)
+                VALUES(?,?,?,?,?,?,?,?,coalesce(?, 'scan'))
                 ON CONFLICT(name) DO UPDATE SET
                     session_file = excluded.session_file,
                     tg_user_id   = coalesce(excluded.tg_user_id, sessions.tg_user_id),
                     username     = coalesce(excluded.username, sessions.username),
                     first_name   = coalesce(excluded.first_name, sessions.first_name),
                     phone        = coalesce(excluded.phone, sessions.phone),
-                    status       = excluded.status
+                    status       = excluded.status,
+                    purpose      = coalesce(?, sessions.purpose)
                 """,
-                (name, session_file, tg_user_id, username, first_name, phone, status, now_ts()),
+                (name, session_file, tg_user_id, username, first_name, phone, status, now_ts(), purpose, purpose),
             )
             row = conn.execute("SELECT id FROM sessions WHERE name = ?", (name,)).fetchone()
         return int(row["id"])
@@ -761,7 +769,7 @@ class Store:
 
     def session_names(self, only_active: bool = True) -> list[str]:
         if only_active:
-            rows = self.query("SELECT name FROM sessions WHERE status = 'active' ORDER BY id")
+            rows = self.query("SELECT name FROM sessions WHERE status = 'active' AND purpose = 'scan' ORDER BY id")
         else:
             rows = self.query("SELECT name FROM sessions ORDER BY id")
         return [r["name"] for r in rows]

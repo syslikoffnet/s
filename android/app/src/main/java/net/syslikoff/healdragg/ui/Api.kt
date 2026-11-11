@@ -76,8 +76,8 @@ class Api(private val baseUrl: String, private val token: String) {
         else obj(path, timeoutMillis = PROFILE_TIMEOUT)
     }
 
-    suspend fun startLogin(phone: String, name: String = "main"): LoginFlow {
-        val body = JSONObject().put("phone", phone).put("name", name)
+    suspend fun startLogin(phone: String, name: String = "main", purpose: String = "scan"): LoginFlow {
+        val body = JSONObject().put("phone", phone).put("name", name).put("purpose", purpose)
         return LoginFlow.from(obj("api/session/start", "POST", body, LOGIN_TIMEOUT))
     }
 
@@ -354,8 +354,9 @@ class Api(private val baseUrl: String, private val token: String) {
 
     // ── аккаунты и резервные копии ──────────────────────────────────────────
 
-    suspend fun importSession(filename: String, payload: ByteArray): SessionImportResult {
+    suspend fun importSession(filename: String, payload: ByteArray, purpose: String = "scan"): SessionImportResult {
         val body = JSONObject()
+            .put("purpose", purpose)
             .put("filename", filename)
             .put("content_b64", Base64.encodeToString(payload, Base64.NO_WRAP))
         val data = obj("api/sessions/import", "POST", body, IMPORT_TIMEOUT)

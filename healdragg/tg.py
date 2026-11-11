@@ -124,8 +124,11 @@ class SessionPool:
         self._limiters: dict[str, RateLimiter] = {}
 
     # ── подключение ─────────────────────────────────────────────────────────
-    async def connect(self, name: str, *, require_auth: bool = True) -> Account:
+    async def connect(self, name: str, *, require_auth: bool = True, allow_reserved: bool = False) -> Account:
         async with self._connect_lock:
+            row = self.store.get_session(name)
+            if row and row.get("purpose") == "offers" and not allow_reserved:
+                raise RuntimeError(f"Сессия «{name}» выделена для предложений и не используется для парсинга")
             account = self._accounts.get(name)
             if account and account.client.is_connected():
                 if not require_auth or await account.client.is_user_authorized():

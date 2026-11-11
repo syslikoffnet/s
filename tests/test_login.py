@@ -97,3 +97,39 @@ def test_rejects_path_in_session_name(manager: LoginManager) -> None:
     for name in ("../outside", "/tmp/account", "dir\\account", ".."):
         with pytest.raises(LoginError, match="имя сессии"):
             asyncio.run(manager.start("+79990000000", name))
+
+
+def test_login_saves_offers_purpose(manager: LoginManager, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from healdragg import login as login_module
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def send_code_request(self, phone):
+            return SimpleNamespace(phone_code_hash="hash")
+
+        async def sign_in(self, **kwargs):
+            pass
+
+        async def get_me(self):
+            return SimpleNamespace(id=12345, username="writer", first_name="Writer", phone=None)
+
+    monkeypatch.setattr(login_module, "TelegramClient", Client)
+    manager.settings.api_id = 123
+    manager.settings.api_hash = "a" * 32
+
+    async def login():
+        flow = await manager.start("+79990000000", purpose="offers")
+        await manager.submit_code(flow["id"], "12345")
+    asyncio.run(login())
+    assert manager.store.get_session("main")["purpose"] == "offers"
+    assert manager.store.session_names() == []

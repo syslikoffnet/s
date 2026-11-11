@@ -225,3 +225,21 @@ async def test_pool_uses_saved_session_filename_and_rejects_missing_file(tmp_pat
     assert not (sessions / "missing.session").exists()
     await pool.close()
     store.close()
+
+
+async def test_reserved_offers_account_cannot_be_used_for_parsing(tmp_path):
+    from healdragg.config import Settings
+    from healdragg.db import Store
+    from healdragg.tg import SessionPool
+
+    store = Store(tmp_path / "app.db")
+    store.add_session("writer", str(tmp_path / "writer.session"), purpose="offers")
+    pool = SessionPool(Settings(home=tmp_path, db_path=store.path, sessions_dir=tmp_path / "sessions"), store)
+    try:
+        import pytest
+        with pytest.raises(RuntimeError, match="не используется для парсинга"):
+            await pool.connect("writer")
+        assert await pool.connect_many(["writer"]) == []
+    finally:
+        await pool.close()
+        store.close()

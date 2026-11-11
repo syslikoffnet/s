@@ -1742,7 +1742,7 @@ private fun OwnerGiftsScreen(
 ) {
     val api = vm.api
     val scope = rememberCoroutineScope()
-    val accounts = vm.sessions.filter { it.active }
+    val accounts = vm.sessions.filter { it.active && it.purpose == "scan" }
     var selectedSession by rememberSaveable(owner.tgId) { mutableStateOf("") }
     var rows by remember(owner.tgId) { mutableStateOf<List<GiftItem>>(emptyList()) }
     var total by remember(owner.tgId) { mutableStateOf(0) }

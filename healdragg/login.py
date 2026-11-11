@@ -73,11 +73,13 @@ class LoginManager:
         self._start_lock = asyncio.Lock()
 
     # ── шаги ────────────────────────────────────────────────────────────────
-    async def start(self, phone: str, name: str = "main") -> dict[str, Any]:
+    async def start(self, phone: str, name: str = "main", purpose: str = "scan") -> dict[str, Any]:
+        if purpose not in {"scan", "offers"}:
+            raise LoginError("Неизвестное назначение сессии")
         async with self._start_lock:
-            return await self._start(phone, name)
+            return await self._start(phone, name, purpose)
 
-    async def _start(self, phone: str, name: str = "main") -> dict[str, Any]:
+    async def _start(self, phone: str, name: str = "main", purpose: str = "scan") -> dict[str, Any]:
         await self._cleanup()
         phone = (phone or "").strip().replace(" ", "")
         if not phone:
@@ -140,6 +142,7 @@ class LoginManager:
             created_at=time.time(),
             client=client,
             phone_code_hash=getattr(sent, "phone_code_hash", None),
+            meta={"purpose": purpose},
         )
         self._flows[flow.id] = flow
         log.info("вход: код отправлен на %s (поток %s)", phone, flow.id)
@@ -212,6 +215,7 @@ class LoginManager:
                 first_name=me.first_name,
                 phone=getattr(me, "phone", None) or flow.phone,
                 status="active",
+                purpose=str(flow.meta.get("purpose", "scan")),
             )
             self.store.log_event("info", f"сессия {flow.name} подключена", "app")
         finally:

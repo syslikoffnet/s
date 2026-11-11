@@ -474,6 +474,7 @@ def create_app(settings: Settings) -> Starlette:
                 "username": s.get("username"),
                 "tg_user_id": s.get("tg_user_id"),
                 "status": s.get("status"),
+                "purpose": s.get("purpose", "scan"),
                 "groups_count": s.get("groups_count"),
                 "last_used_at": s.get("last_used_at"),
             }
@@ -486,6 +487,9 @@ def create_app(settings: Settings) -> Starlette:
         body = await _body(request)
         filename = str(body.get("filename") or "").strip() or "session.session"
         content = body.get("content_b64")
+        purpose = body.get("purpose", "scan")
+        if purpose not in ("scan", "offers"):
+            raise HTTPException(400, "Неизвестное назначение сессии")
         if not isinstance(content, str) or not content:
             raise HTTPException(400, "нужен файл: filename + content_b64")
         try:
@@ -494,7 +498,7 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, str(exc)) from exc
         async with state.session_mutation_lock:
             try:
-                result = await _safe_io(import_upload, filename, payload, state.store, settings.sessions_dir)
+                result = await _safe_io(import_upload, filename, payload, state.store, settings.sessions_dir, purpose=purpose)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
             if result.get("imported"):
@@ -609,9 +613,12 @@ def create_app(settings: Settings) -> Starlette:
         body = await _body(request)
         phone = str(body.get("phone") or "")
         name = str(body.get("name") or "main")
+        purpose = body.get("purpose", "scan")
+        if purpose not in ("scan", "offers"):
+            raise HTTPException(400, "Неизвестное назначение сессии")
         try:
             async with state.session_mutation_lock:
-                return await state.login.start(phone, name)
+                return await state.login.start(phone, name, purpose)
         except LoginError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -655,7 +662,7 @@ def create_app(settings: Settings) -> Starlette:
         async with state.session_mutation_lock:
             if name not in state.store.session_names(only_active=False):
                 raise HTTPException(404, "Сессии нет")
-            account = await state.pool.account(name)
+            account = await state.pool.connect(name, allow_reserved=True)
             return await (business.connect(account) if confirmed else business.status(account))
 
     async def delete_session(request: Request) -> dict[str, Any]:
