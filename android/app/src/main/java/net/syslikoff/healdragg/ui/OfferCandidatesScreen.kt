@@ -2,6 +2,7 @@ package net.syslikoff.healdragg.ui
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -37,7 +38,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.math.BigDecimal
 
-/** Только локальный предварительный просмотр. Отправка предложений не реализована. */
+/** Подбор, онлайн-проверка и отдельно подтверждённая отправка команд. */
 @Composable
 fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (String) -> Unit,
     onOpenAccounts: () -> Unit, initialQuery: String = "") {
@@ -70,6 +71,11 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
     var planInputJson by rememberSaveable { mutableStateOf<String?>(null) }
     var batch by remember { mutableStateOf<JSONObject?>(null) }
     var batchBusy by remember { mutableStateOf(false) }
+    var language by rememberSaveable { mutableStateOf("ru") }
+    var delivery by remember { mutableStateOf<JSONObject?>(null) }
+    var deliveryBusy by remember { mutableStateOf(false) }
+    var deliveryConfirm by remember { mutableStateOf<JSONObject?>(null) }
+    var reconcileDialog by remember { mutableStateOf(false) }
     val plan = remember(planJson) { planJson?.let { JSONObject(it) } }
     var planBusy by remember { mutableStateOf(false) }
     var offerSession by rememberSaveable { mutableStateOf("") }
@@ -198,6 +204,38 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
         }
     }
 
+    fun refreshDelivery() {
+        val client = api ?: return
+        scope.launch {
+            try { delivery = client.deliveryStatus() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось прочитать журнал отправки" }
+        }
+    }
+    fun prepareDelivery() {
+        val client = api ?: run { error = "Движок не запущен"; return }
+        val input = planInputJson ?: run { error = "Сначала рассчитайте черновик"; return }
+        if (offerSessions.none { it.name == offerSession }) { error = "Выберите аккаунт предложений"; return }
+        deliveryBusy = true
+        error = null
+        scope.launch {
+            try { deliveryConfirm = client.prepareDelivery(offerSession, JSONObject(input), language).optJSONObject("run") }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось подготовить отправку" }
+            finally { deliveryBusy = false; refreshDelivery() }
+        }
+    }
+    fun stopDelivery() {
+        val client = api ?: return
+        deliveryBusy = true
+        scope.launch {
+            try { client.stopDelivery(); refreshDelivery() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось остановить отправку" }
+            finally { deliveryBusy = false }
+        }
+    }
+
     LaunchedEffect(api) { if (api != null && !loaded) load(true) }
     LaunchedEffect(api) {
         val client = api ?: return@LaunchedEffect
@@ -205,6 +243,9 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
             try { batch = client.offerBatch().optJSONObject("run") }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { /* Проверку можно обновить при следующем опросе. */ }
+            try { delivery = client.deliveryStatus() }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Повторим получение статуса. */ }
             delay(3000)
         }
     }
@@ -218,7 +259,7 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 OutlinedButton(onClick = onBack) { Text("Назад к подаркам") }
                 Text("Подбор кандидатов", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
                 Spacer(Modifier.height(6.dp))
-                Text("Только локальный предварительный отбор. Выбор ничего не отправляет и не создаёт оффер. Автоматическая отправка предложений пока не реализована.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                Text("Подбор сам по себе ничего не отправляет. Отправка команд запускается отдельно после подтверждения списка и сумм.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = onOpenAccounts) { Text("Бизнес-бот @echidbot: проверить или подключить") }
                 Text("Откройте карточку нужного аккаунта и проверьте бота. Подключение требует отдельного согласия и само по себе не отправляет предложения.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.height(8.dp))
@@ -279,6 +320,43 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 Text("Цена округляется вверх до целых единиц. Записи без оценки или username пропускаются. Курс и оценка могут устареть.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
                 Button(onClick = { preview() }, enabled = !planBusy, modifier = Modifier.fillMaxWidth()) {
                     Text(if (planBusy) "Подбираю…" else "Рассчитать черновик")
+                }
+            }
+        }
+        item("delivery") {
+            HdCard {
+                Text("Автоотправка команд владельцам", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                Text("Команды будут видны владельцам в их личных чатах. Каждая команда содержит NFT, цену, валюту и язык; перед отправкой проверяются владелец и подключённый бизнес-бот. Обработка ботом и создание оффера не подтверждаются.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+                Text("Язык команды", color = Hd.Muted, style = MaterialTheme.typography.labelMedium)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("ru", "en", "zh", "ar", "ko", "ja", "tl", "th", "ms").forEach { lang ->
+                        FilterChip(selected = language == lang, onClick = { language = lang }, label = { Text(lang) })
+                    }
+                }
+                Text("Не чаще одного сообщения в минуту, не более 20 в сутки; суточный лимит суммы — 10000 star или 10 gram. Лимиты черновика тоже действуют; оценка и курс не гарантируют рыночную цену.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                val run = delivery?.optJSONObject("run")
+                val running = run?.optString("status") == "running"
+                val blocked = delivery?.optBoolean("restore_blocked") == true || (delivery?.optInt("unresolved") ?: 0) > 0
+                if (blocked) {
+                    Text("История могла устареть или результат отправки неизвестен. Проверьте чаты и предложения в Telegram: повтор может создать дубликат.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = { reconcileDialog = true }, enabled = !deliveryBusy) { Text("Подтвердить ручную сверку") }
+                }
+                if (running) {
+                    Button(onClick = { stopDelivery() }, enabled = !deliveryBusy, modifier = Modifier.fillMaxWidth()) { Text("Остановить отправку") }
+                    Text("Уже отправленный запрос отменить нельзя. При неизвестном результате проверьте чат.", color = Hd.Warn, style = MaterialTheme.typography.labelSmall)
+                } else {
+                    Button(onClick = { prepareDelivery() }, enabled = !deliveryBusy && !blocked && planInputJson != null && delivery != null, modifier = Modifier.fillMaxWidth()) { Text("Подготовить отправку") }
+                }
+                if (run != null) {
+                    Text("Партия: ${when (run.optString("status")) { "prepared" -> "подготовлена"; "running" -> "отправляется"; "done" -> "завершена"; "stopped" -> "остановлена"; "interrupted" -> "прервана"; else -> "ошибка" }}", color = Hd.Text, style = MaterialTheme.typography.bodySmall)
+                    run.str("error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
+                }
+                TextButton(onClick = { refreshDelivery() }) { Text("Обновить журнал") }
+                val history = delivery?.arr("history")
+                if (history != null) for (i in 0 until history.length()) {
+                    val attempt = history.optJSONObject(i) ?: continue
+                    Text("${attempt.optString("slug")} · ID ${attempt.optLong("seller_id")} · ${attempt.optLong("amount")} ${attempt.optString("currency")} · ${if (attempt.optString("status") == "telegram_ack") "принято Telegram" else "исход неизвестен"}", color = Hd.Text, style = MaterialTheme.typography.labelSmall)
+                    Text("${fullDate(attempt.optLong("created_at"))} · аккаунт ID ${attempt.optLong("buyer_id")}\n${attempt.optString("command")}", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -365,6 +443,49 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
             OutlinedButton(onClick = { load(false) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Показать ещё") }
             Text("Следующая страница использует последние применённые фильтры.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
         }
+    }
+    deliveryConfirm?.let { run ->
+        val sendRows = run.arr("rows")
+        AlertDialog(
+            onDismissRequest = { if (!deliveryBusy) deliveryConfirm = null },
+            title = { Text("Подтвердить отправку") },
+            text = {
+                androidx.compose.foundation.layout.Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text("Аккаунт: ${run.optString("session")}\nКоманд: ${sendRows.length()} · сумма ${run.optLong("total")} ${run.optString("currency")}\n\nКоманды будут отправлены в личные чаты этих владельцев, не боту. Оффер и оплата не подтверждаются. Отмена не отзовёт уже отправленное сообщение.\n")
+                    for (i in 0 until sendRows.length()) {
+                        val item = sendRows.optJSONObject(i) ?: continue
+                        Text("ID ${item.optLong("seller_id")}: ${item.optString("command")}\n", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = { TextButton(enabled = !deliveryBusy, onClick = {
+                val client = api ?: return@TextButton
+                deliveryBusy = true
+                scope.launch {
+                    try { client.startDelivery(run.optString("id")); deliveryConfirm = null; refreshDelivery() }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { error = e.message ?: "Не удалось запустить отправку"; deliveryConfirm = null; refreshDelivery() }
+                    finally { deliveryBusy = false }
+                }
+            }) { Text(if (deliveryBusy) "Запускаю…" else "Запустить отправку") } },
+            dismissButton = { TextButton(enabled = !deliveryBusy, onClick = { deliveryConfirm = null }) { Text("Отмена") } },
+        )
+    }
+    if (reconcileDialog) {
+        AlertDialog(
+            onDismissRequest = { reconcileDialog = false },
+            title = { Text("Сверка истории") },
+            text = { Text("Убедитесь в Telegram, что проверили все неопределённые попытки и возможные отправки после восстановления копии. Снятие блокировки не удаляет журнал и не разрешает повтор по тому же NFT.") },
+            confirmButton = { TextButton(onClick = {
+                reconcileDialog = false
+                scope.launch {
+                    try { api?.acknowledgeDelivery(); refreshDelivery() }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { error = e.message ?: "Не удалось подтвердить сверку" }
+                }
+            }) { Text("Проверил") } },
+            dismissButton = { TextButton(onClick = { reconcileDialog = false }) { Text("Отмена") } },
+        )
     }
     verified?.let { result ->
         val bot = result.optJSONObject("bot")

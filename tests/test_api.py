@@ -965,3 +965,58 @@ def test_offer_batch_api_start_stop_and_recovery(client: TestClient, monkeypatch
     assert stopped["rows"][0]["status"] == "pending"
     assert client.post("/api/offers/batch/stop", headers=HEADERS, json={}).json()["run"]["status"] == "stopped"
     assert client.post("/api/offers/send", headers=HEADERS, json={}).status_code == 404
+
+
+def test_offer_delivery_api_requires_confirmation_and_can_stop(client: TestClient, monkeypatch):
+    import asyncio
+
+    from healdragg import offer_delivery
+
+    async def wait_forever(*args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(offer_delivery, '_open_account', wait_forever)
+    store = client.app.state.hd.store
+    store.add_session('writer', 'writer.session', purpose='offers')
+    store.upsert_nft_item('Bear-1', owner_tg_id=1, owner_username='seller1', value_usd=1000)
+    body = {'session': 'writer', 'language': 'ru', 'plan': {'currency': 'star', 'usd_per_unit': '0.02',
+            'markup_percent': '0', 'max_per_offer': 1000, 'total_budget': 1000, 'max_offers': 1}}
+    assert client.get('/api/offers/delivery').status_code == 401
+    assert client.post('/api/offers/delivery/prepare', json=body).status_code == 401
+    prepared = client.post('/api/offers/delivery/prepare', headers=HEADERS, json=body).json()['run']
+    assert prepared['rows'][0]['command'] == '/createoffer @seller1 https://t.me/nft/Bear-1 500 star ru'
+    assert client.post('/api/offers/delivery/start', headers=HEADERS, json={'run_id': prepared['id']}).status_code == 400
+    assert not client.get('/api/offers/delivery', headers=HEADERS).json()['history']
+    started = client.post('/api/offers/delivery/start', headers=HEADERS, json={'run_id': prepared['id'], 'confirm': True})
+    assert started.status_code == 200 and started.json()['run']['status'] == 'running'
+    assert client.post('/api/offers/delivery/start', headers=HEADERS, json={'run_id': prepared['id'], 'confirm': True}).status_code == 409
+    assert client.post('/api/offers/delivery/stop', headers=HEADERS, json={}).json()['run']['status'] == 'stopped'
+    assert not client.get('/api/offers/delivery', headers=HEADERS).json()['history']
+
+
+def test_restore_blocks_delivery_until_explicit_reconciliation(client: TestClient):
+    download = client.get('/api/backup/download', headers=HEADERS)
+    assert client.post('/api/backup/restore', headers=HEADERS, content=download.content).status_code == 200
+    assert client.get('/api/offers/delivery', headers=HEADERS).json()['restore_blocked'] is True
+    assert client.post('/api/offers/delivery/ack', headers=HEADERS, json={}).status_code == 400
+    assert client.post('/api/offers/delivery/ack', headers=HEADERS, json={'confirm': True}).json()['ok']
+    assert client.get('/api/offers/delivery', headers=HEADERS).json()['restore_blocked'] is False
+
+
+def test_delivery_history_survives_restore_of_older_backup(client: TestClient):
+    store = client.app.state.hd.store
+    store.add_session('writer', 'writer.session', purpose='offers')
+    store.upsert_nft_item('Bear-1', owner_tg_id=1, owner_username='seller1', value_usd=1000)
+    backup = client.get('/api/backup/download?fresh=1', headers=HEADERS).content
+    ledger = client.app.state.hd.offer_ledger
+    body = {'session': 'writer', 'language': 'ru', 'plan': {'currency': 'star', 'usd_per_unit': '0.02',
+            'markup_percent': '0', 'max_per_offer': 1000, 'total_budget': 1000, 'max_offers': 1}}
+    run = ledger.prepare(store, body)
+    ledger.start(run['id'])
+    attempt, _ = ledger.reserve(run, run['rows'][0], 777)
+    ledger.outcome(run['id'], 0, attempt, 'telegram_ack', 'ok', 12)
+    ledger.finish(run['id'], 'done')
+    assert client.post('/api/backup/restore', headers=HEADERS, content=backup).status_code == 200
+    state = client.get('/api/offers/delivery', headers=HEADERS).json()
+    assert state['restore_blocked'] is True and state['history'][0]['id'] == attempt
+    assert state['history'][0]['status'] == 'telegram_ack'

@@ -86,6 +86,19 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun stopOfferBatch(): JSONObject = obj("api/offers/batch/stop", "POST", JSONObject(), PROFILE_TIMEOUT)
 
+    suspend fun prepareDelivery(session: String, plan: JSONObject, language: String): JSONObject =
+        obj("api/offers/delivery/prepare", "POST", JSONObject().put("session", session).put("plan", plan).put("language", language), PROFILE_TIMEOUT)
+
+    suspend fun startDelivery(runId: String): JSONObject =
+        obj("api/offers/delivery/start", "POST", JSONObject().put("run_id", runId).put("confirm", true), PROFILE_TIMEOUT)
+
+    suspend fun deliveryStatus(): JSONObject = obj("api/offers/delivery", timeoutMillis = PROFILE_TIMEOUT)
+
+    suspend fun stopDelivery(): JSONObject = obj("api/offers/delivery/stop", "POST", JSONObject(), PROFILE_TIMEOUT)
+
+    suspend fun acknowledgeDelivery(): JSONObject =
+        obj("api/offers/delivery/ack", "POST", JSONObject().put("confirm", true), PROFILE_TIMEOUT)
+
     suspend fun businessBot(name: String, connect: Boolean = false): JSONObject {
         val path = "api/sessions/${URLEncoder.encode(name, "UTF-8")}/business-bot"
         return if (connect) obj(path, "POST", JSONObject().put("confirm", true), PROFILE_TIMEOUT)

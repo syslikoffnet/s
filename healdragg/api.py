@@ -29,7 +29,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import __version__, business, offer_batch, offer_check, offers
+from . import __version__, business, offer_batch, offer_check, offer_delivery, offers
 from .activity import collect_activity
 from .backup import (
     MAX_ARCHIVE_BYTES,
@@ -104,7 +104,8 @@ class AppState:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         settings.ensure_dirs()
-        recover_pending_restore(settings.db_path, settings.sessions_dir)
+        restore_recovered = recover_pending_restore(settings.db_path, settings.sessions_dir)
+        restored_corrupt = False
         try:
             self.store = Store(settings.db_path)
         except sqlite3.DatabaseError as exc:
@@ -117,8 +118,15 @@ class AppState:
             if not restored:
                 raise
             self.store = Store(settings.db_path)
+            restored_corrupt = True
             # В старой копии могли переиспользоваться уже показанные ID.
             self.store.set_meta("alerts_stream_id", uuid4().hex)
+        ledger_path = settings.db_path.parent / "offer_delivery_ledger.db"
+        ledger_missing = not ledger_path.exists()
+        self.offer_ledger = offer_delivery.Ledger(ledger_path)
+        if restore_recovered or restored_corrupt or (ledger_missing and self.store.get_meta("offer_ledger_initialized") == "1"):
+            self.offer_ledger.block_restore()
+        self.store.set_meta("offer_ledger_initialized", "1")
         self.pool = SessionPool(settings, self.store)
         self.gift_art = GiftArt(settings.home, self.store, self.pool)
         self.login = LoginManager(settings, self.store)
@@ -180,6 +188,7 @@ class AppState:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.login.close()
         await self.pool.close()
+        self.offer_ledger.close()
         self.store.close()
 
 
@@ -594,9 +603,12 @@ def create_app(settings: Settings) -> Starlette:
                     pass
                 state.autopilot_task = None
             try:
+                # Persistent outside the restored database and set before any file replacement.
+                state.offer_ledger.block_restore()
                 await state.login.close_for_restore()
                 await state.pool.close_for_restore()
                 result = await _safe_io(restore_backup, payload, state.store, settings.sessions_dir)
+                state.store.set_meta("offer_ledger_initialized", "1")
                 offer_batch.interrupt_running(state.store)
                 state.jobs.clear()
                 log.warning("восстановление из копии: %s", result)
@@ -674,6 +686,8 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, "name обязателен")
         if name not in state.store.session_names(only_active=False):
             raise HTTPException(404, "Сессии нет")
+        if state.running("offers:deliver"):
+            raise HTTPException(409, "Сначала остановите отправку команд")
         for config in state.store.running_heavy_tasks():
             if config["session"] != name:
                 continue
@@ -1746,6 +1760,60 @@ def create_app(settings: Settings) -> Starlette:
             await state.cancel(job.key)
         return {"run": offer_batch.detail(state.store)}
 
+    async def offer_delivery_prepare(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        if state.running("offers:deliver"):
+            raise HTTPException(409, "Отправка уже выполняется")
+        return {"run": state.offer_ledger.prepare(state.store, body)}
+
+    async def offer_delivery_start(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        if body.keys() != {"run_id", "confirm"} or body.get("confirm") is not True:
+            raise HTTPException(400, "Нужно подтвердить список и суммы")
+        key = "offers:deliver"
+        if state.running(key):
+            raise HTTPException(409, "Отправка уже выполняется")
+        run_data = state.offer_ledger.start(body["run_id"])
+        job = Job(key=key, kind="offer_delivery", state={"run_id": run_data["id"], "phase": "отправка"})
+        state.jobs[key] = job
+
+        async def runner() -> None:
+            try:
+                await offer_delivery.run(state.offer_ledger, state.store, state.pool, settings, run_data["id"], state.session_mutation_lock)
+            finally:
+                job.finished = True
+                current = state.offer_ledger.detail(run_data["id"])
+                job.state = {**job.state, "phase": (current or {}).get("status", "unknown")}
+                job.error = (current or {}).get("error")
+
+        job.task = asyncio.create_task(runner(), name=key)
+        return {"run": run_data}
+
+    async def offer_delivery_status(request: Request) -> dict[str, Any]:
+        guard(request)
+        return {"run": state.offer_ledger.detail(), "history": state.offer_ledger.history(),
+                "restore_blocked": state.offer_ledger.blocked(), "unresolved": state.offer_ledger.unresolved()}
+
+    async def offer_delivery_stop(request: Request) -> dict[str, Any]:
+        guard(request)
+        job = state.jobs.get("offers:deliver")
+        if job and not job.finished:
+            state.offer_ledger.finish(job.state["run_id"], "stopped", "Остановлено пользователем")
+            await state.cancel(job.key)
+        return {"run": state.offer_ledger.detail()}
+
+    async def offer_delivery_ack(request: Request) -> dict[str, Any]:
+        guard(request)
+        if state.running("offers:deliver"):
+            raise HTTPException(409, "Сначала остановите отправку")
+        body = await _body(request)
+        if body.keys() != {"confirm"} or body.get("confirm") is not True:
+            raise HTTPException(400, "Подтвердите ручную сверку в Telegram")
+        state.offer_ledger.acknowledge()
+        return {"ok": True}
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -2087,6 +2155,8 @@ def create_app(settings: Settings) -> Starlette:
     async def cancel(request: Request) -> dict[str, Any]:
         guard(request)
         key = str(request.path_params["key"])
+        if key == "offers:deliver" and state.running(key):
+            state.offer_ledger.finish(state.jobs[key].state["run_id"], "stopped", "Остановлено пользователем")
         if key == "offers:verify" and state.running(key):
             offer_batch.finish(state.store, state.jobs[key].state["run_id"], "stopped")
         if key == "gifts:chain" and state.running(key):
@@ -2241,6 +2311,11 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/offers/batch", _route(offer_batch_status), methods=["GET"]),
         Route("/api/offers/batch", _route(offer_batch_start), methods=["POST"]),
         Route("/api/offers/batch/stop", _route(offer_batch_stop), methods=["POST"]),
+        Route("/api/offers/delivery/prepare", _route(offer_delivery_prepare), methods=["POST"]),
+        Route("/api/offers/delivery/start", _route(offer_delivery_start), methods=["POST"]),
+        Route("/api/offers/delivery", _route(offer_delivery_status), methods=["GET"]),
+        Route("/api/offers/delivery/stop", _route(offer_delivery_stop), methods=["POST"]),
+        Route("/api/offers/delivery/ack", _route(offer_delivery_ack), methods=["POST"]),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),
