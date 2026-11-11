@@ -108,8 +108,8 @@ object AutoBackup {
             MediaStore.Downloads.DISPLAY_NAME,
             MediaStore.Downloads.DATE_ADDED,
         )
-        val selection = "${MediaStore.Downloads.RELATIVE_PATH} LIKE ?"
-        val args = arrayOf("%$FOLDER%")
+        val selection = "${MediaStore.Downloads.RELATIVE_PATH} = ?"
+        val args = arrayOf("${Environment.DIRECTORY_DOWNLOADS}/$FOLDER/")
         val found = ArrayList<Pair<Uri, Long>>()
         runCatching {
             context.contentResolver.query(collection, projection, selection, args, null)?.use { cursor ->
