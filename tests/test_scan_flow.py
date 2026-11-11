@@ -241,10 +241,43 @@ async def test_global_search_checks_person_channel(store: Store) -> None:
     )
 
     result = await global_search_target(_ChannelPool([channel]), store, target)
-    assert result["channels"] == 1
-    assert result["found"] == 1
+    assert result["channels"] == 0
+    assert result["found"] == 0
+    assert store.all_target_groups(int(target["id"])) == []
 
+
+async def test_global_search_requires_target_author_and_preserves_membership(store: Store) -> None:
+    from types import SimpleNamespace
+
+    from telethon.tl import types
+
+    target = store.upsert_target(45, username="person")
+    store.add_session("main", "/tmp/m.session", tg_user_id=1, status="active")
+    channel = types.Channel(id=123, title="Channel", photo=None, date=None,
+                            broadcast=True, access_hash=321)
+    unrelated = types.Channel(id=124, title="Other", photo=None, date=None,
+                              broadcast=True, access_hash=322)
+    group_pk = store.upsert_group(123, title="Channel", kind="channel")
+    store.upsert_target_group(int(target["id"]), group_pk, status="member", source="probe")
+    messages = [
+        SimpleNamespace(from_id=types.PeerUser(45), peer_id=types.PeerChannel(123)),
+        SimpleNamespace(from_id=types.PeerUser(46), peer_id=types.PeerChannel(124)),
+    ]
+    account = _ChannelAccount([channel, unrelated])
+
+    class Client:
+        async def __call__(self, request):
+            return SimpleNamespace(chats=[channel, unrelated], messages=messages)
+
+    account.client = Client()
+
+    class Pool:
+        async def connect(self, name):
+            return account
+
+    result = await global_search_target(Pool(), store, target)
+    assert result["found"] == 1
     rows = store.all_target_groups(int(target["id"]))
     assert len(rows) == 1
-    assert rows[0]["status"] == "admin"
-    assert rows[0]["link"] == "https://t.me/c/1234567890/1"
+    assert rows[0]["status"] == "member"
+    assert rows[0]["source"] == "probe"

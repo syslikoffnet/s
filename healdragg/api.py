@@ -11,6 +11,8 @@ import csv
 import hmac
 import io
 import logging
+import sqlite3
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -27,7 +29,14 @@ from starlette.routing import Route
 
 from . import __version__
 from .activity import collect_activity
-from .backup import create_backup, list_backups, recover_from_latest, restore_backup
+from .backup import (
+    MAX_ARCHIVE_BYTES,
+    create_backup,
+    list_backups,
+    recover_from_latest,
+    recover_pending_restore,
+    restore_backup,
+)
 from .config import Settings
 from .db import Store
 from .gift_art import GiftArt
@@ -39,7 +48,7 @@ from .manual import import_groups, parse_batch
 from .money import read_display, write_display
 from .profile import photo_base64, refresh_profile
 from .scan import bootstrap, resolve_and_store_target, scan_target
-from .session_import import decode_payload, import_upload_async
+from .session_import import decode_payload, import_upload
 from .textfmt import (
     render_account_chats,
     render_catalog,
@@ -93,11 +102,16 @@ class AppState:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         settings.ensure_dirs()
+        recover_pending_restore(settings.db_path, settings.sessions_dir)
         try:
             self.store = Store(settings.db_path)
-        except Exception as exc:  # noqa: BLE001 — база могла испортиться
-            log.exception("база не открылась: %s", exc)
-            restored = recover_from_latest(settings.home, settings.db_path)
+        except sqlite3.DatabaseError as exc:
+            # Только подтверждённое повреждение, не нехватка места, прав или ошибки миграций.
+            code = getattr(exc, "sqlite_errorcode", None)
+            if code is None or (code & 0xFF) not in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB):
+                raise
+            log.exception("база повреждена: %s", exc)
+            restored = recover_from_latest(settings.db_path.parent, settings.db_path)
             if not restored:
                 raise
             self.store = Store(settings.db_path)
@@ -108,6 +122,12 @@ class AppState:
         self.live_at: dict[str, float] = {}
         # Не допускаем одновременных снимков профилей от разных задач подарков.
         self.gift_lock = asyncio.Lock()
+        self.session_mutation_lock = asyncio.Lock()
+        self.auto_backup_busy = False
+        self.auto_backup_task: asyncio.Task | None = None
+        self.autopilot_task: asyncio.Task | None = None
+        self.request_count = 0
+        self.restoring = False
 
     def running(self, key: str) -> bool:
         job = self.jobs.get(key)
@@ -302,9 +322,46 @@ def _route(fn: Any) -> Any:
     return wrapper
 
 
-def _auto_backup(store: Store) -> dict[str, Any]:
+async def _safe_io(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Не закрываем базу, пока отменённый to_thread ещё работает с ней."""
+    worker = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await worker
+        raise
+
+
+class RestoreGate:
+    """Не допускает параллельных API-запросов при замене базы и сессий."""
+
+    def __init__(self, app: Any, state: AppState) -> None:
+        self.app, self.state = app, state
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        restoring = scope["path"] == "/api/backup/restore" and scope["method"] == "POST"
+        # На одном event loop без await эти проверки и изменение счётчика атомарны.
+        if self.state.restoring or (restoring and self.state.request_count):
+            response = JSONResponse({"error": "Дождитесь завершения других запросов и повторите"}, status_code=409)
+            await response(scope, receive, send)
+            return
+        if restoring:
+            self.state.restoring = True
+        self.state.request_count += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.state.request_count -= 1
+            if restoring:
+                self.state.restoring = False
+
+
+def _auto_backup(store: Store, sessions_dir: Path | None = None) -> dict[str, Any]:
     """Копия при старте движка: без неё «ничего не теряется» — просто слова."""
-    return create_backup(store, keep=5, label="auto")
+    return create_backup(store, keep=5, label="auto", sessions_dir=sessions_dir)
 
 
 def create_app(settings: Settings) -> Starlette:
@@ -323,38 +380,39 @@ def create_app(settings: Settings) -> Starlette:
         chain_run = state.store.nft_chain_run()
         if chain_run and chain_run["status"] == "running":
             launch_nft_chain_run(int(chain_run["id"]))
-        auto_backup: asyncio.Task | None = None
         if settings.auto_backup:
             async def _backup_once() -> None:
                 await asyncio.sleep(8)
+                state.auto_backup_busy = True
                 try:
-                    created = await asyncio.to_thread(_auto_backup, state.store)
+                    created = await _safe_io(_auto_backup, state.store, settings.sessions_dir)
                     log.info("авто-копия: %s (%s)", created["name"], created["size"])
                 except Exception:  # noqa: BLE001 — копия не должна ронять сервер
                     log.exception("авто-копия не удалась")
+                finally:
+                    state.auto_backup_busy = False
 
-            auto_backup = asyncio.create_task(_backup_once(), name="auto-backup")
-        autopilot_task: asyncio.Task | None = None
+            state.auto_backup_task = asyncio.create_task(_backup_once(), name="auto-backup")
         if settings.autopilot_minutes > 0:
             from .autopilot import loop as autopilot_loop
 
-            autopilot_task = asyncio.create_task(
+            state.autopilot_task = asyncio.create_task(
                 autopilot_loop(state.pool, state.store, settings), name="autopilot"
             )
             log.info("автопилот: каждые %s мин", settings.autopilot_minutes)
         try:
             yield
         finally:
-            if auto_backup:
-                auto_backup.cancel()
+            if state.auto_backup_task:
+                state.auto_backup_task.cancel()
                 try:
-                    await auto_backup
+                    await state.auto_backup_task
                 except asyncio.CancelledError:
                     pass
-            if autopilot_task:
-                autopilot_task.cancel()
+            if state.autopilot_task:
+                state.autopilot_task.cancel()
                 try:
-                    await autopilot_task
+                    await state.autopilot_task
                 except asyncio.CancelledError:
                     pass
             await state.close()
@@ -409,18 +467,17 @@ def create_app(settings: Settings) -> Starlette:
             payload = decode_payload(content)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        try:
-            result = await import_upload_async(
-                filename, payload, state.store, settings.sessions_dir
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        if result.get("imported"):
+        async with state.session_mutation_lock:
             try:
-                await asyncio.to_thread(create_backup, state.store, keep=8, label="import")
-            except Exception:  # noqa: BLE001 — копия не должна ломать импорт
-                log.exception("бэкап после импорта не удался")
-        return result
+                result = await _safe_io(import_upload, filename, payload, state.store, settings.sessions_dir)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            if result.get("imported"):
+                try:
+                    await _safe_io(create_backup, state.store, keep=8, label="import", sessions_dir=settings.sessions_dir)
+                except Exception:  # noqa: BLE001 — копия не должна ломать импорт
+                    log.exception("бэкап после импорта не удался")
+            return result
 
     async def backup_list(request: Request) -> dict[str, Any]:
         guard(request)
@@ -457,14 +514,17 @@ def create_app(settings: Settings) -> Starlette:
 
     async def backup_create(request: Request) -> dict[str, Any]:
         guard(request)
-        return await asyncio.to_thread(create_backup, state.store, keep=10, label="manual")
+        return await _safe_io(create_backup, state.store, keep=10, label="manual", sessions_dir=settings.sessions_dir)
 
     async def backup_download(request: Request) -> Response:
         guard(request)
         name = (request.query_params.get("name") or "").strip()
+        if _q_bool(request, "fresh"):
+            created = await _safe_io(create_backup, state.store, keep=10, label="manual", sessions_dir=settings.sessions_dir)
+            return FileResponse(created["path"], filename=created["name"], media_type="application/zip")
         rows = list_backups(state.store)
         if not rows:
-            created = await asyncio.to_thread(create_backup, state.store, keep=10, label="manual")
+            created = await _safe_io(create_backup, state.store, keep=10, label="manual", sessions_dir=settings.sessions_dir)
             return FileResponse(created["path"], filename=created["name"])
         chosen = next((row for row in rows if row["name"] == name), rows[0] if not name else None)
         if chosen is None:
@@ -472,17 +532,52 @@ def create_app(settings: Settings) -> Starlette:
         return FileResponse(chosen["path"], filename=chosen["name"], media_type="application/zip")
 
     async def backup_restore(request: Request) -> dict[str, Any]:
-        """Принимает zip копии телом запроса и восстанавливает базу и аккаунты."""
+        """Восстанавливает только при остановленных задачах и закрытых сессиях."""
         guard(request)
-        payload = await request.body()
-        if not payload:
-            raise HTTPException(400, "пустой файл копии")
-        try:
-            result = await asyncio.to_thread(restore_backup, payload, state.store)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        log.warning("восстановление из копии: %s", result)
-        return result
+        if any(not job.finished for job in state.jobs.values()):
+            raise HTTPException(409, "Остановите активные задачи перед восстановлением копии")
+        if state.auto_backup_busy:
+            raise HTTPException(409, "Дождитесь завершения автоматической копии")
+        if state.auto_backup_task and not state.auto_backup_task.done():
+            state.auto_backup_task.cancel()
+            try:
+                await state.auto_backup_task
+            except asyncio.CancelledError:
+                pass
+            state.auto_backup_task = None
+        # Сетевой ввод пишется в файл, а не держит сотни мегабайт в памяти.
+        with tempfile.TemporaryFile(dir=settings.home) as payload:
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > MAX_ARCHIVE_BYTES:
+                    raise HTTPException(413, "архив больше 400 МБ")
+                await _safe_io(payload.write, chunk)
+            if not total:
+                raise HTTPException(400, "пустой файл копии")
+            payload.seek(0)
+            if state.autopilot_task:
+                state.autopilot_task.cancel()
+                try:
+                    await state.autopilot_task
+                except asyncio.CancelledError:
+                    pass
+                state.autopilot_task = None
+            try:
+                await state.login.close_for_restore()
+                await state.pool.close_for_restore()
+                result = await _safe_io(restore_backup, payload, state.store, settings.sessions_dir)
+                state.jobs.clear()
+                log.warning("восстановление из копии: %s", result)
+                return result
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            finally:
+                if settings.autopilot_minutes > 0:
+                    from .autopilot import loop as autopilot_loop
+                    state.autopilot_task = asyncio.create_task(
+                        autopilot_loop(state.pool, state.store, settings), name="autopilot"
+                    )
 
     async def session_start(request: Request) -> dict[str, Any]:
         guard(request)
@@ -490,7 +585,8 @@ def create_app(settings: Settings) -> Starlette:
         phone = str(body.get("phone") or "")
         name = str(body.get("name") or "main")
         try:
-            return await state.login.start(phone, name)
+            async with state.session_mutation_lock:
+                return await state.login.start(phone, name)
         except LoginError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -539,10 +635,14 @@ def create_app(settings: Settings) -> Starlette:
                 job.error = error
                 job.state = {**job.state, "phase": "аккаунт удалён"}
         await state.pool.disconnect(name)
+        row = state.store.get_session(name) or {}
+        session_file = settings.sessions_dir / Path(row.get("session_file") or settings.session_file(name)).name
+        shared = any(other["name"] != name and Path(other.get("session_file") or "").name == session_file.name
+                     for other in state.store.list_sessions())
         state.store.remove_session(name)
-        session_file = settings.session_file(name)
         try:
-            session_file.unlink(missing_ok=True)
+            if not shared:
+                session_file.unlink(missing_ok=True)
         except OSError:
             log.warning("не удалось удалить %s", session_file)
         state.store.log_event("info", f"сессия {name} удалена", "app")
@@ -1839,6 +1939,7 @@ def create_app(settings: Settings) -> Starlette:
 
     app = Starlette(routes=ROUTES, lifespan=lifespan)
     app.state.hd = state
+    app.add_middleware(RestoreGate, state=state)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

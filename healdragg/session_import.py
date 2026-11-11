@@ -45,14 +45,17 @@ def _read_session(path: Path) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 — не наш формат
         log.info("не удалось открыть сессию %s: %s", path, exc)
         return None
-    key = session.auth_key
-    if not key or not getattr(key, "key", None):
-        return None
-    return {
-        "dc_id": session.dc_id,
-        "user_id": getattr(session, "user_id", None),
-        "auth_key": bytes(key.key),
-    }
+    try:
+        key = session.auth_key
+        if not key or not getattr(key, "key", None):
+            return None
+        return {
+            "dc_id": session.dc_id,
+            "user_id": getattr(session, "user_id", None),
+            "auth_key": bytes(key.key),
+        }
+    finally:
+        session.close()
 
 
 def session_info(path: Path) -> dict[str, Any] | None:
@@ -77,11 +80,11 @@ def _store_session(store: Store, name: str, target: Path, info: dict[str, Any], 
     }
 
 
-def _unique_path(directory: Path, name: str) -> tuple[str, Path]:
+def _unique_path(directory: Path, name: str, store: Store) -> tuple[str, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     candidate = directory / f"{name}.session"
     counter = 2
-    while candidate.exists():
+    while candidate.exists() or store.get_session(candidate.stem) is not None:
         candidate = directory / f"{name}-{counter}.session"
         counter += 1
     return candidate.stem, candidate
@@ -100,14 +103,12 @@ def _import_single(
     if suffix not in {"", ".session", ".db"} and not suffix.startswith(".sess"):
         raise ValueError("поддерживаются .session, .json и tdata.zip")
     base = _safe_name(filename, "session")
-    name, target = _unique_path(sessions_dir, base)
+    name, target = _unique_path(sessions_dir, base, store)
     target.write_bytes(payload)
     info = _read_session(target)
     if info is None:
         target.unlink(missing_ok=True)
         raise ValueError("файл не похож на Telethon-сессию: нет ключа авторизации")
-    if store.query_one("SELECT name FROM sessions WHERE name = ?", (name,)):
-        name = f"{name}-{int(target.stat().st_mtime)}"
     return _store_session(store, name, target, info, source=suffix.lstrip(".") or "session")
 
 
@@ -141,7 +142,7 @@ def _import_json(
     key = session.auth_key
     if not key or not getattr(key, "key", None):
         raise ValueError("в StringSession нет ключа авторизации")
-    name, target = _unique_path(sessions_dir, _safe_name(filename, "session"))
+    name, target = _unique_path(sessions_dir, _safe_name(filename, "session"), store)
     sqlite = SQLiteSession(str(target))
     sqlite.set_dc(
         int(session.dc_id or 2),
@@ -150,6 +151,7 @@ def _import_json(
     )
     sqlite.auth_key = AuthKey(bytes(key.key))
     sqlite.save()
+    sqlite.close()
     info = _read_session(target) or {"dc_id": session.dc_id, "user_id": None}
     return _store_session(store, name, target, info, source="json")
 
@@ -169,7 +171,7 @@ def import_upload(
 
     if suffix == ".zip" or payload[:2] == b"PK":
         if looks_like_tdata(payload):
-            name, target = _unique_path(sessions_dir, _safe_name(filename, "tdata"))
+            name, target = _unique_path(sessions_dir, _safe_name(filename, "tdata"), store)
             try:
                 info = convert_tdata(payload, target)
             except ValueError:
@@ -203,6 +205,11 @@ def _import_zip(
     skipped: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     with zipfile.ZipFile(BytesIO(payload)) as archive:
+        entries = archive.infolist()
+        if len(entries) > 5000 or len({entry.filename for entry in entries}) != len(entries):
+            raise ValueError("Слишком много файлов или повторяющиеся имена в архиве")
+        if sum(entry.file_size for entry in entries) > 400 * 1024 * 1024:
+            raise ValueError("Содержимое архива слишком велико")
         candidates = [
             name
             for name in archive.namelist()
@@ -214,6 +221,8 @@ def _import_zip(
             )
         for name in candidates[:20]:
             try:
+                if archive.getinfo(name).file_size > 100 * 1024 * 1024:
+                    raise ValueError("Файл сессии больше 100 МБ")
                 data = archive.read(name)
                 result = _import_single(Path(name).name, data, store, sessions_dir)
                 imported.append(result)

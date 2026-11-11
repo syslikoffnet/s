@@ -179,3 +179,49 @@ async def test_cached_account_auth_is_awaited_and_invalid_session_is_removed(tmp
     assert client.disconnected and "scan" not in pool
     assert store.list_sessions()[0]["status"] == "needs_login"
     store.close()
+
+
+async def test_pool_uses_saved_session_filename_and_rejects_missing_file(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    from healdragg.config import Settings
+    from healdragg.db import Store
+    from healdragg.tg import SessionPool
+
+    seen = []
+
+    class Client:
+        def __init__(self, path, *args, **kwargs):
+            seen.append(path)
+
+        async def connect(self):
+            pass
+
+        async def is_user_authorized(self):
+            return True
+
+        async def get_me(self):
+            return SimpleNamespace(id=1, username=None, phone=None, first_name=None)
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr("healdragg.tg.TelegramClient", Client)
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    (sessions / "legacy.session").write_bytes(b"session")
+    store = Store(tmp_path / "db.sqlite")
+    settings = Settings(home=tmp_path, db_path=store.path, sessions_dir=sessions, api_id=42, api_hash="a" * 32)
+    store.add_session("alias", "/old/place/legacy.session")
+    pool = SessionPool(settings, store)
+    await pool.connect("alias")
+    assert seen == [str(sessions / "legacy.session")]
+    store.add_session("missing", "/old/place/missing.session")
+    with pytest.raises(RuntimeError, match="отсутствует"):
+        await pool.connect("missing")
+    assert store.get_session("missing")["status"] == "needs_login"
+    assert not (sessions / "missing.session").exists()
+    await pool.close()
+    store.close()

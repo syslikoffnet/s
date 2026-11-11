@@ -637,29 +637,38 @@ async def global_search_target(
             stats["errors"] += 1
             log.info("global search %s недоступен: %s", session_name, exc)
             continue
+        # Список chats — лишь связанные сущности ответа, не доказательство авторства.
+        # Только явный from_id пользователя подтверждает наблюдение в конкретном чате.
+        observed: set[tuple[str, int]] = set()
+        target_id = int(target["tg_user_id"])
+        for message in getattr(result, "messages", None) or []:
+            author = getattr(message, "sender_id", None) or getattr(getattr(message, "from_id", None), "user_id", None)
+            if author != target_id:
+                continue
+            peer = getattr(message, "peer_id", None)
+            if isinstance(peer, types.PeerChannel):
+                observed.add(("channel", int(peer.channel_id)))
+            elif isinstance(peer, types.PeerChat):
+                observed.add(("chat", int(peer.chat_id)))
         chats = getattr(result, "chats", None) or []
-        session_row = store.get_session(session_name)
-        session_pk = int(session_row["id"]) if session_row else 0
         for entity in chats:
+            if isinstance(entity, types.Channel):
+                key = ("channel", int(entity.id))
+            elif isinstance(entity, types.Chat):
+                key = ("chat", int(entity.id))
+            else:
+                continue
+            if key not in observed:
+                continue
             info = chat_to_group(entity)
             if not info:
                 continue
             info["discovered_from"] = "global_search"
             info["discovered_by"] = session_name
             group_pk = store.upsert_group(**group_kwargs(info))
-            if session_pk:
-                store.link_session_group(
-                    session_pk, group_pk, is_member=True, access_hash=info.get("access_hash")
-                )
-            # писать в broadcast-канал может только админ — значит, канал его
+            # Даже авторство не доказывает текущее членство, роль или владение каналом.
             is_channel = info.get("kind") == "channel"
-            store.upsert_target_group(
-                target_pk,
-                group_pk,
-                status="admin" if is_channel else "member",
-                source="global_search",
-                session=session_name,
-            )
+            store.record_observed_chat(target_pk, group_pk, source="global_search")
             stats["found"] += 1
             stats["channels"] += int(is_channel)
             stats["checked"] += 1

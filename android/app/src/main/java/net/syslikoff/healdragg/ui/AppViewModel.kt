@@ -522,13 +522,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { onDone(runCatching { client.downloadBackup() }) }
     }
 
-    fun restoreBackup(payload: ByteArray, onDone: (Result<JSONObject>) -> Unit) {
+    fun restoreBackup(uri: android.net.Uri, onDone: (Result<JSONObject>) -> Unit) {
         val client = api ?: run {
             onDone(Result.failure(ApiException(0, "Движок не запущен")))
             return
         }
         viewModelScope.launch {
-            val result = runCatching { client.restoreBackup(payload) }
+            val result = runCatching { client.restoreBackup(getApplication(), uri) }
             result.onSuccess { refresh() }
             onDone(result)
         }

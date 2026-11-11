@@ -201,3 +201,29 @@ def test_vendor_qt_shim_roundtrip() -> None:
     assert back.stream.readInt32() == 123456
     assert back.stream.readInt32() == -7
     assert back.stream.readUInt64() == 987654321
+
+
+def test_import_reserved_database_name_uses_new_matching_filename(home) -> None:
+    store, sessions = home
+    store.add_session("main", "missing.session", status="needs_login")
+    payload = _make_session(Path(str(sessions) + "-src.session"))
+    entry = import_upload("main.session", payload, store, sessions)["imported"][0]
+    assert entry["name"] != "main"
+    assert Path(entry["file"]).name == entry["name"] + ".session"
+    assert store.get_session("main")["status"] == "needs_login"
+
+
+def test_tdata_limits_total_uncompressed_size(tmp_path: Path, monkeypatch) -> None:
+    from healdragg import tdata
+
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("tdata/key_datas", b"a" * 32)
+        archive.writestr("tdata/part", b"b" * 32)
+    # Создаём большое значение только в метаданных без гигабайтовых фикстур.
+    raw = bytearray(payload.getvalue())
+    sig = b"PK\x01\x02"
+    position = raw.index(sig)
+    raw[position + 24:position + 28] = (601 * 1024 * 1024).to_bytes(4, "little")
+    with pytest.raises(ValueError, match="велик"):
+        tdata._safe_extract(bytes(raw), tmp_path)

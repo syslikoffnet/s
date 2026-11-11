@@ -31,8 +31,8 @@ android {
         applicationId = "net.syslikoff.healdragg"
         minSdk = 24
         targetSdk = 34
-        versionCode = 25
-        versionName = "1.10.0"
+        versionCode = 26
+        versionName = "1.10.1"
         resourceConfigurations += listOf("ru", "en")
         ndk {
             // Chaquopy: только 64-битные ABI (Python 3.13 их и поддерживает)
@@ -97,7 +97,7 @@ chaquopy {
             // весь стек — чистый Python, без нативных сборок
             // pyaes выходит только исходниками, поэтому лежит готовым wheel'ом
             install("wheels/pyaes-1.6.1-py3-none-any.whl")
-            install("telethon>=1.36,<2")
+            install("telethon==1.45.0")
             install("starlette>=0.37")
             install("uvicorn>=0.27")
             install("rich>=13,<15")

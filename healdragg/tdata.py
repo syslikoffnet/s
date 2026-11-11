@@ -12,6 +12,7 @@ import asyncio
 import io
 import logging
 import shutil
+import stat
 import sys
 import tempfile
 import zipfile
@@ -55,10 +56,14 @@ def _safe_extract(zip_bytes: bytes, target: Path) -> None:
     if len(zip_bytes) > MAX_ARCHIVE:
         raise ValueError("архив слишком большой (максимум 200 МБ)")
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
-        for member in archive.infolist():
+        entries = archive.infolist()
+        if (len(entries) > 5000 or len({entry.filename for entry in entries}) != len(entries)
+                or sum(entry.file_size for entry in entries) > 600 * 1024 * 1024):
+            raise ValueError("tdata содержит слишком много файлов или слишком велик после распаковки")
+        for member in entries:
             name = member.filename
             parts = Path(name).parts
-            if name.startswith("/") or ".." in parts:
+            if name.startswith("/") or "\\" in name or ".." in parts or stat.S_ISLNK(member.external_attr >> 16):
                 raise ValueError("в архиве недопустимый путь — импорт отменён")
             if member.is_dir():
                 continue

@@ -209,6 +209,9 @@ class Settings:
         return token
 
     def session_file(self, name: str) -> Path:
+        if (not isinstance(name, str) or not name or len(name) > 128 or name in {".", ".."}
+                or any(c in name for c in ("/", "\\", "\x00"))):
+            raise ValueError("Недопустимое имя сессии")
         return self.sessions_dir / f"{name}.session"
 
     def relative(self, path: Path | str) -> str:

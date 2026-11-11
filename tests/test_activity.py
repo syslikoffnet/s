@@ -24,6 +24,7 @@ class FakeMessage:
         media=None,
     ) -> None:
         self.id = msg_id
+        self.sender_id = 42
         self.message = text
         self.date = datetime.fromtimestamp(date, tz=timezone.utc)
         self.reply_to = SimpleNamespace(reply_to_msg_id=99) if reply else None

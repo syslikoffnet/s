@@ -164,6 +164,7 @@ fun readDocument(context: Context, uri: Uri): ByteArray? =
 /** Записывает файл в выбранное пользователем место (SAF). true — если получилось. */
 fun writeDocument(context: Context, uri: Uri, payload: ByteArray): Boolean =
     runCatching {
-        context.contentResolver.openOutputStream(uri)?.use { it.write(payload) }
+        val output = context.contentResolver.openOutputStream(uri) ?: return@runCatching false
+        output.use { it.write(payload) }
         true
     }.getOrDefault(false)

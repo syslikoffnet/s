@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -69,10 +70,15 @@ class LoginManager:
         self.settings = settings
         self.store = store
         self._flows: dict[str, Flow] = {}
+        self._start_lock = asyncio.Lock()
 
     # ── шаги ────────────────────────────────────────────────────────────────
     async def start(self, phone: str, name: str = "main") -> dict[str, Any]:
-        self._cleanup()
+        async with self._start_lock:
+            return await self._start(phone, name)
+
+    async def _start(self, phone: str, name: str = "main") -> dict[str, Any]:
+        await self._cleanup()
         phone = (phone or "").strip().replace(" ", "")
         if not phone:
             raise LoginError("Нужен номер телефона")
@@ -81,11 +87,17 @@ class LoginManager:
         if not self.settings.has_api_credentials:
             raise LoginError("Сначала задай API_ID и API_HASH")
         name = (name or "main").strip() or "main"
+        try:
+            self.settings.session_file(name)
+        except ValueError as exc:
+            raise LoginError(str(exc)) from exc
+        if any(flow.name == name for flow in self._flows.values()):
+            raise LoginError("Вход для этого имени уже выполняется")
         known = {str(row["name"]): row for row in self.store.list_sessions()}
         existing = known.get(name)
         if existing is not None and str(existing.get("status") or "") == "active":
             base, index = name, 2
-            while f"{base}{index}" in known:
+            while f"{base}{index}" in known or any(flow.name == f"{base}{index}" for flow in self._flows.values()):
                 index += 1
             name = f"{base}{index}"
 
@@ -134,7 +146,7 @@ class LoginManager:
         return flow.as_dict()
 
     async def submit_code(self, flow_id: str, code: str) -> dict[str, Any]:
-        flow = self._flow(flow_id)
+        flow = await self._flow(flow_id)
         digits = "".join(ch for ch in (code or "") if ch.isdigit())
         if not digits:
             raise LoginError("Введи код из Telegram")
@@ -158,7 +170,7 @@ class LoginManager:
         return await self._finish(flow)
 
     async def submit_password(self, flow_id: str, password: str) -> dict[str, Any]:
-        flow = self._flow(flow_id)
+        flow = await self._flow(flow_id)
         if not (password or "").strip():
             raise LoginError("Введи пароль 2FA")
         try:
@@ -182,6 +194,11 @@ class LoginManager:
             await self.cancel(flow_id)
 
     # ── служебное ───────────────────────────────────────────────────────────
+    async def close_for_restore(self) -> None:
+        for flow_id, flow in list(self._flows.items()):
+            await flow.client.disconnect()
+            self._flows.pop(flow_id, None)
+
     async def _finish(self, flow: Flow) -> dict[str, Any]:
         try:
             me = await flow.client.get_me()
@@ -211,20 +228,20 @@ class LoginManager:
             "first_name": me.first_name,
         }
 
-    def _flow(self, flow_id: str) -> Flow:
+    async def _flow(self, flow_id: str) -> Flow:
         flow = self._flows.get((flow_id or "").strip())
         if flow is None:
             raise LoginError("Вход истёк — начни заново")
         if time.time() - flow.created_at > FLOW_TTL:
-            self._flows.pop(flow.id, None)
+            await self.cancel(flow.id)
             raise LoginError("Вход истёк — начни заново")
         return flow
 
-    def _cleanup(self) -> None:
+    async def _cleanup(self) -> None:
         now = time.time()
         for flow_id, flow in list(self._flows.items()):
             if now - flow.created_at > FLOW_TTL:
-                self._flows.pop(flow_id, None)
+                await self.cancel(flow_id)
 
     @staticmethod
     async def _safe_disconnect(client: TelegramClient) -> None:

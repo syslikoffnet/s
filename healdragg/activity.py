@@ -74,7 +74,10 @@ async def _target_entity(client: Any, target: dict[str, Any], limiter: RateLimit
     candidates.append(int(target["tg_user_id"]))
     for candidate in candidates:
         try:
-            return await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+            entity = await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+            if int(getattr(entity, "id", 0) or 0) == int(target["tg_user_id"]):
+                return entity
+            log.info("имя цели теперь принадлежит другому аккаунту; проверяю id")
         except Exception as exc:  # noqa: BLE001
             log.debug("target entity %s: %s", candidate, exc)
     return target_input_peer(target)
@@ -129,21 +132,6 @@ def _peer_from_sender(sender: Any) -> dict[str, Any] | None:
         "last_name": getattr(sender, "last_name", None),
     }
 
-
-
-def _record_observed_chat(store: Store, target_pk: int, group_pk: int, *, source: str) -> None:
-    """Сообщение подтверждает связь с чатом, но не текущее членство.
-
-    Не перезаписываем результаты проверок членства более слабым свидетельством.
-    """
-    ts = now_ts()
-    with store.tx() as conn:
-        conn.execute(
-            """INSERT OR IGNORE INTO target_groups
-               (target_id, group_id, status, source, found_at, updated_at)
-               VALUES (?, ?, 'unknown', ?, ?, ?)""",
-            (target_pk, group_pk, source, ts, ts),
-        )
 
 
 async def _dialog_chats(
@@ -242,6 +230,8 @@ async def _global_target_messages(
     except Exception as exc:  # noqa: BLE001
         log.info("global search: цель не резолвится (%s)", exc)
         return stats
+    if int(getattr(entity, "id", 0) or 0) != target_tg_id:
+        return stats
     access_hash = getattr(entity, "access_hash", None)
     if not access_hash:
         return stats
@@ -268,21 +258,29 @@ async def _global_target_messages(
         log.info("global search недоступен: %s", exc)
         return stats
 
-    chats = {int(c.id): c for c in getattr(result, "chats", []) or []}
+    chats = {
+        ("channel" if isinstance(c, types.Channel) else "chat", int(c.id)): c
+        for c in getattr(result, "chats", []) or []
+        if isinstance(c, (types.Channel, types.Chat))
+    }
     seen_chats: set[int] = set()
     for message in getattr(result, "messages", []) or []:
         if isinstance(message, types.MessageEmpty):
             continue
-        peer = getattr(message, "peer_id", None)
-        chat_id = None
-        for attr in ("channel_id", "chat_id"):
-            value = getattr(peer, attr, None)
-            if value:
-                chat_id = int(value)
-                break
-        if not chat_id or chat_id not in chats:
+        sender = getattr(message, "sender_id", None) or getattr(getattr(message, "from_id", None), "user_id", None)
+        if sender != target_tg_id:
             continue
-        chat = chats[chat_id]
+        peer = getattr(message, "peer_id", None)
+        if isinstance(peer, types.PeerChannel):
+            chat_key = ("channel", int(peer.channel_id))
+        elif isinstance(peer, types.PeerChat):
+            chat_key = ("chat", int(peer.chat_id))
+        else:
+            continue
+        chat = chats.get(chat_key)
+        if chat is None:
+            continue
+        chat_id = chat_key[1]
         date = int(message.date.timestamp()) if getattr(message, "date", None) else 0
         if date and date < cutoff:
             continue
@@ -299,7 +297,7 @@ async def _global_target_messages(
             members_count=getattr(chat, "participants_count", None),
             discovered_from="search",
         )
-        _record_observed_chat(store, target_pk, group_pk, source="search")
+        store.record_observed_chat(target_pk, group_pk, source="search")
         text = (getattr(message, "message", "") or "").strip()[:MEDIA_LIMIT]
         inserted = store.add_message(
             target_pk,
@@ -455,10 +453,13 @@ async def collect_activity(
                         if int(sender or 0) == target_tg_id:
                             messages_found.append(message)
                 for message in messages_found:
+                    sender = getattr(message, "sender_id", None) or getattr(getattr(message, "from_id", None), "user_id", None)
+                    if sender != target_tg_id:
+                        continue
                     date = int(message.date.timestamp()) if getattr(message, "date", None) else 0
                     if date and date < cutoff:
                         continue
-                    _record_observed_chat(store, target_pk, group_pk, source="activity")
+                    store.record_observed_chat(target_pk, group_pk, source="activity")
                     text = (getattr(message, "message", "") or "").strip()[:MEDIA_LIMIT]
                     reply_msg_id = getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
                     reply_peer_id: int | None = None

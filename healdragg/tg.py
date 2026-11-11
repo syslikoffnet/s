@@ -137,7 +137,14 @@ class SessionPool:
 
             api_id, api_hash = self.settings.require_api()
             session_path = self.settings.session_file(name)
+            existing = self.store.get_session(name)
+            if existing and existing.get("session_file"):
+                # Абсолютные пути из старых копий не должны выводить за каталог сессий.
+                session_path = self.settings.sessions_dir / Path(existing["session_file"]).name
             session_path.parent.mkdir(parents=True, exist_ok=True)
+            if existing and (session_path.is_symlink() or not session_path.is_file()):
+                self.store.set_session_status(name, "needs_login", "файл сессии отсутствует")
+                raise RuntimeError(f"Файл сессии «{name}» отсутствует. Войдите заново")
             client = TelegramClient(
                 str(session_path),
                 api_id,
@@ -235,6 +242,13 @@ class SessionPool:
             except Exception:  # noqa: BLE001
                 pass
         self._accounts.clear()
+
+    async def close_for_restore(self) -> None:
+        """При замене файлов сессии нельзя продолжать при ошибке отключения."""
+        for name, account in list(self._accounts.items()):
+            await account.client.disconnect()
+            self._accounts.pop(name, None)
+        self._limiters.clear()
 
     def __contains__(self, name: str) -> bool:
         return name in self._accounts

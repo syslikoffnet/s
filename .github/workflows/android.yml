@@ -127,10 +127,9 @@ jobs:
         with:
           files: artifacts/*.apk
 
-      # Release-событие срабатывает только с workflow из default-ветки, поэтому
-      # APK из обычной сборки докладываем в уже существующий релиз вручную.
+      # Рабочие ветки собираются для проверки, но не подменяют публичный релиз.
       - name: Обновить ассеты релиза
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

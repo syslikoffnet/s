@@ -394,8 +394,12 @@ class Store:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.path), timeout=timeout, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._configure()
-        self._migrate()
+        try:
+            self._configure()
+            self._migrate()
+        except BaseException:
+            self._conn.close()
+            raise
 
     # ── инфраструктура ──────────────────────────────────────────────────────
     def _configure(self) -> None:
@@ -2341,6 +2345,16 @@ class Store:
             return int(cur.rowcount or 0)
 
     # ── цель ↔ группы ──────────────────────────────────────────────────────
+    def record_observed_chat(self, target_pk: int, group_pk: int, source: str) -> None:
+        """Сообщение — свидетельство связи, но не доказательство текущего членства."""
+        ts = now_ts()
+        with self.tx() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO target_groups "
+                "(target_id, group_id, status, source, found_at, updated_at) VALUES (?, ?, 'unknown', ?, ?, ?)",
+                (target_pk, group_pk, source, ts, ts),
+            )
+
     def upsert_target_group(
         self,
         target_pk: int,

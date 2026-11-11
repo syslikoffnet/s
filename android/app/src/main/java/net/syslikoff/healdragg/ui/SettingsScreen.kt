@@ -90,6 +90,8 @@ fun SettingsScreen(
     var backupLabel by remember { mutableStateOf<String?>(null) }
     var pendingBackup by remember { mutableStateOf<ByteArray?>(null) }
     var backupList by remember { mutableStateOf<List<BackupInfo>>(emptyList()) }
+    val backupPrefs = context.getSharedPreferences("healdragg", android.content.Context.MODE_PRIVATE)
+    var externalBackup by remember { mutableStateOf(backupPrefs.getBoolean(AutoBackup.KEY_ENABLED, false)) }
     var chosenCurrency by remember { mutableStateOf(vm.currency) }
     var usdRub by remember { mutableStateOf(Money.usdRub.toString()) }
     var tonUsd by remember { mutableStateOf(Money.tonUsd.toString()) }
@@ -128,19 +130,13 @@ fun SettingsScreen(
             restoreBusy = false
             return@rememberLauncherForActivityResult
         }
-        val payload = readDocument(context, uri)
-        if (payload == null) {
-            restoreBusy = false
-            onToast("Не удалось прочитать файл копии")
-            return@rememberLauncherForActivityResult
-        }
-        vm.restoreBackup(payload) { result ->
+        vm.restoreBackup(uri) { result ->
             restoreBusy = false
             result.onSuccess { counts ->
                 val sessions = counts.optInt("sessions")
                 val targets = counts.optInt("targets")
                 backupLabel = "Восстановлено: целей $targets, аккаунтов $sessions"
-                onToast("Копия восстановлена")
+                onToast("Копия восстановлена. Задачи из неё приостановлены.")
                 vm.refresh()
                 vm.refreshSessions()
                 reloadBackups()
@@ -196,18 +192,12 @@ fun SettingsScreen(
             onToast("В «Загрузках» копий Healdragg не нашлось")
             return
         }
-        val payload = readDocument(context, found.first)
-        if (payload == null) {
-            restoreBusy = false
-            onToast("Не удалось прочитать копию из «Загрузок»")
-            return
-        }
-        vm.restoreBackup(payload) { result ->
+        vm.restoreBackup(found.first) { result ->
             restoreBusy = false
             result.onSuccess { counts ->
                 backupLabel = "Восстановлено из ${found.second}: целей ${counts.optInt("targets")}, " +
                     "аккаунтов ${counts.optInt("sessions")}"
-                onToast("Копия из «Загрузок» восстановлена")
+                onToast("Копия восстановлена. Задачи из неё приостановлены.")
                 vm.refresh()
                 vm.refreshSessions()
                 reloadBackups()
@@ -674,9 +664,9 @@ fun SettingsScreen(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "В копию входит всё: цели, база чатов, лента, подарки, NFT-инвентарь и сами " +
-                        "аккаунты Telegram. После переустановки просто восстановите файл — логиниться " +
-                        "заново не нужно.",
+                    "Копия содержит базу и ключи Telegram-сессий. Архив НЕ зашифрован: любой, " +
+                        "кто получит файл, может получить доступ к аккаунтам. Храните его в защищённом месте. " +
+                        "Telegram может потребовать повторный вход после восстановления.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Hd.Muted,
                 )
@@ -807,12 +797,20 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.labelMedium,
                     )
                 }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Автокопия в «Загрузки»", modifier = Modifier.weight(1f), color = Hd.Text)
+                    Switch(checked = externalBackup, onCheckedChange = { enabled ->
+                        externalBackup = enabled
+                        backupPrefs.edit().putBoolean(AutoBackup.KEY_ENABLED, enabled).apply()
+                        if (enabled) AutoBackup.maybeExport(context)
+                    })
+                }
                 Text(
-                    "Приложение раз в 12 часов само кладёт копию в «Загрузки/Healdragg» — " +
-                        "этот файл переживает удаление приложения. Аккаунты грузятся отдельно: " +
-                        "«Аккаунты → Загрузить .session / tdata.zip».",
+                    "По умолчанию выключено: копии в «Загрузках» не зашифрованы. " +
+                        "При включении свежая копия создаётся при запуске движка не чаще раза в 12 часов. " +
+                        "Ранее созданные файлы остаются в «Загрузках» — удалите их вручную, если они не нужны.",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Hd.Dim,
+                    color = Hd.Warn,
                 )
             }
         }

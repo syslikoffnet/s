@@ -1,5 +1,7 @@
 package net.syslikoff.healdragg.ui
 
+import android.content.Context
+import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -345,14 +347,44 @@ class Api(private val baseUrl: String, private val token: String) {
         return raw(path, "GET", null, "application/zip")
     }
 
-    suspend fun restoreBackup(payload: ByteArray): JSONObject {
-        val data = JSONObject(
-            String(
-                raw("api/backup/restore", "POST", payload, "application/zip", BACKUP_TIMEOUT),
-                Charsets.UTF_8,
-            )
-        )
-        return data.obj("counts") ?: JSONObject()
+    suspend fun restoreBackup(context: Context, uri: Uri): JSONObject = withContext(Dispatchers.IO) {
+        val conn = (URL(root + "api/backup/restore").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 5_000
+            readTimeout = BACKUP_TIMEOUT
+            doOutput = true
+            setChunkedStreamingMode(64 * 1024)
+            setRequestProperty("Content-Type", "application/zip")
+            if (token.isNotBlank()) setRequestProperty("X-Api-Token", token)
+        }
+        try {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw ApiException(0, "Не удалось открыть файл копии")
+            input.use { source ->
+                conn.outputStream.use { target ->
+                    val buffer = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val count = source.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 400L * 1024 * 1024) throw ApiException(413, "Копия больше 400 МБ")
+                        target.write(buffer, 0, count)
+                    }
+                }
+            }
+            val code = conn.responseCode
+            val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) throw ApiException(code, humanError(code, text))
+            JSONObject(text).obj("counts") ?: JSONObject()
+        } catch (exc: ApiException) {
+            throw exc
+        } catch (exc: Exception) {
+            throw ApiException(0, exc.message ?: "Не удалось восстановить копию")
+        } finally {
+            conn.disconnect()
+        }
     }
 
     suspend fun giftArt(giftId: Long): ByteArray =

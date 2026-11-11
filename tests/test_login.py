@@ -89,3 +89,11 @@ def _fake_flow(flow_id: str, created_at: float):
         created_at=created_at,
         client=_FakeClient(),  # type: ignore[arg-type]
     )
+
+
+def test_rejects_path_in_session_name(manager: LoginManager) -> None:
+    manager.settings.api_id = 123
+    manager.settings.api_hash = "a" * 32
+    for name in ("../outside", "/tmp/account", "dir\\account", ".."):
+        with pytest.raises(LoginError, match="имя сессии"):
+            asyncio.run(manager.start("+79990000000", name))
