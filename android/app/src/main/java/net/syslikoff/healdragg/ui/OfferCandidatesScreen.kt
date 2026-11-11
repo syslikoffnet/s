@@ -213,7 +213,7 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
             item("plan-summary") {
                 HdCard {
                     Text("Черновик: ${draftRows.length()} · сумма ${draft.optLong("total_amount")} ${draft.optString("currency")}", color = Hd.Text, style = MaterialTheme.typography.titleMedium)
-                    Text("${draft.optString("notice")} Перед ручной отправкой в @echidbot проверьте каждый NFT, продавца, сумму и курс. Черновик отражает параметры на момент расчёта.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+                    Text("${draft.optString("notice")} Команда предназначена для личного чата владельца NFT, а не чата бота. Перед ручной отправкой проверьте владельца по ID, NFT, сумму и курс. Черновик отражает параметры на момент расчёта; обработка бизнес-ботом не гарантирована.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
                     Text("Проверено записей: ${draft.optInt("examined")}" + if (draft.optBoolean("truncated")) " · выборка ограничена" else "", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
                     val skipped = draft.optJSONObject("skipped")
                     if (skipped != null) Text("Пропущено: без цены ${skipped.optInt("no_price")}, без username ${skipped.optInt("no_username")}, повтор владельца ${skipped.optInt("same_owner")}, выше лимита ${skipped.optInt("over_per_offer")}, не вошло в бюджет ${skipped.optInt("over_budget")}, некорректная ссылка ${skipped.optInt("invalid_slug")}", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
@@ -223,7 +223,7 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 HdCard {
                     Text("${row.optString("slug")} · @${row.optString("owner_username")}", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
                     Text("Черновик: ${row.optLong("amount")} ${row.optString("currency")} · старая оценка $${BigDecimal.valueOf(row.optLong("value_usd_cents"), 2).toPlainString()}", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = { clipboard.setText(AnnotatedString(row.optString("command"))) }) { Text("Скопировать команду для проверки") }
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(row.optString("command"))) }) { Text("Скопировать команду для чата владельца") }
                 }
             }
         }

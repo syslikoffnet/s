@@ -201,4 +201,5 @@ def preview_batch(store: Store, payload: dict[str, Any]) -> dict[str, Any]:
         after = page["next_after"]
     return {"rows": rows, "total_amount": total, "currency": currency, "examined": examined,
             "skipped": skipped, "truncated": more,
-            "notice": "Черновик по старым наблюдениям и вручную введённому курсу. Владелец, оценка и курс не проверены; ничего не отправлено."}
+            "destination": "owner_private_chat",
+            "notice": "Черновик по старым наблюдениям и вручную введённому курсу. Владелец, оценка и курс не проверены; ничего не отправлено. Команда предназначена для личного чата владельца NFT, не чата бота."}

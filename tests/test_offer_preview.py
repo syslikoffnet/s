@@ -20,6 +20,8 @@ def test_preview_uses_decimal_limits_and_skips_ineligible(store):
     plan = preview_batch(store, config())
     assert [(r["slug"], r["amount"]) for r in plan["rows"]] == [("A-1", 3), ("B-1", 5)]
     assert plan["total_amount"] == 8
+    assert plan["destination"] == "owner_private_chat"
+    assert "личного чата владельца" in plan["notice"]
     assert plan["skipped"] == {"no_price": 1, "no_username": 1, "invalid_slug": 0,
                                 "same_owner": 1, "over_per_offer": 1, "over_budget": 0}
     assert plan["rows"][0]["command"] == "/createoffer @seller1 https://t.me/nft/A-1 3 gram ru"
