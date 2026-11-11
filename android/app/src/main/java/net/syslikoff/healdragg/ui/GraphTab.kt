@@ -112,7 +112,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Chip("цель", Hd.Accent, icon = Icons.Filled.GpsFixed)
+            Chip("профиль", Hd.Accent, icon = Icons.Filled.GpsFixed)
             Chip("$peers собеседников", Hd.Good, icon = Icons.Filled.People)
             Spacer(Modifier.weight(1f))
             TextButton(onClick = {
@@ -122,16 +122,17 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
             }) { Text("Сброс", color = Hd.Muted, style = MaterialTheme.typography.labelMedium) }
         }
 
-        if (peers == 0) {
+        if (graph.nodes.none { it.type == "peer" || it.type == "chat" }) {
             EmptyState(
                 emoji = "",
                 icon = Icons.Filled.Share,
                 title = "Паутина пуста",
-                text = "Здесь появятся люди, которым цель отвечала или которых упоминала. Данные зависят от доступной истории чатов.",
+                text = "Соберите чаты, активность или подарки профиля. Данные зависят от доступной истории и настроек приватности Telegram.",
             )
             return@Column
         }
 
+        Text("Голубой — чат, зелёный — общение; жёлтая/розовая стрелка — подарок от дарителя к профилю записи. Это наблюдения, не гарантия текущего владения или прямой передачи NFT.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
         Box(
             Modifier
                 .fillMaxWidth()
@@ -174,10 +175,16 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                 val peerNodes = graph.nodes.filter { it.type == "peer" }
                     .sortedByDescending { it.weight }.take(72)
 
-                val peerRing = radiusBase * 0.76f
+                val chatNodes = graph.nodes.filter { it.type == "chat" }.sortedByDescending { it.weight }.take(40)
+                val peerRing = radiusBase * 0.78f
+                val chatRing = radiusBase * 0.42f
 
                 val world = LinkedHashMap<String, Offset>()
                 world["target"] = Offset.Zero
+                chatNodes.forEachIndexed { index, node ->
+                    val angle = (2.0 * Math.PI * index / chatNodes.size - Math.PI / 2).toFloat()
+                    world[node.id] = Offset(cos(angle) * chatRing, sin(angle) * chatRing)
+                }
                 peerNodes.forEachIndexed { index, node ->
                     val angle = (2.0 * Math.PI * index / peerNodes.size - Math.PI / 2 + 0.35).toFloat()
                     world[node.id] = Offset(cos(angle) * peerRing, sin(angle) * peerRing)
@@ -193,16 +200,29 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                     val from = world[edge.source] ?: return@forEach
                     val to = world[edge.target] ?: return@forEach
                     val strength = edge.weight.coerceIn(1, 40) / 40f
-                    drawLine(
-                        color = if (edge.kind == "peer") {
-                            Hd.Good.copy(alpha = 0.18f + 0.35f * strength)
-                        } else {
-                            Hd.Accent2.copy(alpha = 0.14f + 0.28f * strength)
-                        },
-                        start = screen(from),
-                        end = screen(to),
-                        strokeWidth = (0.6f + 2.2f * strength) * scale.coerceIn(0.7f, 1.6f),
-                    )
+                    val giftEdge = edge.kind == "gift_in" || edge.kind == "gift_out"
+                    val edgeColor = when (edge.kind) {
+                        "gift_in" -> Hd.Warn.copy(alpha = 0.8f)
+                        "gift_out" -> Hd.Accent.copy(alpha = 0.8f)
+                        "peer" -> Hd.Good.copy(alpha = 0.18f + 0.35f * strength)
+                        else -> Hd.Accent2.copy(alpha = 0.14f + 0.28f * strength)
+                    }
+                    val a = screen(from)
+                    val b = screen(to)
+                    drawLine(color = edgeColor, start = a, end = b,
+                        strokeWidth = (0.6f + 2.2f * strength) * scale.coerceIn(0.7f, 1.6f))
+                    if (giftEdge) {
+                        val delta = b - a
+                        val length = delta.getDistance()
+                        if (length > 0f) {
+                            val unit = delta / length
+                            val side = Offset(-unit.y, unit.x)
+                            val tip = a + delta * 0.72f
+                            val back = tip - unit * 10f
+                            drawLine(edgeColor, tip, back + side * 5f, strokeWidth = 2f)
+                            drawLine(edgeColor, tip, back - side * 5f, strokeWidth = 2f)
+                        }
+                    }
                 }
 
                 // узлы
@@ -231,6 +251,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                 val labelled = buildList {
                     targetNode?.let { add(it) }
                     addAll(peerNodes.take(12))
+                    addAll(chatNodes.take(5))
                 }
                 labelled.forEach { node ->
                     val pos = world[node.id]?.let { screen(it) } ?: return@forEach
@@ -268,7 +289,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                 node = node,
                 onClose = { selected = null },
                 onToast = onToast,
-                onOpenProfile = { onOpenProfile(node.username?.let { "@$it" } ?: node.tgId.toString()) },
+                onOpenProfile = { onOpenProfile(node.tgId.toString()) },
                 onOpen = {
                     val link = node.link ?: telegramLink(node.username)
                     if (!openLink(context, link)) onToast("Нет ссылки Telegram")
@@ -313,7 +334,7 @@ private fun NodeCard(
                 )
                 Text(
                     when (node.type) {
-                        "target" -> "цель"
+                        "target" -> "профиль"
                         "peer" -> "собеседник"
                         else -> "чат"
                     } + " · ID ${node.tgId}",
@@ -331,9 +352,11 @@ private fun NodeCard(
                 m.str("status")?.let { add(Hd.statusLabel(it)) }
                 m.int("members").takeIf { it > 0 }?.let { add("${compactNumber(it)} участн.") }
                 m.int("messages").takeIf { it > 0 }?.let { add("${compactNumber(it)} сообщ.") }
-                m.int("my_messages").takeIf { it > 0 }?.let { add("${it} от цели") }
+                m.int("my_messages").takeIf { it > 0 }?.let { add("${it} от профиля") }
                 m.int("replies").takeIf { it > 0 }?.let { add("${it} ответов") }
                 m.int("mentions").takeIf { it > 0 }?.let { add("${it} упоминаний") }
+                m.int("gifts_received").takeIf { it > 0 }?.let { add("${it} записей от этого пользователя") }
+                m.int("gifts_sent").takeIf { it > 0 }?.let { add("${it} записей в его профиле") }
                 m.int("weight").takeIf { it > 1 }?.let { add("сила ${it}") }
             }
             if (lines.isNotEmpty()) {

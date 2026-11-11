@@ -632,3 +632,59 @@ def test_target_links_paginate_in_database(client: TestClient, monkeypatch: pyte
     assert len(first["rows"]) == len(second["rows"]) == 7
     assert {row["tg_id"] for row in first["rows"]}.isdisjoint(row["tg_id"] for row in second["rows"])
     assert client.get("/api/targets/lookup?q=" + "9" * 100, headers=HEADERS).status_code == 404
+
+
+def test_profile_gifts_and_gift_search(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.add_gift(DEMO_TARGET, saved_id=800, gift_id=1, title="Сердце", from_tg_id=12)
+    store.add_gift(DEMO_TARGET, saved_id=801, gift_id=1, title="Скрытый", from_tg_id=13, name_hidden=True)
+    store.add_gift(14, saved_id=802, gift_id=1, title="Сердце", from_tg_id=DEMO_TARGET)
+    store.add_gift(15, saved_id=803, gift_id=1, title="Скрытый отправитель", from_tg_id=DEMO_TARGET, name_hidden=True)
+    store.upsert_nft_item("PlushPepe-123", title="Плюшевый Пепе", gift_id=12, owner_tg_id=14)
+    base = f"/api/targets/{DEMO_TARGET}/gifts"
+    incoming = client.get(base + "?direction=received&limit=1", headers=HEADERS).json()
+    assert len(incoming["rows"]) == 1 and incoming["has_more"]
+    sent = client.get(base + "?direction=sent", headers=HEADERS).json()
+    assert [row["owner_tg_id"] for row in sent["rows"]] == [14]
+    assert client.get(base + "?direction=bad", headers=HEADERS).status_code == 400
+    assert client.get("/api/targets/999999999/gifts", headers=HEADERS).status_code == 404
+    assert len(client.get("/api/search/gifts?q=СЕРДЦЕ", headers=HEADERS).json()["gifts"]) == 2
+    assert client.get("/api/search/gifts?q=ПЕПЕ", headers=HEADERS).json()["nft"][0]["slug"] == "PlushPepe-123"
+    assert client.get("/api/search/gifts?q=", headers=HEADERS).status_code == 400
+    assert client.get("/api/search/gifts?q=pepe").status_code == 401
+
+
+def test_live_nft_search_validation_and_lookup(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = client.app.state.hd
+    app.store.add_session("live", str(app.settings.sessions_dir / "live.session"), status="active")
+    called = []
+
+    async def resolve(pool, store, slug):
+        called.append(slug)
+        return {"slug": slug, "title": "Plush Pepe", "owner_tg_id": None}
+
+    monkeypatch.setattr("healdragg.api.resolve_unique_gift", resolve)
+    assert client.post("/api/search/nft", json={"slug": "../../etc/passwd"}, headers=HEADERS).status_code == 400
+    assert client.post("/api/search/nft", json={"slug": "PlushPepe-0"}, headers=HEADERS).status_code == 400
+    result = client.post("/api/search/nft", json={"slug": "PlushPepe-123"}, headers=HEADERS)
+    assert result.status_code == 200 and result.json()["item"]["slug"] == "PlushPepe-123"
+    assert called == ["PlushPepe-123"]
+    assert client.post("/api/search/nft", json={"slug": "PlushPepe-123"}).status_code == 401
+
+
+def test_open_profile_preserves_saved_and_does_not_start_watch(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = client.app.state.hd
+    existing = client.post("/api/profiles/open", json={"query": str(DEMO_TARGET)}, headers=HEADERS)
+    assert existing.status_code == 200
+    assert existing.json()["tg_user_id"] == DEMO_TARGET
+    assert client.post("/api/profiles/open", json={"query": ""}, headers=HEADERS).status_code == 400
+    app.store.add_session("live", str(app.settings.sessions_dir / "live.session"), status="active")
+
+    async def resolve(pool, store, query, *, watch_enabled=True):
+        assert query == "@newperson" and not watch_enabled
+        return store.upsert_target(1234567, username="newperson", watch_enabled=watch_enabled)
+
+    monkeypatch.setattr("healdragg.api.resolve_and_store_target", resolve)
+    created = client.post("/api/profiles/open", json={"query": "@newperson"}, headers=HEADERS)
+    assert created.status_code == 200
+    assert app.store.get_target(1234567)["watch_enabled"] == 0

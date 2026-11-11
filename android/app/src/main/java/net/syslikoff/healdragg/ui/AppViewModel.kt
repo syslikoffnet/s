@@ -374,7 +374,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     targetNextBefore = page.nextBefore
                 }
             } catch (exc: Exception) {
-                if (generation == targetGeneration && client === api) targetPageError = exc.message ?: "Не удалось загрузить цели"
+                if (generation == targetGeneration && client === api) targetPageError = exc.message ?: "Не удалось загрузить профили"
             } finally {
                 if (generation == targetGeneration && client === api) targetPageLoading = false
             }
@@ -398,7 +398,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     targetNextBefore = page.nextBefore
                 }
             } catch (exc: Exception) {
-                if (generation == targetGeneration && client === api) targetPageError = exc.message ?: "Не удалось загрузить цели"
+                if (generation == targetGeneration && client === api) targetPageError = exc.message ?: "Не удалось загрузить профили"
             } finally {
                 if (generation == targetGeneration && client === api) targetPageLoading = false
             }

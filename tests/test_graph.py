@@ -68,3 +68,24 @@ def test_peer_has_only_chats_with_actual_interactions(tmp_path: Path) -> None:
     assert node["label"] == "Аня"
     assert [(g["title"], g["interactions"]) for g in node["meta"]["chats"]] == [("Первый", 2)]
     store.close()
+
+
+def test_graph_includes_directional_gift_observations_without_hidden_senders(tmp_path: Path) -> None:
+    store = Store(tmp_path / "gift-graph.db")
+    target = store.upsert_target(42, first_name="Alice")
+    peer = store.upsert_peer(99, first_name="Bob")
+    store.bump_edge(target["id"], peer, replies=1, ts=100)
+    store.add_gift(42, saved_id=1, gift_id=1, title="Gift", from_tg_id=99, from_name="Bob")
+    store.add_gift(99, saved_id=2, gift_id=1, title="Gift", from_tg_id=42, owner_name="Bob")
+    store.add_gift(42, saved_id=3, gift_id=1, title="Hidden", from_tg_id=123, name_hidden=True)
+    graph = build_graph(store, target["id"])
+    peers = [n for n in graph["nodes"] if n["type"] == "peer"]
+    assert [n["tg_id"] for n in peers] == [99]
+    assert peers[0]["meta"]["gifts_received"] == 1
+    assert peers[0]["meta"]["gifts_sent"] == 1
+    edges = {e["kind"]: e for e in graph["edges"]}
+    assert edges["gift_in"]["source"] == peers[0]["id"]
+    assert edges["gift_in"]["target"] == "target"
+    assert edges["gift_out"]["source"] == "target"
+    assert edges["gift_out"]["target"] == peers[0]["id"]
+    store.close()

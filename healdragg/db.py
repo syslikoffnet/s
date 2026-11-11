@@ -528,10 +528,14 @@ class Store:
             "intel_updated_at": "INTEGER",
             "gifts_count": "INTEGER NOT NULL DEFAULT 0",
             "gifts_updated_at": "INTEGER",
+            "watch_enabled": "INTEGER NOT NULL DEFAULT 1",
         }
         for column, ddl in target_additions.items():
             if column not in target_cols:
                 self._soft(f"ALTER TABLE targets ADD COLUMN {column} {ddl}")
+        crawl_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gift_crawl_runs)")}
+        if "refresh_known" not in crawl_cols:
+            self._soft("ALTER TABLE gift_crawl_runs ADD COLUMN refresh_known INTEGER NOT NULL DEFAULT 0")
         gift_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gifts)")}
         gift_additions = {
             "slug": "TEXT",
@@ -1074,14 +1078,15 @@ class Store:
         is_bot: bool = False,
         is_deleted: bool = False,
         notes: str | None = None,
+        watch_enabled: bool = True,
     ) -> dict[str, Any]:
         ts = now_ts()
         with self.tx() as conn:
             conn.execute(
                 """
                 INSERT INTO targets(tg_user_id, access_hash, username, first_name, last_name, phone,
-                                    bio, is_bot, is_deleted, added_at, updated_at, notes)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                                    bio, is_bot, is_deleted, added_at, updated_at, notes, watch_enabled)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(tg_user_id) DO UPDATE SET
                     access_hash = coalesce(excluded.access_hash, targets.access_hash),
                     username    = coalesce(excluded.username, targets.username),
@@ -1107,6 +1112,7 @@ class Store:
                     ts,
                     ts,
                     notes,
+                    int(watch_enabled),
                 ),
             )
             row = conn.execute("SELECT * FROM targets WHERE tg_user_id = ?", (tg_user_id,)).fetchone()
@@ -1404,11 +1410,11 @@ class Store:
         row = self.query_one("SELECT document FROM gift_stickers WHERE gift_id = ?", (gift_id,))
         return bytes(row["document"]) if row else None
 
-    def create_gift_crawl(self, query: str, depth: int, max_profiles: int, per_profile: int) -> int:
+    def create_gift_crawl(self, query: str, depth: int, max_profiles: int, per_profile: int, *, refresh_known: bool = False) -> int:
         with self.tx() as conn:
             cur = conn.execute(
-                "INSERT INTO gift_crawl_runs(query, depth, max_profiles, per_profile, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)", (query, depth, max_profiles, per_profile, now_ts(), now_ts()),
+                "INSERT INTO gift_crawl_runs(query, depth, max_profiles, per_profile, created_at, updated_at, refresh_known) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)", (query, depth, max_profiles, per_profile, now_ts(), now_ts(), int(refresh_known)),
             )
             return int(cur.lastrowid)
 
@@ -1657,6 +1663,56 @@ class Store:
             params.extend([f"%{q.strip()}%"] * 5)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         return int(self.scalar(f"SELECT COUNT(*) FROM gifts {clause}", params, 0))
+
+    def profile_gifts(self, tg_id: int, direction: str, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        if direction == "received":
+            where = "owner_tg_id = ?"
+        elif direction == "sent":
+            where = "from_tg_id = ? AND coalesce(name_hidden, 0) = 0"
+        else:
+            raise ValueError("неизвестное направление")
+        return self.query(
+            f"SELECT * FROM gifts WHERE {where} ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ? OFFSET ?",
+            (tg_id, max(1, min(limit, 100)) + 1, max(0, offset)),
+        )
+
+    def profile_gift_relations(self, tg_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+        # Имя дарителя может стать скрытым после ранее видимого наблюдения.
+        return self.query(
+            """SELECT peer_id, max(username) AS username, max(name) AS name,
+                      sum(received) AS received, sum(sent) AS sent
+                 FROM (
+                   SELECT from_tg_id AS peer_id, from_username AS username, from_name AS name,
+                          count(*) AS received, 0 AS sent
+                     FROM gifts WHERE owner_tg_id = ? AND from_tg_id IS NOT NULL
+                       AND from_tg_id > 0 AND from_tg_id != ? AND coalesce(name_hidden, 0) = 0
+                     GROUP BY from_tg_id
+                   UNION ALL
+                   SELECT owner_tg_id AS peer_id, owner_username AS username, owner_name AS name,
+                          0 AS received, count(*) AS sent
+                     FROM gifts WHERE from_tg_id = ? AND owner_tg_id > 0 AND owner_tg_id != ?
+                       AND coalesce(name_hidden, 0) = 0
+                     GROUP BY owner_tg_id
+                 ) GROUP BY peer_id ORDER BY (received + sent) DESC, peer_id LIMIT ?""",
+            (tg_id, tg_id, tg_id, tg_id, max(1, min(limit, 200))),
+        )
+
+    def search_gift_records(self, query: str, *, limit: int = 20) -> dict[str, list[dict[str, Any]]]:
+        needle = query.strip().casefold()
+        if not needle:
+            return {"gifts": [], "nft": []}
+        limit = max(1, min(limit, 50))
+        gifts = self.query(
+            "SELECT * FROM gifts WHERE instr(hd_casefold(coalesce(title, '') || ' ' || coalesce(slug, '')), ?) > 0 "
+            "ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ?", (needle, limit)
+        )
+        nft = self.query(
+            "SELECT nft_items.*, (SELECT presence FROM gifts WHERE gifts.slug = nft_items.slug "
+            "AND gifts.owner_tg_id = nft_items.owner_tg_id ORDER BY id LIMIT 1) AS owner_presence "
+            "FROM nft_items WHERE instr(hd_casefold(coalesce(title, '') || ' ' || coalesce(slug, '')), ?) > 0 "
+            "ORDER BY seen_at DESC, slug LIMIT ?", (needle, limit)
+        )
+        return {"gifts": gifts, "nft": nft}
 
     def gift_summary(self) -> dict[str, Any]:
         row = self.query_one(

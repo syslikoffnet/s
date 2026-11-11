@@ -12,6 +12,8 @@ import android.util.Base64
 import java.net.URLEncoder
 
 data class TargetPage(val rows: List<Target>, val nextBefore: Long?)
+data class ProfileGiftPage(val rows: List<GiftItem>, val hasMore: Boolean)
+data class GiftSearchResult(val gifts: List<GiftItem>, val nft: List<NftItem>)
 
 class ApiException(val code: Int, override val message: String) : Exception(message)
 
@@ -84,7 +86,7 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun addTarget(query: String): Target {
         val body = JSONObject().put("query", query)
-        return Target.from(obj("api/targets", "POST", body))
+        return Target.from(obj("api/profiles/open", "POST", body))
     }
 
     suspend fun deleteTarget(tgId: Long) {
@@ -157,6 +159,22 @@ class Api(private val baseUrl: String, private val token: String) {
         PhotoData(base64 = data.str("b64").orEmpty(), updatedAt = data.num("updated_at"))
     } catch (exc: ApiException) {
         if (exc.code == 404) null else throw exc
+    }
+
+    suspend fun lookupNft(slug: String): NftItem {
+        val data = obj("api/search/nft", "POST", JSONObject().put("slug", slug), PROFILE_TIMEOUT)
+        return NftItem.from(data.getJSONObject("item"))
+    }
+
+    suspend fun profileGifts(tgId: Long, direction: String, offset: Int = 0): ProfileGiftPage {
+        val data = obj("api/targets/$tgId/gifts?direction=$direction&limit=50&offset=$offset")
+        return ProfileGiftPage(jsonObjects(data.arr("rows")).map(GiftItem::from), data.bool("has_more"))
+    }
+
+    suspend fun searchGifts(query: String): GiftSearchResult {
+        val data = obj("api/search/gifts?q=${URLEncoder.encode(query, "UTF-8")}")
+        return GiftSearchResult(jsonObjects(data.arr("gifts")).map(GiftItem::from),
+            jsonObjects(data.arr("nft")).map(NftItem::from))
     }
 
     suspend fun gifts(
@@ -434,12 +452,14 @@ class Api(private val baseUrl: String, private val token: String) {
         depth: Int = 1,
         maxProfiles: Int = 5,
         perProfile: Int = 1000,
+        refreshKnown: Boolean = false,
     ): Job {
         val body = JSONObject()
             .put("query", query)
             .put("depth", depth)
             .put("max_profiles", maxProfiles)
             .put("per_profile", perProfile)
+            .put("refresh_known", refreshKnown)
         return Job.from(obj("api/gifts/crawl", "POST", body))
     }
 

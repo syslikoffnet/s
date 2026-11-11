@@ -80,7 +80,7 @@ private enum class Tab(
     val icon: ImageVector,
     val selectedIcon: ImageVector,
 ) {
-    Targets("Цели", Icons.Outlined.GpsFixed, Icons.Filled.GpsFixed),
+    Targets("Поиск", Icons.Outlined.GpsFixed, Icons.Filled.GpsFixed),
     Alerts("Алерты", Icons.Outlined.Notifications, Icons.Filled.Notifications),
     Catalog("База", Icons.Outlined.Explore, Icons.Filled.Explore),
     Gifts("Подарки", Icons.Outlined.CardGiftcard, Icons.Filled.CardGiftcard),
@@ -116,14 +116,36 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
     var showSetup by rememberSaveable { mutableStateOf(vm.isLocal && !vm.hasCredentials) }
     var showAccounts by rememberSaveable { mutableStateOf(false) }
 
-    // Подарок → «открыть профиль владельца»: добавляем человека целью и
-    // показываем его карточку прямо в приложении.
+    // Сохранённый профиль открывается без сети; неизвестный разрешается в Telegram.
+    var openingProfile by remember { mutableStateOf(false) }
     val openProfile: (String) -> Unit = { key ->
-        vm.addTarget(key) { result ->
-            result.onSuccess { target ->
-                openTarget = target.tgId
-                tab = Tab.Targets
-            }.onFailure { toast(it.message ?: "Не удалось открыть профиль") }
+        if (!openingProfile) {
+            val client = vm.api
+            if (client == null) toast("Движок не запущен")
+            else {
+                openingProfile = true
+                scope.launch {
+                    try {
+                        val existing = try { client.findTarget(key) } catch (exc: ApiException) {
+                            if (exc.code == 404) null else throw exc
+                        }
+                        if (existing != null) {
+                            openTarget = existing.tgId
+                            tab = Tab.Targets
+                            openingProfile = false
+                        } else {
+                            vm.addTarget(key) { result ->
+                                openingProfile = false
+                                result.onSuccess { target -> openTarget = target.tgId; tab = Tab.Targets }
+                                    .onFailure { toast(it.message ?: "Не удалось открыть профиль") }
+                            }
+                        }
+                    } catch (exc: Exception) {
+                        openingProfile = false
+                        toast(exc.message ?: "Не удалось открыть профиль")
+                    }
+                }
+            }
         }
     }
 
@@ -163,7 +185,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
         val wide = maxWidth >= 800.dp
         val listWidth = (maxWidth * 0.36f).coerceIn(320.dp, 430.dp)
         val title = when {
-            openTarget != null -> "Цель"
+            openTarget != null -> "Профиль"
             else -> tab.title
         }
 
@@ -213,7 +235,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                         tgId = catalogTarget,
                                         onBack = { openTarget = null },
                                         onToast = toast,
-                            onOpenProfile = openProfile,
+                                        onOpenProfile = openProfile,
                                     )
                                 } else {
                                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -247,9 +269,10 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             else -> Row(Modifier.fillMaxSize()) {
                                 Box(Modifier.width(listWidth).fillMaxHeight()) {
                                     if (tab == Tab.Targets) {
-                                        TargetsScreen(
+                                        SearchScreen(
                                             vm = vm,
                                             onOpenTarget = { openTarget = it },
+                                            onOpenProfile = openProfile,
                                             onToast = toast,
                                             onOpenAccounts = { showAccounts = true },
                                         )
@@ -333,9 +356,10 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             onToast = toast,
                             onOpenProfile = openProfile,
                         )
-                        tab == Tab.Targets -> TargetsScreen(
+                        tab == Tab.Targets -> SearchScreen(
                             vm = vm,
                             onOpenTarget = { openTarget = it },
+                            onOpenProfile = openProfile,
                             onToast = toast,
                             onOpenAccounts = { showAccounts = true },
                         )
@@ -381,7 +405,7 @@ private fun EmptyDetailHint(tab: Tab) {
         }
         Spacer(Modifier.height(16.dp))
         Text(
-            if (tab == Tab.Alerts) "Выбери алерт слева" else "Выбери цель слева",
+            if (tab == Tab.Alerts) "Выбери алерт слева" else "Выбери профиль слева",
             style = MaterialTheme.typography.titleMedium,
             color = Hd.Text,
             textAlign = TextAlign.Center,

@@ -217,7 +217,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Приложение читает открытые чаты цели от имени твоего Telegram. " +
+                        "Приложение читает открытые чаты пользователя от имени твоего Telegram. " +
                             "Номер и код обрабатывает движок на этом телефоне — они не уходят на сторонние серверы.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Hd.Muted,
@@ -507,7 +507,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                                 }
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "Теперь можно добавлять цели и запускать скан.",
+                                    "Теперь можно открывать профили и запускать скан.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Hd.Muted,
                                 )

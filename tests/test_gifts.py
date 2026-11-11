@@ -243,3 +243,25 @@ async def test_crawl_nft_chain_collects_owners(store: Store, tmp_path) -> None:
     wallet = store.nft_items(chain="wallet")
     assert len(wallet) == 1 and wallet[0]["owner_tg_id"] == 777
     assert wallet[0]["owner_address"] == "EQowner"
+
+
+async def test_resolve_unique_gift_stores_only_matching_result(store: Store) -> None:
+    from healdragg.gifts import resolve_unique_gift
+
+    class Client:
+        async def __call__(self, request):
+            assert request.slug == "PlushPepe-123"
+            gift = types.StarGiftUnique(
+                id=1, gift_id=2, title="Plush Pepe", slug="PlushPepe-123", num=123,
+                attributes=[], availability_issued=200, availability_total=1000,
+                owner_id=types.PeerUser(42),
+            )
+            return SimpleNamespace(gift=gift)
+
+    class Pool:
+        async def first(self):
+            return SimpleNamespace(client=Client(), limiter=RateLimiter(0, 0))
+
+    result = await resolve_unique_gift(Pool(), store, "PlushPepe-123")
+    assert result["slug"] == "PlushPepe-123" and result["owner_tg_id"] == 42
+    assert store.nft_items(q="PlushPepe-123")

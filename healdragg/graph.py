@@ -153,6 +153,30 @@ def build_graph(
             }
         )
 
+    # Связи подарков основаны на сохранённых наблюдениях профилей. NFT могли
+    # менять владельца: это не доказательство прямой передачи или текущего владения.
+    by_tg = {int(node["tg_id"]): node for node in nodes if node["type"] == "peer"}
+    for relation in store.profile_gift_relations(int(target["tg_user_id"]), limit=max_peers):
+        peer_id = int(relation["peer_id"])
+        peer = by_tg.get(peer_id)
+        if peer is None:
+            peer = {
+                "id": f"gift-user-{peer_id}", "type": "peer",
+                "label": relation.get("name") or (f"@{relation['username']}" if relation.get("username") else f"ID {peer_id}"),
+                "tg_id": peer_id, "weight": 1,
+                "meta": {"username": relation.get("username")},
+            }
+            nodes.append(peer)
+            by_tg[peer_id] = peer
+        received, sent = int(relation["received"] or 0), int(relation["sent"] or 0)
+        peer["meta"]["gifts_received"] = received
+        peer["meta"]["gifts_sent"] = sent
+        peer["weight"] = max(peer["weight"], received + sent)
+        if received:
+            links.append({"source": peer["id"], "target": "target", "kind": "gift_in", "weight": received})
+        if sent:
+            links.append({"source": "target", "target": peer["id"], "kind": "gift_out", "weight": sent})
+
     return {
         "target": {
             "tg_id": int(target["tg_user_id"]),

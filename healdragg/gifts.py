@@ -294,7 +294,9 @@ async def crawl_gifts(
         raise ValueError("Задание обхода не найдено")
     seed_user: User | None = None
     if run is None or not run["initialized"]:
-        entity = await limiter.call(lambda: client.get_entity(query))
+        # Числовая строка в Telethon может трактоваться как телефон, а не user ID.
+        seed_identifier: Any = int(query) if query.isascii() and query.isdigit() else query
+        entity = await limiter.call(lambda: client.get_entity(seed_identifier))
         seed_user = entity if isinstance(entity, User) else None
         if seed_user is None:
             users = getattr(entity, "users", None) or []
@@ -842,6 +844,29 @@ async def _discover_collections(
     if run_id is not None:
         store.finish_nft_chain_discovery(run_id)
     return {"requests": used - start_used, "collections": found, "errors": 0}
+
+
+async def resolve_unique_gift(pool: SessionPool, store: Store, slug: str) -> dict[str, Any]:
+    """Запрашивает один конкретный NFT; не запускает обход коллекций."""
+    account = await pool.first()
+    limiter = account.limiter or RateLimiter()
+    response = await limiter.call(lambda: account.client(GetUniqueStarGiftRequest(slug=slug)), attempts=1)
+    gift = getattr(response, "gift", response)
+    if not isinstance(gift, StarGiftUnique):
+        raise ValueError("Telegram вернул неожиданный формат NFT")
+    meta = _unique_meta(gift)
+    canonical = str(meta.get("slug") or "")
+    if canonical.casefold() != slug.casefold():
+        raise ValueError("Telegram вернул другой NFT")
+    owner = meta.get("owner_tg_id")
+    owner_data = store.get_target(int(owner)) if owner else None
+    _remember_meta(store, meta, owner_tg_id=owner,
+                   owner_username=owner_data.get("username") if owner_data else None,
+                   owner_name=meta.get("owner_name"))
+    row = store.query_one("SELECT * FROM nft_items WHERE slug = ?", (canonical,))
+    if not row:
+        raise ValueError("Не удалось сохранить найденный NFT")
+    return row
 
 
 async def crawl_nft_chain(

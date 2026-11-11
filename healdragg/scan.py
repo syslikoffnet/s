@@ -781,8 +781,10 @@ async def resolve_and_store_target(
     pool: SessionPool,
     store: Store,
     raw: str,
+    *,
+    watch_enabled: bool = True,
 ) -> dict[str, Any]:
-    """Разрешает @username / id и кладёт цель в базу."""
+    """Разрешает @username / id и кладёт профиль в базу."""
     account = await pool.first()
     limiter = account.limiter or RateLimiter()
     data = await resolve_target(account.client, raw, limiter)
@@ -798,5 +800,6 @@ async def resolve_and_store_target(
         bio=data.get("bio"),
         is_bot=bool(data.get("is_bot")),
         is_deleted=bool(data.get("is_deleted")),
+        watch_enabled=watch_enabled,
     )
 

@@ -309,7 +309,7 @@ data class GraphData(
             }
             val t = o.obj("target")
             return GraphData(
-                targetName = t?.str("name") ?: "Цель",
+                targetName = t?.str("name") ?: "Профиль",
                 targetUsername = t?.str("username"),
                 nodes = nodes,
                 edges = edges,
@@ -846,7 +846,7 @@ data class MapNode(
 ) {
     val kindLabel: String
         get() = when (type) {
-            "target" -> "цель"
+            "target" -> "профиль"
             "chat" -> "чат"
             "peer" -> "собеседник"
             else -> type

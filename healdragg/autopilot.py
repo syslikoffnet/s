@@ -26,8 +26,8 @@ log = logging.getLogger("healdragg.autopilot")
 async def tick(pool: SessionPool, store: Store, settings: Settings) -> dict[str, Any]:
     """Один обход всех целей: скан → (опц.) активность → алерты."""
     # Срез по первичному ключу не меняется от обновлений профилей во время скана.
-    maximum = int(store.scalar("SELECT coalesce(max(id), 0) FROM targets", (), 0) or 0)
-    target_count = store.count_targets()
+    maximum = int(store.scalar("SELECT coalesce(max(id), 0) FROM targets WHERE watch_enabled = 1", (), 0) or 0)
+    target_count = int(store.scalar("SELECT COUNT(*) FROM targets WHERE watch_enabled = 1", (), 0))
     stats: dict[str, Any] = {
         "targets": target_count,
         "scanned": 0,
@@ -49,7 +49,7 @@ async def tick(pool: SessionPool, store: Store, settings: Settings) -> dict[str,
     if cursor >= maximum:
         cursor = 0
     while cursor < maximum:
-        targets = store.query("SELECT * FROM targets WHERE id > ? AND id <= ? ORDER BY id LIMIT 50",
+        targets = store.query("SELECT * FROM targets WHERE watch_enabled = 1 AND id > ? AND id <= ? ORDER BY id LIMIT 50",
                               (cursor, maximum))
         if not targets:
             break

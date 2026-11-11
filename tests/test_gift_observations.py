@@ -362,3 +362,25 @@ async def test_scan_rejects_mismatched_connected_account(setup):
     with pytest.raises(ValueError, match="аккаунт изменился"):
         await crawl_gifts(Pool(), store, settings, "1", expected_session_user=1)
     assert client.calls == []
+
+
+async def test_numeric_seed_is_resolved_as_user_id_and_can_refresh_known(setup):
+    store, client, pool, settings = setup
+    seen = []
+    original = client.get_entity
+
+    async def resolve(value):
+        seen.append(value)
+        return await original(value)
+
+    client.get_entity = resolve
+    client.pages[(1, "")] = page([gift(1)])
+    await scan(setup, 1)
+    client.pages[(1, "")] = page([gift(1), gift(2)])
+    run = store.create_gift_crawl("1", 1, 1, 100, refresh_known=True)
+    store.reopen()
+    assert store.gift_crawl(run)["refresh_known"] == 1
+    await crawl_gifts(pool, store, settings, "1", depth=1, max_profiles=1, run_id=run,
+                      skip_known=not bool(store.gift_crawl(run)["refresh_known"]))
+    assert seen == [1, 1]
+    assert len(store.list_gifts(1)) == 2

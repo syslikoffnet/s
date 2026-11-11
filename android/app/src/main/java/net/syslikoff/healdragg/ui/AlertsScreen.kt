@@ -126,7 +126,7 @@ fun AlertsScreen(
                         emoji = "",
                         icon = if (unreadOnly) Icons.Filled.CheckCircle else Icons.Filled.Notifications,
                         title = if (unreadOnly) "Непрочитанных нет" else "Алертов пока нет",
-                        text = "Когда цель зайдёт в новый чат, выйдет из него или напишет — событие появится здесь. " +
+                        text = "Когда пользователь зайдёт в новый чат, выйдет из него или напишет — событие появится здесь. " +
                             "Такие же уведомления приходят в шторку Android.",
                     )
                 }
@@ -145,7 +145,7 @@ fun AlertsScreen(
                         onClick = {
                             if (!alert.read) vm.markAlertRead(alert.id)
                             if (alert.targetTgId > 0) onOpenTarget(alert.targetTgId)
-                            else onToast("Алерт без цели")
+                            else onToast("Алерт без профиля")
                         },
                     )
                 }

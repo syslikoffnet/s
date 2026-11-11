@@ -85,7 +85,8 @@ import kotlinx.coroutines.withContext
 private enum class DetailTab(val title: String) {
     Chats("Чаты"),
     Feed("Лента"),
-    Network("Сеть"),
+    Network("Паутина"),
+    Gifts("Подарки"),
 }
 
 @Composable
@@ -120,8 +121,7 @@ fun TargetDetailScreen(
     var linksOpen by remember { mutableStateOf(false) }
     var chatQuery by remember(tgId) { mutableStateOf("") }
     var photo by remember(tgId) { mutableStateOf<ImageBitmap?>(null) }
-    var liveOn by rememberSaveable(tgId) { mutableStateOf(true) }
-    var autoCollected by rememberSaveable(tgId) { mutableStateOf(false) }
+    var liveOn by rememberSaveable(tgId) { mutableStateOf(false) }
 
     LaunchedEffect(tgId, target?.photoUpdatedAt) {
         val client = api ?: return@LaunchedEffect
@@ -245,15 +245,6 @@ fun TargetDetailScreen(
         }
     }
 
-    // Первый заход в ленту: если сообщений ещё нет — сразу собираем архив.
-    LaunchedEffect(tab, tgId) {
-        if (tab != DetailTab.Feed) return@LaunchedEffect
-        if (!autoCollected && messages.isEmpty() && job == null) {
-            autoCollected = true
-            collect()
-        }
-    }
-
     // Режим наблюдения: без кнопок, сообщение появилось — оно уже в ленте.
     LaunchedEffect(tgId, tab, liveOn) {
         if (tab != DetailTab.Feed || !liveOn) return@LaunchedEffect
@@ -339,7 +330,7 @@ fun TargetDetailScreen(
                                     if (handle != null) {
                                         copyText(context, "username", "@$handle")
                                         onToast("Скопировано")
-                                    } else onToast("У цели нет публичного @username")
+                                    } else onToast("У профиля нет публичного @username")
                                 },
                             )
                             DropdownMenuItem(
@@ -403,7 +394,7 @@ fun TargetDetailScreen(
                                 },
                             )
                             DropdownMenuItem(
-                                text = { Text("Удалить цель", color = Hd.Bad) },
+                                text = { Text("Удалить профиль", color = Hd.Bad) },
                                 leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = Hd.Bad) },
                                 onClick = {
                                     menu = false
@@ -496,7 +487,7 @@ fun TargetDetailScreen(
                     Icon(Icons.Filled.Link, contentDescription = null, tint = Hd.Muted)
                 }
                 IconButton(onClick = { scope.launch { loadTarget(); loadChats(reset = true); loadFeed() } }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Обновить цель", tint = Hd.Muted)
+                    Icon(Icons.Filled.Refresh, contentDescription = "Обновить профиль", tint = Hd.Muted)
                 }
             }
         }
@@ -552,7 +543,7 @@ fun TargetDetailScreen(
         }
 
         item("tabs") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 DetailTab.entries.forEach { item ->
                     FilterChip(
                         selected = tab == item,
@@ -609,7 +600,7 @@ fun TargetDetailScreen(
                         EmptyState(
                             emoji = "💬",
                             title = "Чатов пока нет",
-                            text = "Нажми «Сканировать» — приложение проверит, в каких публичных чатах состоит цель.",
+                            text = "Нажми «Сканировать» — приложение проверит, в каких публичных чатах состоит пользователь.",
                         )
                     }
                 }
@@ -652,14 +643,14 @@ fun TargetDetailScreen(
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                "наблюдение",
+                                if (liveOn) "наблюдение включено" else "наблюдение выключено",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Hd.Good,
                             )
                         }
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (messages.isEmpty()) "ждём сообщений…" else "${messages.size} сообщений",
+                            if (messages.isEmpty()) "нет сохранённых сообщений" else "${messages.size} сообщений",
                             style = MaterialTheme.typography.labelSmall,
                             color = Hd.Dim,
                             modifier = Modifier.weight(1f),
@@ -668,7 +659,7 @@ fun TargetDetailScreen(
                             onClick = { liveOn = !liveOn },
                         ) {
                             Text(
-                                if (liveOn) "Пауза" else "Продолжить",
+                                if (liveOn) "Остановить" else "Включить",
                                 color = Hd.Muted,
                                 style = MaterialTheme.typography.labelMedium,
                             )
@@ -681,8 +672,7 @@ fun TargetDetailScreen(
                             emoji = "",
                             icon = Icons.Filled.ChatBubble,
                             title = "Пока тихо",
-                            text = "Наблюдение включено: как только цель напишет в общий чат, сообщение " +
-                                "появится здесь само. Архив за 30 дней можно добрать вручную.",
+                            text = "Нет сохранённых сообщений. Соберите доступную историю или включите наблюдение; приватные и недоступные чаты не видны.",
                             actionLabel = "Собрать архив",
                             onAction = { collect() },
                         )
@@ -696,6 +686,9 @@ fun TargetDetailScreen(
 
             DetailTab.Network -> item("graph") {
                 GraphTab(api = api, tgId = tgId, onToast = onToast, onOpenProfile = onOpenProfile)
+            }
+            DetailTab.Gifts -> item("profile-gifts") {
+                ProfileGiftsTab(vm, tgId, onToast, onOpenProfile)
             }
         }
     }
@@ -712,7 +705,7 @@ fun TargetDetailScreen(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Удалить цель?") },
+            title = { Text("Удалить профиль из базы?") },
             text = {
                 Text(
                     "«${target?.displayName ?: tgId}» и все её чаты, сообщения и алерты исчезнут из базы.",
@@ -893,7 +886,7 @@ private fun LinksDialog(api: Api?, tgId: Long, onDismiss: () -> Unit, onToast: (
             if (loading) {
                 LoadingBlock()
             } else if (rows.isEmpty()) {
-                Text("Ссылок пока нет — сначала просканируй цель.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                Text("Ссылок пока нет — сначала просканируй профиль.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
             } else {
                 LazyColumn(Modifier.heightIn(max = 430.dp)) {
                     items(rows, key = { it.tgId }) { row ->

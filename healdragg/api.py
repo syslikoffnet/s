@@ -11,6 +11,7 @@ import csv
 import hmac
 import io
 import logging
+import re
 import sqlite3
 import tempfile
 import time
@@ -40,7 +41,7 @@ from .backup import (
 from .config import Settings
 from .db import Store
 from .gift_art import GiftArt
-from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts
+from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts, resolve_unique_gift
 from .graph import build_global_graph, build_graph
 from .intel import guess
 from .login import LoginError, LoginManager
@@ -701,6 +702,23 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, f"Не удалось найти аккаунт: {exc}") from exc
         return _target_payload(state.store, target)
 
+    async def open_profile(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        query = str(body.get("query") or "").strip()
+        if not 1 <= len(query) <= 128:
+            raise HTTPException(400, "query: от 1 до 128 символов")
+        known = state.store.find_target(query)
+        if known:
+            return _target_payload(state.store, known)
+        if not state.store.session_names():
+            raise HTTPException(409, "Подключите Telegram, чтобы найти неизвестный профиль")
+        try:
+            target = await resolve_and_store_target(state.pool, state.store, query, watch_enabled=False)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, f"Не удалось найти профиль: {exc}") from exc
+        return _target_payload(state.store, target)
+
     async def get_target(request: Request) -> dict[str, Any]:
         guard(request)
         target = state.store.get_target(request.path_params["tg_id"])
@@ -712,6 +730,49 @@ def create_app(settings: Settings) -> Starlette:
         guard(request)
         state.store.delete_target(request.path_params["tg_id"])
         return {"ok": True}
+
+    async def profile_gifts(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = request.path_params["tg_id"]
+        if not state.store.get_target(tg_id):
+            raise HTTPException(404, "Профиль не найден")
+        direction = request.query_params.get("direction", "received")
+        if direction not in {"received", "sent"}:
+            raise HTTPException(400, "direction: received или sent")
+        limit = _q_int(request, "limit", 50, 1, 100)
+        offset = _q_int(request, "offset", 0, 0, 1_000_000)
+        rows = state.store.profile_gifts(tg_id, direction, limit=limit, offset=offset)
+        return {"rows": rows[:limit], "has_more": len(rows) > limit}
+
+    async def search_gifts(request: Request) -> dict[str, Any]:
+        guard(request)
+        query = (request.query_params.get("q") or "").strip()
+        if not 1 <= len(query) <= 128:
+            raise HTTPException(400, "q: от 1 до 128 символов")
+        return state.store.search_gift_records(query, limit=_q_int(request, "limit", 20, 1, 50))
+
+    async def search_unique_gift(request: Request) -> dict[str, Any]:
+        from telethon.errors import RPCError
+
+        guard(request)
+        body = await _body(request)
+        slug = str(body.get("slug") or "").strip()
+        if len(slug) > 128 or not re.fullmatch(r"[A-Za-z0-9_]+-[1-9][0-9]*", slug):
+            raise HTTPException(400, "Укажите ссылку или slug NFT, например PlushPepe-123")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет активного аккаунта Telegram")
+        if state.gift_lock.locked():
+            raise HTTPException(409, "Сейчас идёт другой сбор подарков, повторите позже")
+        try:
+            async with state.gift_lock:
+                row = await resolve_unique_gift(state.pool, state.store, slug)
+        except RPCError as exc:
+            if getattr(exc, "message", None) == "STARGIFT_SLUG_INVALID":
+                raise HTTPException(404, "Telegram не нашёл этот NFT") from exc
+            raise HTTPException(502, f"Telegram: {exc}") from exc
+        except Exception as exc:
+            raise HTTPException(502, f"Не удалось получить NFT: {exc}") from exc
+        return {"item": row}
 
     async def target_groups(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1513,7 +1574,7 @@ def create_app(settings: Settings) -> Starlette:
                         state.pool, state.store, settings, run["query"],
                         depth=int(run["depth"]), max_profiles=int(run["max_profiles"]),
                         per_profile=int(run["per_profile"]), reporter=on_progress,
-                        skip_known=True, run_id=run_id,
+                        skip_known=not bool(run.get("refresh_known")), run_id=run_id,
                     )
                 counts = state.store.gift_crawl_counts(run_id)
                 status = "paused" if counts["pending"] else "done"
@@ -1596,7 +1657,8 @@ def create_app(settings: Settings) -> Starlette:
         max_profiles = max(1, min(50_000, int(max_profiles) if isinstance(max_profiles, int) else 5))
         per_profile = body.get("per_profile")
         per_profile = max(10, min(5000, int(per_profile) if isinstance(per_profile, int) else 100))
-        run_id = state.store.create_gift_crawl(query, depth, max_profiles, per_profile)
+        refresh_known = body.get("refresh_known") is True
+        run_id = state.store.create_gift_crawl(query, depth, max_profiles, per_profile, refresh_known=refresh_known)
         return launch_gift_crawl(run_id).as_dict()
 
     async def start_scan(request: Request) -> dict[str, Any]:
@@ -1915,6 +1977,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/session/password", _route(session_password), methods=["POST"]),
         Route("/api/session/{flow_id}/cancel", _route(session_cancel), methods=["POST"]),
         Route("/api/sessions/{name}", _route(delete_session), methods=["DELETE"]),
+        Route("/api/profiles/open", _route(open_profile), methods=["POST"]),
         Route("/api/targets", _route(targets), methods=["GET"]),
         Route("/api/targets", _route(add_target), methods=["POST"]),
         Route("/api/targets/page", _route(targets_page), methods=["GET"]),
@@ -1922,6 +1985,9 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}", _route(get_target), methods=["GET"]),
         Route("/api/targets/{tg_id:int}", _route(delete_target), methods=["DELETE"]),
         Route("/api/targets/{tg_id:int}/groups", _route(target_groups)),
+        Route("/api/targets/{tg_id:int}/gifts", _route(profile_gifts)),
+        Route("/api/search/gifts", _route(search_gifts)),
+        Route("/api/search/nft", _route(search_unique_gift), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/links", _route(target_links)),
         Route("/api/targets/{tg_id:int}/graph", _route(target_graph)),
         Route("/api/targets/{tg_id:int}/activity", _route(target_activity)),

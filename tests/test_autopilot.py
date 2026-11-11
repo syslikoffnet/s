@@ -90,3 +90,23 @@ async def test_autopilot_resumes_after_interruption(store, tmp_path, monkeypatch
     await autopilot.tick(FakePool(), store, settings)
     assert seen == [1, 2, 2, 3]
     assert store.get_meta("autopilot_cursor") == "0"
+
+
+async def test_browsed_profile_not_automatically_monitored(store, tmp_path, monkeypatch):
+    settings = Settings(home=tmp_path, db_path=tmp_path / "a.db", sessions_dir=tmp_path / "s")
+    store.add_session("main", "main.session")
+    old = store.upsert_target(1)
+    new = store.upsert_target(2, watch_enabled=False)
+    # Further updates may not silently turn monitoring on or off.
+    assert store.upsert_target(2)["watch_enabled"] == 0
+    assert store.upsert_target(1, watch_enabled=False)["watch_enabled"] == 1
+    seen = []
+
+    async def scan(pool, db, settings, target, **kwargs):
+        seen.append(target["tg_user_id"])
+        return {}
+
+    monkeypatch.setattr(autopilot, "scan_target", scan)
+    stats = await autopilot.tick(FakePool(), store, settings)
+    assert (old["watch_enabled"], new["watch_enabled"]) == (1, 0)
+    assert seen == [1] and stats["targets"] == 1

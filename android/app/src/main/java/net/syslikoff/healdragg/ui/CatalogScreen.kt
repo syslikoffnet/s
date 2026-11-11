@@ -142,9 +142,9 @@ fun CatalogScreen(
         vm.addTarget(key) { result ->
             adding = null
             result.onSuccess { target ->
-                onToast("Цель добавлена: ${target.displayName}")
+                onToast("Профиль открыт: ${target.displayName}")
                 onOpenTarget(target.tgId)
-            }.onFailure { onToast(it.message ?: "Не удалось добавить цель") }
+            }.onFailure { onToast(it.message ?: "Не удалось открыть профиль") }
         }
     }
 
@@ -354,7 +354,7 @@ fun CatalogScreen(
                             title = "База пока пуста",
                             text = if (vm.hasSessions) {
                                 "Собери базу: приложение обойдёт диалоги аккаунта и найдёт публичные чаты. " +
-                                    "После этого поиск и скан цели работают точнее."
+                                    "После этого поиск и скан профиля работают точнее."
                             } else {
                                 "Сначала подключи Telegram-аккаунт, потом собери базу публичных чатов."
                             },
@@ -524,7 +524,7 @@ private fun CatalogCard(
             } else {
                 IconButton(
                     onClick = onTarget,
-                    modifier = Modifier.semantics { contentDescription = "Сделать целью" },
+                    modifier = Modifier.semantics { contentDescription = "Открыть профиль" },
                 ) {
                     Icon(Icons.Filled.GpsFixed, contentDescription = null, tint = Hd.Accent)
                 }

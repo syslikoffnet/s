@@ -481,7 +481,7 @@ fun SettingsScreen(
                 Text(
                     if (vm.sessions.isEmpty()) {
                         if (vm.engine == EngineState.Ready) {
-                            "Ни один аккаунт не подключён — скан и добавление цели не запустятся."
+                            "Ни один аккаунт не подключён — скан и поиск профиля не запустятся."
                         } else {
                             "Список появится, когда движок запустится и ответит."
                         }
@@ -529,7 +529,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "Сбор обходит диалоги всех аккаунтов и ищет публичные чаты. Чем полнее база, " +
-                        "тем точнее список чатов цели.",
+                        "тем точнее список чатов профиля.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Hd.Muted,
                 )
@@ -879,7 +879,7 @@ fun SettingsScreen(
                 KeyValueRow("Данные", if (vm.isLocal) "только на устройстве" else vm.baseUrl)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Монитор публичных чатов: метаданные и сообщения цели. Без скрытого сбора, " +
+                    "Монитор публичных чатов: метаданные и сообщения профиля. Без скрытого сбора, " +
                         "без обхода приватности и без чужих аккаунтов.",
                     style = MaterialTheme.typography.labelSmall,
                     color = Hd.Dim,
@@ -1077,7 +1077,7 @@ fun SetupScreen(
                     if (vm.sessions.isEmpty()) {
                         "Остался один шаг: подключи Telegram-аккаунт, с которого будем читать чаты."
                     } else {
-                        "Аккаунт подключён. Можно добавлять цели и запускать скан."
+                        "Аккаунт подключён. Можно открывать профили и запускать скан."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = Hd.Muted,

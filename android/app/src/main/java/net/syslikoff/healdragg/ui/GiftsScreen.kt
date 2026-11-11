@@ -1271,7 +1271,7 @@ private fun GiftBadge(
 }
 
 @Composable
-private fun GiftCard(
+internal fun GiftCard(
     gift: GiftItem,
     api: Api?,
     onToast: (String) -> Unit,
@@ -1279,7 +1279,7 @@ private fun GiftCard(
 ) {
     val context = LocalContext.current
     var detailsOpen by remember(gift.id) { mutableStateOf(false) }
-    val ownerKey = gift.ownerUsername?.let { "@$it" } ?: gift.ownerTgId.toString()
+    val ownerKey = gift.ownerTgId.toString()
     HdCard(
         onClick = { detailsOpen = true },
         onLongClick = {
@@ -1447,7 +1447,7 @@ private fun GiftCard(
 
 /** Карточка одной NFT-вещи: где лежит, сколько стоит, чья и по какой ссылке. */
 @Composable
-private fun NftItemCard(
+internal fun NftItemCard(
     item: NftItem,
     api: Api?,
     onToast: (String) -> Unit,
@@ -1523,7 +1523,8 @@ private fun NftItemCard(
                 Spacer(Modifier.height(2.dp))
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(
-                        onClick = { onOpenProfile(item.ownerUsername?.let { "@$it" } ?: item.ownerTgId.toString()) },
+                        onClick = { onOpenProfile(item.ownerTgId.toString()) },
+                        enabled = item.ownerTgId > 0,
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
                     ) {
                         Text(
@@ -1747,6 +1748,11 @@ private fun OwnerGiftsScreen(
                 }
                 profile?.str("bio")?.let { Text(it, modifier = Modifier.padding(top = 8.dp), color = Hd.Text) }
                 Text("В базе: ${compactNumber(total)} · показано ${compactNumber(rows.size)}", modifier = Modifier.padding(top = 8.dp), color = Hd.Muted)
+            }
+        }
+        item("open-profile") {
+            OutlinedButton(onClick = { onOpenProfile(owner.tgId.toString()) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Профиль и OSINT-паутина")
             }
         }
         item("heavy-controls") {
