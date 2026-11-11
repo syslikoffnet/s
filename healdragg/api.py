@@ -679,6 +679,41 @@ def create_app(settings: Settings) -> Starlette:
             account = await state.pool.connect(name, allow_reserved=True)
             return await (business.connect(account) if confirmed else business.status(account))
 
+    async def session_purpose(request: Request) -> dict[str, Any]:
+        guard(request)
+        name = str(request.path_params["name"])
+        body = await _body(request)
+        if body.keys() != {"purpose"} or body.get("purpose") not in ("scan", "offers"):
+            raise HTTPException(400, "Выберите назначение парсинг или предложения")
+        async with state.session_mutation_lock:
+            row = state.store.get_session(name)
+            if row is None:
+                raise HTTPException(404, "Сессии нет")
+            if row.get("purpose") == body["purpose"]:
+                return {"ok": True, "purpose": body["purpose"]}
+            if any(not job.finished for job in state.jobs.values()) or state.store.running_heavy_tasks():
+                raise HTTPException(409, "Остановите активные задачи перед сменой роли аккаунта")
+            # Автопилот не входит в общий список задач; останавливаем его на время изменения роли.
+            if state.autopilot_task:
+                state.autopilot_task.cancel()
+                try:
+                    await state.autopilot_task
+                except asyncio.CancelledError:
+                    pass
+                state.autopilot_task = None
+            try:
+                await state.pool.disconnect(name)
+                # Пока ожидали завершения автопилота и отключения, могла начаться новая задача.
+                if any(not job.finished for job in state.jobs.values()) or state.store.running_heavy_tasks():
+                    raise HTTPException(409, "Остановите активные задачи перед сменой роли аккаунта")
+                if not state.store.set_session_purpose(name, body["purpose"]):
+                    raise HTTPException(404, "Сессии нет")
+            finally:
+                if settings.autopilot_minutes > 0:
+                    from .autopilot import loop as autopilot_loop
+                    state.autopilot_task = asyncio.create_task(autopilot_loop(state.pool, state.store, settings), name="autopilot")
+            return {"ok": True, "purpose": body["purpose"]}
+
     async def delete_session(request: Request) -> dict[str, Any]:
         guard(request)
         name = str(request.path_params.get("name") or "").strip()
@@ -1767,6 +1802,13 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(409, "Отправка уже выполняется")
         return {"run": state.offer_ledger.prepare(state.store, body)}
 
+    async def offer_delivery_prepare_single(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        if state.running("offers:deliver"):
+            raise HTTPException(409, "Отправка уже выполняется")
+        return {"run": state.offer_ledger.prepare_single(state.store, body)}
+
     async def offer_delivery_start(request: Request) -> dict[str, Any]:
         guard(request)
         body = await _body(request)
@@ -2283,6 +2325,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/session/password", _route(session_password), methods=["POST"]),
         Route("/api/session/{flow_id}/cancel", _route(session_cancel), methods=["POST"]),
         Route("/api/sessions/{name}/business-bot", _route(session_business), methods=["GET", "POST"]),
+        Route("/api/sessions/{name}/purpose", _route(session_purpose), methods=["POST"]),
         Route("/api/sessions/{name}", _route(delete_session), methods=["DELETE"]),
         Route("/api/profiles/open", _route(open_profile), methods=["POST"]),
         Route("/api/targets", _route(targets), methods=["GET"]),
@@ -2312,6 +2355,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/offers/batch", _route(offer_batch_start), methods=["POST"]),
         Route("/api/offers/batch/stop", _route(offer_batch_stop), methods=["POST"]),
         Route("/api/offers/delivery/prepare", _route(offer_delivery_prepare), methods=["POST"]),
+        Route("/api/offers/delivery/prepare-single", _route(offer_delivery_prepare_single), methods=["POST"]),
         Route("/api/offers/delivery/start", _route(offer_delivery_start), methods=["POST"]),
         Route("/api/offers/delivery", _route(offer_delivery_status), methods=["GET"]),
         Route("/api/offers/delivery/stop", _route(offer_delivery_stop), methods=["POST"]),

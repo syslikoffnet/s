@@ -191,10 +191,14 @@ fun GiftsScreen(
 
     if (showOfferCandidates) {
         BackHandler { showOfferCandidates = false }
-        OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts, initialQuery = offerQuery, onOpenProfile = { key ->
-            showOfferCandidates = false
-            onOpenProfile(key)
-        })
+        if (offerQuery.isNotBlank()) {
+            QuickOfferScreen(vm, slug = offerQuery, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts)
+        } else {
+            OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts, onOpenProfile = { key ->
+                showOfferCandidates = false
+                onOpenProfile(key)
+            })
+        }
         return
     }
     owner?.let {

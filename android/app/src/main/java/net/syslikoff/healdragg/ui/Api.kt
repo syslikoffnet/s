@@ -89,6 +89,9 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun prepareDelivery(session: String, plan: JSONObject, language: String): JSONObject =
         obj("api/offers/delivery/prepare", "POST", JSONObject().put("session", session).put("plan", plan).put("language", language), PROFILE_TIMEOUT)
 
+    suspend fun prepareSingleDelivery(body: JSONObject): JSONObject =
+        obj("api/offers/delivery/prepare-single", "POST", body, PROFILE_TIMEOUT)
+
     suspend fun startDelivery(runId: String): JSONObject =
         obj("api/offers/delivery/start", "POST", JSONObject().put("run_id", runId).put("confirm", true), PROFILE_TIMEOUT)
 
@@ -122,6 +125,10 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun cancelLogin(id: String) {
         request("api/session/$id/cancel", "POST", JSONObject())
+    }
+
+    suspend fun setSessionPurpose(name: String, purpose: String) {
+        request("api/sessions/${URLEncoder.encode(name, "UTF-8")}/purpose", "POST", JSONObject().put("purpose", purpose))
     }
 
     suspend fun deleteSession(name: String) {

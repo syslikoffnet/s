@@ -781,6 +781,12 @@ class Store:
                 (status, error, name),
             )
 
+    def set_session_purpose(self, name: str, purpose: str) -> bool:
+        if purpose not in ("scan", "offers"):
+            raise ValueError("Неизвестное назначение сессии")
+        with self.tx() as conn:
+            return bool(conn.execute("UPDATE sessions SET purpose=? WHERE name=?", (purpose, name)).rowcount)
+
     def touch_session(self, name: str) -> None:
         with self.tx() as conn:
             conn.execute("UPDATE sessions SET last_used_at = ? WHERE name = ?", (now_ts(), name))

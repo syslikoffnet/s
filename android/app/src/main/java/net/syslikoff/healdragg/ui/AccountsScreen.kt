@@ -78,6 +78,18 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
     var doneHandle by remember { mutableStateOf<String?>(null) }
     var toDelete by remember { mutableStateOf<SessionInfo?>(null) }
     var importing by remember { mutableStateOf(false) }
+    var sessionQuery by rememberSaveable { mutableStateOf("") }
+    var sessionFilter by rememberSaveable { mutableStateOf("all") }
+    var roleSession by remember { mutableStateOf<SessionInfo?>(null) }
+    var roleBusy by remember { mutableStateOf(false) }
+    val visibleSessions = remember(vm.sessions, sessionQuery, sessionFilter) {
+        vm.sessions.filter { session ->
+            (sessionFilter == "all" || session.purpose == sessionFilter) &&
+                (session.name.contains(sessionQuery.trim(), ignoreCase = true) ||
+                    (session.username ?: "").contains(sessionQuery.trim().removePrefix("@"), ignoreCase = true) ||
+                    session.tgUserId.toString().contains(sessionQuery.trim()))
+        }
+    }
     var accountPurpose by rememberSaveable { mutableStateOf("scan") }
     var importPurpose by rememberSaveable { mutableStateOf("scan") }
     var businessSession by remember { mutableStateOf<SessionInfo?>(null) }
@@ -246,7 +258,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                         FilterChip(selected = accountPurpose == "offers", enabled = step == LoginStep.Idle && !importing,
                             onClick = { accountPurpose = "offers" }, label = { Text("Предложения") })
                     }
-                    Text("Аккаунт предложений не участвует в парсинге. Используйте разные Telegram-аккаунты, а не два файла одной сессии. Отправка предложений ещё не включена.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                    Text("Аккаунт предложений не участвует в парсинге. Используйте разные Telegram-аккаунты, а не два файла одной сессии. Отправка запускается отдельно после проверки и подтверждения.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
 
@@ -332,6 +344,16 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                 }
             }
 
+            if (vm.sessions.isNotEmpty()) item("sessions-filter") {
+                HdTextField(sessionQuery, { sessionQuery = it }, "Найти аккаунт", hint = "Имя, @username или ID")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("all" to "Все", "scan" to "Парсинг", "offers" to "Офферы").forEach { (value, label) ->
+                        FilterChip(selected = sessionFilter == value, onClick = { sessionFilter = value }, label = { Text(label) })
+                    }
+                }
+                Text("Показано ${visibleSessions.size} из ${vm.sessions.size}", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+            }
+
             if (vm.sessions.isEmpty() && !vm.sessionsLoaded) {
                 // Движок мог ещё не отдать список — не показываем «аккаунт не
                 // подключён», иначе кажется, что добавленный аккаунт слетел.
@@ -368,8 +390,9 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                     )
                 }
             } else {
-                items(vm.sessions, key = { it.name }) { session ->
-                    SessionRow(session, onDelete = { toDelete = session }, onBusiness = {
+                if (visibleSessions.isEmpty()) item("no-matches") { Text("Аккаунты не найдены", color = Hd.Muted) }
+                items(visibleSessions, key = { it.name }) { session ->
+                    SessionRow(session, onDelete = { toDelete = session }, onRole = { roleSession = session }, onBusiness = {
                         businessSession = session
                         businessData = null
                         businessError = null
@@ -643,6 +666,30 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
         )
     }
 
+    roleSession?.let { session ->
+        val purpose = if (session.purpose == "offers") "scan" else "offers"
+        AlertDialog(
+            onDismissRequest = { if (!roleBusy) roleSession = null },
+            title = { Text("Изменить роль аккаунта?") },
+            text = { Text("${session.name}: ${if (purpose == "offers") "предложения вместо парсинга" else "парсинг вместо предложений"}. Для смены остановите активные задачи. Аккаунт не удалится.") },
+            confirmButton = { TextButton(enabled = !roleBusy, onClick = {
+                roleBusy = true
+                scope.launch {
+                    try {
+                        val client = vm.api ?: throw ApiException(0, "Движок не запущен")
+                        client.setSessionPurpose(session.name, purpose)
+                        vm.refreshSessions()
+                        roleSession = null
+                        onToast("Роль изменена")
+                    } catch (exc: CancellationException) { throw exc }
+                    catch (exc: Exception) { onToast(exc.message ?: "Не удалось изменить роль") }
+                    finally { roleBusy = false }
+                }
+            }) { Text(if (roleBusy) "Сохраняю…" else "Изменить") } },
+            dismissButton = { TextButton(enabled = !roleBusy, onClick = { roleSession = null }) { Text("Отмена") } },
+        )
+    }
+
     toDelete?.let { session ->
         AlertDialog(
             onDismissRequest = { toDelete = null },
@@ -679,7 +726,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
 }
 
 @Composable
-private fun SessionRow(session: SessionInfo, onDelete: () -> Unit, onBusiness: () -> Unit) {
+private fun SessionRow(session: SessionInfo, onDelete: () -> Unit, onRole: () -> Unit, onBusiness: () -> Unit) {
     HdCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(
@@ -718,6 +765,9 @@ private fun SessionRow(session: SessionInfo, onDelete: () -> Unit, onBusiness: (
                 )
             }
         }
-        TextButton(onClick = onBusiness) { Text("Проверить @echidbot") }
+        Row {
+            TextButton(onClick = onRole) { Text("Сменить роль") }
+            TextButton(onClick = onBusiness) { Text("Проверить @echidbot") }
+        }
     }
 }

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material.icons.outlined.CardGiftcard
@@ -87,6 +88,7 @@ private enum class Tab(
     Alerts("Алерты", Icons.Outlined.Notifications, Icons.Filled.Notifications),
     Catalog("База", Icons.Outlined.Explore, Icons.Filled.Explore),
     Gifts("Подарки", Icons.Outlined.CardGiftcard, Icons.Filled.CardGiftcard),
+    Offers("Офферы", Icons.Filled.Send, Icons.Filled.Send),
     Settings("Настройки", Icons.Outlined.Settings, Icons.Filled.Settings),
 }
 
@@ -301,6 +303,12 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                     }
                                 }
                             }
+                            Tab.Offers -> {
+                                if (openTarget != null) ProfileScreen(openTarget!!)
+                                else screenStates.SaveableStateProvider("offers") {
+                                    OfferCandidatesScreen(vm, onBack = { tab = Tab.Gifts }, onOpenProfile = openProfile, onOpenAccounts = { showAccounts = true })
+                                }
+                            }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                 Box(Modifier.widthIn(max = 780.dp).fillMaxWidth()) {
                                     SettingsScreen(
@@ -418,6 +426,9 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                         )
                         tab == Tab.Gifts -> screenStates.SaveableStateProvider("gifts") {
                             GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile, onOpenAccounts = { showAccounts = true })
+                        }
+                        tab == Tab.Offers -> screenStates.SaveableStateProvider("offers") {
+                            OfferCandidatesScreen(vm, onBack = { tab = Tab.Gifts }, onOpenProfile = openProfile, onOpenAccounts = { showAccounts = true })
                         }
                         else -> SettingsScreen(
                             vm = vm,

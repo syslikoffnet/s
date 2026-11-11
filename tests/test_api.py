@@ -1020,3 +1020,40 @@ def test_delivery_history_survives_restore_of_older_backup(client: TestClient):
     state = client.get('/api/offers/delivery', headers=HEADERS).json()
     assert state['restore_blocked'] is True and state['history'][0]['id'] == attempt
     assert state['history'][0]['status'] == 'telegram_ack'
+
+
+def test_change_session_purpose_persists_and_respects_running_jobs(client: TestClient):
+    from healdragg.api import Job
+
+    store = client.app.state.hd.store
+    store.add_session('many', 'many.session', purpose='scan', tg_user_id=777)
+    url = '/api/sessions/many/purpose'
+    assert client.post(url, json={'purpose': 'offers'}).status_code == 401
+    assert client.post(url, headers=HEADERS, json={'purpose': 'other'}).status_code == 400
+    client.app.state.hd.jobs['busy'] = Job(key='busy', kind='scan')
+    assert client.post(url, headers=HEADERS, json={'purpose': 'offers'}).status_code == 409
+    assert store.get_session('many')['purpose'] == 'scan'
+    client.app.state.hd.jobs['busy'].finished = True
+    assert client.post(url, headers=HEADERS, json={'purpose': 'offers'}).json()['purpose'] == 'offers'
+    assert store.get_session('many')['purpose'] == 'offers'
+    assert 'many' not in store.session_names()
+    assert client.post(url, headers=HEADERS, json={'purpose': 'scan'}).json()['purpose'] == 'scan'
+    assert 'many' in store.session_names()
+    assert client.post('/api/sessions/missing/purpose', headers=HEADERS, json={'purpose': 'scan'}).status_code == 404
+
+
+def test_prepare_single_endpoint(client: TestClient):
+    store = client.app.state.hd.store
+    store.add_session('writer', 'writer.session', purpose='offers')
+    store.upsert_nft_item('Bear-1', owner_tg_id=42, owner_username='seller42')
+    body = {'session': 'writer', 'slug': 'Bear-1', 'seller_id': 42,
+            'amount': 100, 'currency': 'star', 'language': 'ru'}
+    url = '/api/offers/delivery/prepare-single'
+    assert client.post(url, json=body).status_code == 401
+    response = client.post(url, headers=HEADERS, json=body)
+    assert response.status_code == 200
+    run = response.json()['run']
+    assert run['status'] == 'prepared'
+    assert run['rows'][0]['command'] == '/createoffer @seller42 https://t.me/nft/Bear-1 100 star ru'
+    assert client.app.state.hd.offer_ledger.history() == []
+    assert client.post(url, headers=HEADERS, json={**body, 'seller_id': 43}).status_code == 400

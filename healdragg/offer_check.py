@@ -13,6 +13,34 @@ from .tg import RateLimiter, SessionPool
 from .util import now_ts
 
 
+async def _profile_contains(client: Any, limiter: RateLimiter, peer: types.InputPeerUser, slug: str) -> str:
+    """Проверяем свежий список владельца, исключая размещённые на профиле NFT.
+
+    Неполный список, ошибка или повтор курсора НЕ доказывают отсутствие NFT.
+    """
+    offset, seen = "", set()
+    for _ in range(20):
+        response = await limiter.call(lambda current=offset: client(functions.payments.GetSavedStarGiftsRequest(
+            peer=peer, offset=current, limit=100, exclude_hosted=True)), attempts=1)
+        for item in getattr(response, "gifts", []) or []:
+            gift = getattr(item, "gift", None)
+            if not isinstance(gift, types.StarGiftUnique) or (gift.slug or "").casefold() != slug.casefold():
+                continue
+            owner = gift.owner_id
+            if (getattr(item, "refunded", False) or gift.burned or gift.owner_address or gift.gift_address or gift.host_id
+                    or (owner is not None and (not isinstance(owner, types.PeerUser) or owner.user_id != peer.user_id))):
+                return "conflict"
+            return "profile"
+        next_offset = getattr(response, "next_offset", None)
+        if not next_offset:
+            return "not_visible"
+        if next_offset == offset or next_offset in seen:
+            return "incomplete"
+        seen.add(next_offset)
+        offset = next_offset
+    return "incomplete"
+
+
 async def check(store: Store, pool: SessionPool, body: Any) -> dict[str, Any]:
     if not isinstance(body, dict) or body.keys() != {"session", "slug", "seller_id"}:
         raise ValueError("Укажите аккаунт, NFT и ID владельца")
@@ -57,12 +85,28 @@ async def check(store: Store, pool: SessionPool, body: Any) -> dict[str, Any]:
     # при скрытом/непользовательском владельце. Ответ — только снимок на сейчас.
     owner_matches = bool(owner_id == seller_id and not gift.burned and not gift.owner_address
                          and not gift.gift_address and not gift.host_id)
+    if owner_matches:
+        owner_state = "confirmed"
+        ownership_source = "gift_owner_id"
+    elif gift.burned:
+        owner_state, ownership_source = "burned", None
+    elif gift.owner_address or gift.gift_address or gift.host_id:
+        owner_state, ownership_source = "wallet_or_hosted", None
+    elif owner is not None:
+        owner_state, ownership_source = "different", None
+    elif username_matches and user and user.access_hash:
+        owner_state = await _profile_contains(client, limiter, types.InputPeerUser(user.id, user.access_hash), gift.slug)
+        owner_matches = owner_state == "profile"
+        ownership_source = "profile_excluding_hosted" if owner_matches else None
+    else:
+        owner_state, ownership_source = "hidden", None
     value = gift.value_usd_amount
     if type(value) is not int or value <= 0:
         value = None
     return {
         "slug": gift.slug, "seller_id": seller_id, "seller_username": username,
         "telegram_owner_id": owner_id, "owner_matches": owner_matches,
+        "owner_state": owner_state, "ownership_source": ownership_source,
         "username_matches": username_matches, "value_usd_cents": value,
         "account_id": int(me.id), "premium": bool(me.premium),
         "bot": bot, "checked_at": now_ts(),

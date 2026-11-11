@@ -279,8 +279,7 @@ fun TargetDetailScreen(
 
     offerQuery?.let { slug ->
         BackHandler { offerQuery = null }
-        OfferCandidatesScreen(vm, onBack = { offerQuery = null }, onOpenAccounts = onOpenAccounts,
-            onOpenProfile = { key -> offerQuery = null; onOpenProfile(key) }, initialQuery = slug)
+        QuickOfferScreen(vm, slug = slug, onBack = { offerQuery = null }, onOpenAccounts = onOpenAccounts)
         return
     }
 

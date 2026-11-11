@@ -155,6 +155,47 @@ class Ledger:
         return self.detail(run_id)
 
     @_locked
+    def prepare_single(self, store: Store, body: Any) -> dict[str, Any]:
+        if not isinstance(body, dict) or body.keys() != {"session", "slug", "seller_id", "amount", "currency", "language"}:
+            raise ValueError("Укажите аккаунт, NFT, владельца, сумму, валюту и язык")
+        if self.blocked() or self.unresolved():
+            raise ValueError("Сначала проверьте историю в Telegram и подтвердите сверку")
+        session, slug, currency, language = body['session'], body['slug'], body['currency'], body['language']
+        if not isinstance(session, str) or not session or len(session) > 200 or not isinstance(language, str) or language not in LANGUAGES:
+            raise ValueError("Некорректный аккаунт или язык")
+        if not isinstance(slug, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,80}-[0-9]{1,20}", slug):
+            raise ValueError("Некорректная ссылка NFT")
+        if not isinstance(currency, str) or currency not in DAILY_CAP:
+            raise ValueError("Выберите валюту gram или star")
+        amount = offers._integer(body['amount'], "Сумма", DAILY_CAP[currency])
+        seller = offers._integer(body['seller_id'], "ID владельца", 9_000_000_000_000_000_000)
+        if not amount or not seller:
+            raise ValueError("Укажите положительную сумму и ID владельца")
+        account = store.get_session(session)
+        if not account or account.get('status') != 'active' or account.get('purpose') != 'offers':
+            raise ValueError("Выберите активный аккаунт предложений")
+        saved = store.query_one("SELECT slug,owner_tg_id,owner_username,burned FROM nft_items WHERE slug = ? COLLATE NOCASE", (slug,))
+        if not saved or saved.get('burned') or saved.get('owner_tg_id') != seller:
+            raise ValueError("Владелец в базе неизвестен или изменился — обновите NFT")
+        name = saved.get('owner_username')
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_]{5,32}", name):
+            raise ValueError("В базе нет корректного username владельца")
+        slug = saved['slug']
+        command = f"/createoffer @{name} https://t.me/nft/{slug} {amount} {currency} {language}"
+        run_id, stamp = uuid4().hex, now_ts()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?)",
+                              (run_id, session, currency, language, amount, 'prepared', None, stamp, stamp))
+            self.conn.execute("INSERT INTO items VALUES(?,?,?,?,?,?,?,?,?)",
+                              (run_id, 0, slug, seller, name, amount, command, 'pending', None))
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        return self.detail(run_id)
+
+    @_locked
     def start(self, run_id: Any) -> dict[str, Any]:
         if not isinstance(run_id, str) or not re.fullmatch(r'[0-9a-f]{32}', run_id):
             raise ValueError("Некорректная партия")

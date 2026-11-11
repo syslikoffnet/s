@@ -284,3 +284,32 @@ async def test_lost_response_stops_batch_and_does_not_retry(scenario, monkeypatc
     assert result['status'] == 'error'
     assert [r['status'] for r in result['rows']] == ['unknown', 'pending']
     assert ledger.unresolved() == 1 and ledger.history()[0]['command'] == sent[0]
+
+
+def test_single_prepares_manual_price_without_valuation(scenario):
+    store, ledger = scenario
+    store.upsert_nft_item('Bear-3', owner_tg_id=3, owner_username='seller3')
+    data = {'session': 'writer', 'slug': 'bear-3', 'seller_id': 3,
+            'amount': 80, 'currency': 'star', 'language': 'en'}
+    run = ledger.prepare_single(store, data)
+    assert run['total'] == run['budget'] == 80
+    assert run['rows'][0]['command'] == '/createoffer @seller3 https://t.me/nft/Bear-3 80 star en'
+    ledger.start(run['id'])
+    aid, _ = ledger.reserve(run, run['rows'][0], 777)
+    ledger.outcome(run['id'], 0, aid, 'unknown', 'lost')
+    ledger.finish(run['id'], 'error')
+    with pytest.raises(ValueError, match='сверк'):
+        ledger.prepare_single(store, data)
+
+
+@pytest.mark.parametrize('change', [
+    {'amount': 0}, {'amount': True}, {'amount': 10001}, {'currency': 'ton'},
+    {'seller_id': 2}, {'slug': 'Bear-1 extra'}, {'session': 'missing'}, {'language': 'bad'},
+])
+def test_single_rejects_invalid_data(scenario, change):
+    store, ledger = scenario
+    data = {'session': 'writer', 'slug': 'Bear-1', 'seller_id': 1,
+            'amount': 100, 'currency': 'star', 'language': 'ru'}
+    with pytest.raises(ValueError):
+        ledger.prepare_single(store, {**data, **change})
+    assert ledger.detail() is None

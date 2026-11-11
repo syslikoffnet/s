@@ -18,6 +18,7 @@ class Client:
                                          attributes=[], availability_issued=1, availability_total=10,
                                          owner_id=types.PeerUser(42), value_usd_amount=1000)
         self.requests = []
+        self.pages = {}
 
     async def get_me(self):
         return self.me
@@ -28,6 +29,9 @@ class Client:
             return SimpleNamespace(peer=self.peer, users=[self.user])
         if isinstance(request, functions.payments.GetUniqueStarGiftRequest):
             return SimpleNamespace(gift=self.gift)
+        if isinstance(request, functions.payments.GetSavedStarGiftsRequest):
+            assert request.exclude_hosted and request.peer.user_id == 42
+            return self.pages.get(request.offset, SimpleNamespace(gifts=[], next_offset=None))
         raise AssertionError(f"unexpected Telegram request: {type(request)}")
 
 
@@ -122,3 +126,59 @@ async def test_wrong_gift_is_rejected(scenario):
     client.gift.slug = "Bear-2"
     with pytest.raises(ValueError, match="не вернул"):
         await offer_check.check(store, pool, body)
+
+
+async def test_hidden_owner_confirmed_by_fresh_unhosted_profile(scenario):
+    store, pool, client, body = scenario
+    client.gift.owner_id = None
+    client.pages[''] = SimpleNamespace(gifts=[], next_offset='next')
+    client.pages['next'] = SimpleNamespace(gifts=[types.SavedStarGift(date=None, gift=client.gift)], next_offset=None)
+    result = await offer_check.check(store, pool, body)
+    assert result['owner_matches'] and result['ownership_source'] == 'profile_excluding_hosted'
+    assert result['telegram_owner_id'] is None
+    assert [r.offset for r in client.requests if isinstance(r, functions.payments.GetSavedStarGiftsRequest)] == ['', 'next']
+
+
+async def test_hidden_missing_and_repeating_pagination_are_unknown_not_changed(scenario):
+    store, pool, client, body = scenario
+    client.gift.owner_id = None
+    result = await offer_check.check(store, pool, body)
+    assert not result['owner_matches'] and result['owner_state'] == 'not_visible'
+    client.pages[''] = SimpleNamespace(gifts=[], next_offset='a')
+    client.pages['a'] = SimpleNamespace(gifts=[], next_offset='a')
+    result = await offer_check.check(store, pool, body)
+    assert result['owner_state'] == 'incomplete'
+
+
+async def test_profile_presence_does_not_override_contradictory_live_owner(scenario):
+    store, pool, client, body = scenario
+    client.gift.owner_id = types.PeerUser(43)
+    client.pages[''] = SimpleNamespace(gifts=[types.SavedStarGift(date=None, gift=client.gift)], next_offset=None)
+    result = await offer_check.check(store, pool, body)
+    assert not result['owner_matches'] and result['owner_state'] == 'different'
+    assert not any(isinstance(r, functions.payments.GetSavedStarGiftsRequest) for r in client.requests)
+
+
+async def test_hidden_owner_profile_conflicts_do_not_confirm(scenario):
+    store, pool, client, body = scenario
+    client.gift.owner_id = None
+    import copy
+    hosted = copy.deepcopy(client.gift)
+    hosted.host_id = types.PeerUser(42)
+    client.pages[''] = SimpleNamespace(gifts=[types.SavedStarGift(date=None, gift=hosted)], next_offset=None)
+    result = await offer_check.check(store, pool, body)
+    assert not result['owner_matches'] and result['owner_state'] == 'conflict'
+
+
+async def test_profile_error_does_not_confirm_owner(scenario):
+    store, pool, client, body = scenario
+    client.gift.owner_id = None
+    async def profile_error(*args):
+        raise RuntimeError('profile unavailable')
+    original = offer_check._profile_contains
+    try:
+        offer_check._profile_contains = profile_error
+        with pytest.raises(RuntimeError, match='profile unavailable'):
+            await offer_check.check(store, pool, body)
+    finally:
+        offer_check._profile_contains = original
