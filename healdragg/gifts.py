@@ -270,6 +270,7 @@ async def crawl_gifts(
     allow_heavy: bool = False,
     skip_known: bool = False,
     expected_owner: int | None = None,
+    expected_session_user: int | None = None,
     run_id: int | None = None,
 ) -> dict[str, Any]:
     """Собирает подарки пользователя и (опционально) его дарителей."""
@@ -282,6 +283,8 @@ async def crawl_gifts(
     per_profile = max(10, min(MAX_HEAVY_PER_PROFILE if allow_heavy else MAX_PER_PROFILE, int(per_profile)))
 
     account = await pool.first(sessions)
+    if expected_session_user is not None and getattr(account, "user_id", None) != expected_session_user:
+        raise ValueError("Выбранный аккаунт изменился или его ID недоступен. Выберите аккаунт заново.")
     client = account.client
     limiter = account.limiter or RateLimiter()
 

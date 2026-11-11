@@ -184,6 +184,12 @@ class Api(private val baseUrl: String, private val token: String) {
         return jsonObjects(obj("api/gifts/owners?limit=$limit$query").arr("rows")).map(NftOwner::from)
     }
 
+    suspend fun heavyGiftStatus(id: Long): JSONObject? = obj("api/gifts/owners/$id/heavy").obj("task")
+
+    suspend fun failedHeavyTasks(): List<JSONObject> = jsonObjects(obj("api/gifts/heavy/tasks").arr("rows"))
+
+    suspend fun dismissHeavyError(id: Long) { obj("api/gifts/owners/$id/heavy/dismiss", "POST") }
+
     suspend fun startHeavyGifts(id: Long, session: String, watch: Boolean): Job {
         val body = JSONObject().put("session", session).put("watch", watch)
         return Job.from(obj("api/gifts/owners/$id/heavy", "POST", body))

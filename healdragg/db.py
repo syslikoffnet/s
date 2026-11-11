@@ -239,6 +239,12 @@ CREATE INDEX IF NOT EXISTS idx_gift_queue_pending ON gift_crawl_queue(run_id, st
 CREATE TABLE IF NOT EXISTS gift_profile_state (
     owner_tg_id INTEGER PRIMARY KEY, completed_at INTEGER NOT NULL
 );
+-- Настройки задач больших профилей: отмена и аварийное завершение различаются.
+CREATE TABLE IF NOT EXISTS gift_heavy_tasks (
+    owner_tg_id INTEGER PRIMARY KEY, query TEXT NOT NULL, session TEXT NOT NULL, session_tg_id INTEGER,
+    watch INTEGER NOT NULL, interval_seconds INTEGER NOT NULL, status TEXT NOT NULL,
+    next_at INTEGER, last_error TEXT, updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS gift_heavy_profiles (
     owner_tg_id INTEGER PRIMARY KEY, username TEXT, name TEXT,
     gift_count INTEGER NOT NULL, detected_at INTEGER NOT NULL
@@ -531,6 +537,9 @@ class Store:
         for column, ddl in gift_additions.items():
             if column not in gift_cols:
                 self._soft(f"ALTER TABLE gifts ADD COLUMN {column} {ddl}")
+        heavy_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gift_heavy_tasks)")}
+        if heavy_cols and "session_tg_id" not in heavy_cols:
+            self._soft("ALTER TABLE gift_heavy_tasks ADD COLUMN session_tg_id INTEGER")
         self._conn.commit()
 
     @contextmanager
@@ -1510,6 +1519,36 @@ class Store:
                    gift_count=excluded.gift_count, detected_at=excluded.detected_at""",
                 (owner, username, name, count, now_ts()),
             )
+
+    def save_heavy_task(self, owner: int, query: str, session: str, watch: bool, interval: int,
+                        session_tg_id: int | None = None) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                """INSERT INTO gift_heavy_tasks(owner_tg_id, query, session, session_tg_id, watch, interval_seconds,
+                                                status, next_at, last_error, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'running', NULL, NULL, ?)
+                   ON CONFLICT(owner_tg_id) DO UPDATE SET query=excluded.query, session=excluded.session,
+                   session_tg_id=excluded.session_tg_id, watch=excluded.watch,
+                   interval_seconds=excluded.interval_seconds, status='running',
+                   next_at=NULL, last_error=NULL, updated_at=excluded.updated_at""",
+                (owner, query, session, session_tg_id, int(watch), interval, now_ts()),
+            )
+
+    def heavy_task(self, owner: int) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM gift_heavy_tasks WHERE owner_tg_id = ?", (owner,))
+
+    def running_heavy_tasks(self) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM gift_heavy_tasks WHERE status = 'running' ORDER BY updated_at, owner_tg_id")
+
+    def failed_heavy_tasks(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM gift_heavy_tasks WHERE status = 'error' "
+                          "ORDER BY updated_at DESC LIMIT ?", (max(1, min(int(limit), 500)),))
+
+    def set_heavy_task_status(self, owner: int, status: str, *, next_at: int | None = None,
+                              error: str | None = None) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE gift_heavy_tasks SET status = ?, next_at = ?, last_error = ?, updated_at = ? "
+                         "WHERE owner_tg_id = ?", (status, next_at, error, now_ts(), owner))
 
     def heavy_gift_profiles(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM gift_heavy_profiles ORDER BY detected_at DESC LIMIT ?", (limit,))

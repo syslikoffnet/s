@@ -348,3 +348,17 @@ async def test_duplicate_snapshot_is_not_marked_done(setup):
     await crawl_gifts(pool, store, settings, "1", depth=8, max_profiles=50, run_id=run_id)
     assert store.gift_crawl_counts(run_id)["unavailable"] == 1
     assert not store.gift_profile_known(1)
+
+
+async def test_scan_rejects_mismatched_connected_account(setup):
+    store, client, _, settings = setup
+    client.pages[(1, "")] = page([])
+    account = SimpleNamespace(client=client, limiter=RateLimiter(0, 0), user_id=2)
+
+    class Pool:
+        async def first(self, sessions=None):
+            return account
+
+    with pytest.raises(ValueError, match="аккаунт изменился"):
+        await crawl_gifts(Pool(), store, settings, "1", expected_session_user=1)
+    assert client.calls == []

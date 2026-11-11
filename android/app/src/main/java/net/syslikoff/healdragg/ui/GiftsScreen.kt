@@ -98,6 +98,8 @@ fun GiftsScreen(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
+    var heavyTasks by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var heavyErrors by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
     var savedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
     var savedRunLimit by remember { mutableStateOf(100) }
     var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
@@ -234,11 +236,15 @@ fun GiftsScreen(
     LaunchedEffect(api, savedRunLimit) {
         val client = api ?: return@LaunchedEffect
         while (true) {
-            val active = runCatching { client.jobs().firstOrNull {
-                !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles")
-            } }.getOrNull()
-            if (job == null && active != null) job = active
+            runCatching { client.jobs() }.onSuccess { jobs ->
+                val active = jobs.firstOrNull {
+                    !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles")
+                }
+                if (job == null && active != null) job = active
+                heavyTasks = jobs.filter { !it.finished && it.kind in listOf("gift_heavy", "gift_heavy_watch") }
+            }
             runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
+            runCatching { client.failedHeavyTasks() }.onSuccess { heavyErrors = it }
             delay(3_000)
         }
     }
@@ -274,6 +280,17 @@ fun GiftsScreen(
                 job = null
                 break
             }
+        }
+    }
+
+    fun openGiftOwner(id: Long) {
+        scope.launch {
+            val client = api ?: return@launch
+            runCatching { client.giftOwners(q = id.toString(), limit = 100).firstOrNull { it.tgId == id } }
+                .onSuccess { owner ->
+                    if (owner != null) selectedOwner = owner else onOpenProfile(id.toString())
+                }
+                .onFailure { error = it.message ?: "Не удалось открыть профиль" }
         }
     }
 
@@ -509,6 +526,54 @@ fun GiftsScreen(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
+                    }
+                }
+            }
+
+            items(heavyTasks, key = { "active-heavy-${it.targetId}" }) { current ->
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Text(
+                        (if (current.kind == "gift_heavy_watch") "Наблюдение" else "Большой профиль") +
+                            " · ID ${current.targetId}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                    )
+                    Text(current.phase + if (current.total > 0) " · ${current.done}/${current.total}" else "",
+                        style = MaterialTheme.typography.labelSmall, color = Hd.Muted)
+                    current.state?.str("session")?.let { Text("Аккаунт: $it", color = Hd.Dim, style = MaterialTheme.typography.labelSmall) }
+                    current.state?.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { openGiftOwner(current.targetId) }) { Text("Открыть профиль") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { api?.cancelJob(current.key) ?: false }
+                                    .onSuccess { stopped ->
+                                        if (stopped) {
+                                            heavyTasks = heavyTasks.filterNot { it.key == current.key }
+                                            onToast("Задача остановлена")
+                                        } else error = "Не удалось остановить задачу: она уже завершилась"
+                                    }
+                                    .onFailure { error = it.message ?: "Не удалось остановить задачу" }
+                            }
+                        }) { Text("Стоп", color = Hd.Bad) }
+                    }
+                }
+            }
+
+            items(heavyErrors, key = { "error-heavy-${it.optLong("owner_tg_id")}" }) { failed ->
+                val id = failed.optLong("owner_tg_id")
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Text("Задача профиля $id остановилась", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                    failed.str("last_error")?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Hd.Warn) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { openGiftOwner(id) }) { Text("Открыть и запустить снова") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { api?.dismissHeavyError(id) }
+                                    .onSuccess { heavyErrors = heavyErrors.filterNot { it.optLong("owner_tg_id") == id } }
+                                    .onFailure { error = it.message ?: "Не удалось скрыть сообщение" }
+                            }
+                        }) { Text("Скрыть") }
                     }
                 }
             }
@@ -1582,10 +1647,16 @@ private fun OwnerGiftsScreen(
         if (api == null) { loading = false; return@LaunchedEffect }
         loadFirst()
         runCatching { api.giftOwnerNft(owner.tgId) }.onSuccess { inventory = it }
+        runCatching { api.heavyGiftStatus(owner.tgId) }.onSuccess { previous ->
+            previous?.str("session")?.let { if (selectedSession.isBlank()) selectedSession = it }
+            if (previous?.str("status") == "error") error = previous.str("last_error")
+        }
         loading = false
         val key = "gifts:heavy:${owner.tgId}"
         while (true) {
-            val found = runCatching { api.jobs().firstOrNull { it.key == key } }.getOrNull()
+            val poll = runCatching { api.jobs().firstOrNull { it.key == key } }
+            if (poll.isFailure) { delay(3_000); continue }
+            val found = poll.getOrNull()
             val wasRunning = task?.finished == false
             task = found?.takeIf { !it.finished }
             if (task != null || wasRunning) {
@@ -1658,15 +1729,19 @@ private fun OwnerGiftsScreen(
                 if (current != null) {
                     Text(current.phase + if (current.total > 0) " · ${current.done}/${current.total}" else "", color = Hd.Muted)
                     current.state?.str("session")?.let { Text("Аккаунт: $it", color = Hd.Dim, style = MaterialTheme.typography.labelSmall) }
+                    current.state?.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                     TextButton(onClick = {
                         scope.launch {
-                            runCatching { api?.cancelJob(current.key) }
-                                .onSuccess { task = null; loadFirst(); onToast("Наблюдение остановлено") }
+                            runCatching { api?.cancelJob(current.key) ?: false }
+                                .onSuccess { stopped ->
+                                    if (stopped) { task = null; loadFirst(); onToast("Задача остановлена") }
+                                    else error = "Не удалось остановить задачу: она уже завершилась"
+                                }
                                 .onFailure { error = it.message }
                         }
                     }) { Text("Остановить", color = Hd.Bad) }
                 } else {
-                    Text("Выберите аккаунт для одного прохода или наблюдения каждые 15 минут. Другие обходы подарков ждут завершения прохода.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                    Text("Выберите аккаунт для одного прохода или наблюдения каждые 15 минут. После перезапуска приложения задача продолжится. Другие обходы подарков ждут завершения прохода.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
                     if (accounts.isEmpty()) {
                         Text("Нет активных аккаунтов Telegram", color = Hd.Warn)
                     } else {
@@ -1676,8 +1751,8 @@ private fun OwnerGiftsScreen(
                             }
                         }
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { start(false) }, enabled = selectedSession.isNotBlank() && !busy) { Text("Один проход") }
-                            Button(onClick = { start(true) }, enabled = selectedSession.isNotBlank() && !busy) { Text("Наблюдать") }
+                            OutlinedButton(onClick = { start(false) }, enabled = accounts.any { it.name == selectedSession } && !busy) { Text("Один проход") }
+                            Button(onClick = { start(true) }, enabled = accounts.any { it.name == selectedSession } && !busy) { Text("Наблюдать") }
                         }
                     }
                 }

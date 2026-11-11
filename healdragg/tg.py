@@ -127,8 +127,12 @@ class SessionPool:
         async with self._connect_lock:
             account = self._accounts.get(name)
             if account and account.client.is_connected():
-                if account.client.is_user_authorized() or not require_auth:
+                if not require_auth or await account.client.is_user_authorized():
                     return account
+                await account.client.disconnect()
+                self._accounts.pop(name, None)
+                self.store.set_session_status(name, "needs_login", "сессия не авторизована")
+                raise RuntimeError(f"Сессия «{name}» не авторизована. Войдите в Telegram в приложении")
 
             api_id, api_hash = self.settings.require_api()
             session_path = self.settings.session_file(name)
@@ -153,7 +157,7 @@ class SessionPool:
                 await client.disconnect()
                 self.store.set_session_status(name, "needs_login", "сессия не авторизована")
                 raise RuntimeError(
-                    f"Сессия «{name}» не авторизована. Запусти: healdragg session add {name} --relogin"
+                    f"Сессия «{name}» не авторизована. Войдите в Telegram в приложении"
                 )
 
             me = None

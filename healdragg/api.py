@@ -313,11 +313,13 @@ def create_app(settings: Settings) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(_: Starlette):
-        for run in state.store.gift_crawls(("running",)):
-            launch_gift_crawl(int(run["id"]))
         repaired = state.store.repair_session_paths(settings.sessions_dir)
         if repaired:
             log.info("починил пути к сессиям: %s", repaired)
+        for run in state.store.gift_crawls(("running",)):
+            launch_gift_crawl(int(run["id"]))
+        for task in state.store.running_heavy_tasks():
+            launch_heavy_task(task)
         auto_backup: asyncio.Task | None = None
         if settings.auto_backup:
             async def _backup_once() -> None:
@@ -521,6 +523,18 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, "name обязателен")
         if name not in state.store.session_names(only_active=False):
             raise HTTPException(404, "Сессии нет")
+        for config in state.store.running_heavy_tasks():
+            if config["session"] != name:
+                continue
+            owner = int(config["owner_tg_id"])
+            key = f"gifts:heavy:{owner}"
+            error = "Выбранный аккаунт удалён. Выберите другой и запустите задачу заново."
+            state.store.set_heavy_task_status(owner, "error", error=error)
+            await state.cancel(key)
+            job = state.jobs.get(key)
+            if job:
+                job.error = error
+                job.state = {**job.state, "phase": "аккаунт удалён"}
         await state.pool.disconnect(name)
         state.store.remove_session(name)
         session_file = settings.session_file(name)
@@ -1150,6 +1164,118 @@ def create_app(settings: Settings) -> Starlette:
         job.task = asyncio.create_task(runner(), name="gifts:nftprofiles")
         return job.as_dict()
 
+    def launch_heavy_task(config: dict[str, Any]) -> Job:
+        owner = int(config["owner_tg_id"])
+        query = str(config["query"])
+        session = str(config["session"])
+        watch = bool(config["watch"])
+        session_tg_id = config.get("session_tg_id")
+        interval = int(config["interval_seconds"])
+        key = f"gifts:heavy:{owner}"
+        job = Job(key=key, kind="gift_heavy_watch" if watch else "gift_heavy", target_id=owner)
+        job.state = {"phase": "восстанавливаю задачу", "done": 0, "total": 0, "found": 0,
+                     "session": session, "watch": watch, "last_error": config.get("last_error")}
+        state.jobs[key] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            job.state = {**progress, "session": session, "watch": watch}
+
+        async def runner() -> None:
+            next_at = int(config.get("next_at") or 0)
+            try:
+                while True:
+                    if session not in state.store.session_names():
+                        job.error = "Выбранный аккаунт недоступен. Выберите активный аккаунт и запустите заново."
+                        state.store.set_heavy_task_status(owner, "error", error=job.error)
+                        break
+                    current_account = state.store.scalar("SELECT tg_user_id FROM sessions WHERE name = ?", (session,))
+                    if session_tg_id and (not current_account or int(current_account) != int(session_tg_id)):
+                        job.error = "Аккаунт для задачи изменился. Выберите аккаунт и запустите заново."
+                        state.store.set_heavy_task_status(owner, "error", error=job.error)
+                        break
+                    if next_at > now_ts():
+                        job.state = {**job.state, "phase": "наблюдение · ожидание следующего прохода",
+                                     "next_at": next_at}
+                        await asyncio.sleep(max(0, next_at - now_ts()))
+                        continue  # повторно проверяем доступность выбранного аккаунта
+                    state.store.set_heavy_task_status(owner, "running")
+                    try:
+                        job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                        async with state.gift_lock:
+                            result = await crawl_gifts(
+                                state.pool, state.store, settings, query,
+                                sessions=[session], depth=1, max_profiles=1,
+                                per_profile=100_000, allow_heavy=True,
+                                expected_owner=owner,
+                                expected_session_user=int(session_tg_id) if session_tg_id else None,
+                                reporter=on_progress,
+                            )
+                        info_result = result["results"][0]
+                        if info_result.get("error"):
+                            raise RuntimeError(info_result["error"])
+                        complete = bool(info_result.get("complete"))
+                        if not complete:
+                            raise RuntimeError("Обход неполный — статусы подарков не менялись")
+                        job.state = {"phase": "готово", "done": result["gifts"], "total": result["gifts"],
+                                     "found": result["gifts"], "new": result["new"], "complete": True,
+                                     "session": session, "watch": watch}
+                    except ValueError as exc:
+                        # Изменение владельца username или аккаунта нельзя исправлять повтором вслепую.
+                        job.error = str(exc)[:300] or "Не удалось проверить владельца профиля"
+                        state.store.set_heavy_task_status(owner, "error", error=job.error)
+                        break
+                    except Exception as exc:  # noqa: BLE001 — запоминаем ошибку и не теряем задачу
+                        log.warning("обход большого профиля %s не удался: %s", owner, exc)
+                        error = str(exc)[:300] or "Не удалось прочитать профиль"
+                        if not watch:
+                            job.error = error
+                            state.store.set_heavy_task_status(owner, "error", error=error)
+                            break
+                        next_at = now_ts() + interval
+                        state.store.set_heavy_task_status(owner, "running", next_at=next_at, error=error)
+                        job.state = {**job.state, "phase": "ошибка · повтор позже", "last_error": error,
+                                     "next_at": next_at, "session": session, "watch": watch}
+                        continue
+                    if not watch:
+                        state.store.set_heavy_task_status(owner, "done")
+                        break
+                    next_at = now_ts() + interval
+                    state.store.set_heavy_task_status(owner, "running", next_at=next_at)
+                    job.state = {**job.state, "phase": "наблюдение · ожидание следующего прохода",
+                                 "next_at": next_at}
+            except asyncio.CancelledError:
+                # Пользовательский стоп сохраняется заранее; завершение процесса
+                # оставляет running для восстановления при следующем запуске.
+                job.state = {**job.state, "phase": "остановлено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("задача большого профиля прервана")
+                job.error = str(exc)[:300] or "Не удалось продолжить задачу"
+                state.store.set_heavy_task_status(owner, "error", error=job.error)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name=key)
+        return job
+
+    async def failed_heavy_gifts(request: Request) -> dict[str, Any]:
+        guard(request)
+        return {"rows": state.store.failed_heavy_tasks(_q_int(request, "limit", 100, 1, 500))}
+
+    async def dismiss_heavy_gift_error(request: Request) -> dict[str, Any]:
+        guard(request)
+        owner = int(request.path_params["owner_id"])
+        config = state.store.heavy_task(owner)
+        if not config or config["status"] != "error" or state.running(f"gifts:heavy:{owner}"):
+            raise HTTPException(409, "Нет остановленной задачи с ошибкой")
+        state.store.set_heavy_task_status(owner, "stopped")
+        return {"ok": True}
+
+    async def heavy_gift_status(request: Request) -> dict[str, Any]:
+        guard(request)
+        owner = int(request.path_params["owner_id"])
+        return {"task": state.store.heavy_task(owner)}
+
     async def start_heavy_gifts(request: Request) -> dict[str, Any]:
         """Выбранный аккаунт: один полный проход или периодическое наблюдение."""
         guard(request)
@@ -1180,49 +1306,11 @@ def create_app(settings: Settings) -> Starlette:
         key = f"gifts:heavy:{owner}"
         if state.running(key):
             raise HTTPException(409, "Этот профиль уже обрабатывается")
-        job = Job(key=key, kind="gift_heavy_watch" if watch else "gift_heavy", target_id=owner)
-        job.state = {"phase": "ожидаю очередь", "done": 0, "total": 0, "found": 0, "session": session}
-        state.jobs[key] = job
-
-        async def on_progress(progress: dict[str, Any]) -> None:
-            job.state = {**progress, "session": session, "watch": watch}
-
-        async def runner() -> None:
-            try:
-                while True:
-                    job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                    async with state.gift_lock:
-                        result = await crawl_gifts(
-                            state.pool, state.store, settings, query,
-                            sessions=[session], depth=1, max_profiles=1,
-                            per_profile=100_000, allow_heavy=True,
-                            expected_owner=owner, reporter=on_progress,
-                        )
-                    info_result = result["results"][0]
-                    if info_result.get("error"):
-                        raise RuntimeError(info_result["error"])
-                    complete = bool(info_result.get("complete"))
-                    job.state = {
-                        "phase": "готово" if complete else "обход неполный — статусы не менялись",
-                        "done": result["gifts"], "total": result["gifts"],
-                        "found": result["gifts"], "new": result["new"],
-                        "complete": complete, "session": session, "watch": watch,
-                    }
-                    if not watch:
-                        break
-                    job.state["phase"] = "наблюдение · ожидание следующего прохода"
-                    await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                job.state = {**job.state, "phase": "остановлено"}
-                raise
-            except Exception as exc:  # noqa: BLE001
-                log.exception("обход большого профиля не удался")
-                job.error = str(exc)
-            finally:
-                job.finished = True
-
-        job.task = asyncio.create_task(runner(), name=key)
-        return job.as_dict()
+        session_tg_id = state.store.scalar("SELECT tg_user_id FROM sessions WHERE name = ?", (session,))
+        state.store.save_heavy_task(owner, query, session, watch, interval, session_tg_id)
+        config = state.store.heavy_task(owner)
+        assert config is not None
+        return launch_heavy_task(config).as_dict()
 
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1531,6 +1619,11 @@ def create_app(settings: Settings) -> Starlette:
     async def cancel(request: Request) -> dict[str, Any]:
         guard(request)
         key = str(request.path_params["key"])
+        if key.startswith("gifts:heavy:") and state.running(key):
+            try:
+                state.store.set_heavy_task_status(int(key.rsplit(":", 1)[-1]), "stopped")
+            except ValueError:
+                pass
         if key.startswith("gifts:run:") and state.running(key):
             try:
                 state.store.gift_crawl_status(int(key.rsplit(":", 1)[-1]), "paused")
@@ -1663,9 +1756,12 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),
         Route("/api/gifts/heavy", _route(gifts_heavy)),
+        Route("/api/gifts/heavy/tasks", _route(failed_heavy_gifts)),
         Route("/api/gifts/owners", _route(gifts_all_owners)),
         Route("/api/gifts/owners/{owner_id:int}/profile", _route(gift_owner_profile)),
         Route("/api/gifts/owners/{owner_id:int}/heavy", _route(start_heavy_gifts), methods=["POST"]),
+        Route("/api/gifts/owners/{owner_id:int}/heavy", _route(heavy_gift_status), methods=["GET"]),
+        Route("/api/gifts/owners/{owner_id:int}/heavy/dismiss", _route(dismiss_heavy_gift_error), methods=["POST"]),
         Route("/api/gifts/owners/{owner_id:int}/nft", _route(gift_owner_nft)),
         Route("/api/gifts/nft/{slug}/history", _route(nft_history)),
         Route("/api/gifts/nft", _route(gifts_nft)),

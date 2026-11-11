@@ -140,3 +140,42 @@ def test_public_channel_link_from_username() -> None:
     assert info is not None
     assert info["link"] == "https://t.me/public_channel"
     assert info["is_public"] is True
+
+
+async def test_cached_account_auth_is_awaited_and_invalid_session_is_removed(tmp_path):
+    import pytest
+
+    from healdragg.config import Settings
+    from healdragg.db import Store
+    from healdragg.tg import Account, SessionPool
+
+    class Client:
+        def __init__(self):
+            self.authorized = True
+            self.disconnected = False
+            self.checks = 0
+
+        def is_connected(self):
+            return True
+
+        async def is_user_authorized(self):
+            self.checks += 1
+            return self.authorized
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    store = Store(tmp_path / "db.sqlite")
+    store.add_session("scan", "scan.session")
+    pool = SessionPool(Settings(home=tmp_path, db_path=store.path, sessions_dir=tmp_path / "sessions"), store)
+    client = Client()
+    account = Account(name="scan", client=client)
+    pool._accounts["scan"] = account
+    assert await pool.connect("scan") is account
+    assert client.checks == 1
+    client.authorized = False
+    with pytest.raises(RuntimeError, match="не авторизована"):
+        await pool.connect("scan")
+    assert client.disconnected and "scan" not in pool
+    assert store.list_sessions()[0]["status"] == "needs_login"
+    store.close()
