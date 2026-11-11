@@ -11,6 +11,8 @@ import java.net.URL
 import android.util.Base64
 import java.net.URLEncoder
 
+data class TargetPage(val rows: List<Target>, val nextBefore: Long?)
+
 class ApiException(val code: Int, override val message: String) : Exception(message)
 
 /**
@@ -27,7 +29,15 @@ class Api(private val baseUrl: String, private val token: String) {
         false
     }
 
-    suspend fun targets(): List<Target> = jsonObjects(array("api/targets")).map(Target::from)
+    suspend fun targetsPage(query: String, before: Long? = null): TargetPage {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val data = obj("api/targets/page?limit=50&q=$encoded" + (before?.let { "&before=$it" } ?: ""))
+        val next = if (data.isNull("next_before")) null else data.getLong("next_before")
+        return TargetPage(jsonObjects(data.arr("rows")).map(Target::from), next)
+    }
+
+    suspend fun findTarget(query: String): Target =
+        Target.from(obj("api/targets/lookup?q=${URLEncoder.encode(query, "UTF-8")}"))
 
     suspend fun stats(): Stats = Stats.from(obj("api/stats"))
 

@@ -52,6 +52,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,6 +62,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun TargetsScreen(
@@ -69,23 +72,23 @@ fun TargetsScreen(
     onToast: (String) -> Unit,
     onOpenAccounts: () -> Unit = {},
 ) {
-    var query by rememberSaveable { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf(vm.targetQuery) }
+    val scope = rememberCoroutineScope()
     var addOpen by rememberSaveable { mutableStateOf(false) }
     var toDelete by remember { mutableStateOf<Target?>(null) }
     var showMap by rememberSaveable { mutableStateOf(false) }
 
-    val filtered = remember(vm.targets, query) {
-        val needle = query.trim().lowercase()
-        if (needle.isBlank()) vm.targets
-        else vm.targets.filter { target ->
-            target.displayName.lowercase().contains(needle) ||
-                target.username?.lowercase()?.contains(needle) == true ||
-                target.tgId.toString().contains(needle)
+    val searchPending = query != vm.targetQuery
+    val filtered = if (searchPending) emptyList() else vm.targets
+
+    LaunchedEffect(query) {
+        if (query != vm.targetQuery) {
+            delay(300)
+            vm.setTargetQuery(query)
         }
     }
-
     LaunchedEffect(Unit) {
-        if (vm.targets.isEmpty()) vm.refresh(force = true)
+        if (vm.targets.isEmpty() && !vm.targetPageLoading) vm.refresh(force = true)
     }
 
     if (showMap) {
@@ -93,12 +96,13 @@ fun TargetsScreen(
             api = vm.api,
             onBack = { showMap = false },
             onOpenProfile = { handle ->
-                val needle = handle.removePrefix("@").lowercase()
-                val found = vm.targets.firstOrNull { target ->
-                    target.username?.lowercase() == needle || target.tgId.toString() == needle
+                val client = vm.api
+                if (client == null) onToast("Движок не запущен")
+                else scope.launch {
+                    runCatching { client.findTarget(handle) }
+                        .onSuccess { onOpenTarget(it.tgId) }
+                        .onFailure { onToast(if (it is ApiException && it.code == 404) "Профиля $handle пока нет в целях" else it.message ?: "Не удалось найти профиль") }
                 }
-                if (found != null) onOpenTarget(found.tgId)
-                else onToast("Профиля $handle пока нет в целях")
             },
             onToast = onToast,
         )
@@ -140,7 +144,7 @@ fun TargetsScreen(
                 item("search") {
                     OutlinedTextField(
                         value = query,
-                        onValueChange = { query = it },
+                        onValueChange = { query = it.take(128) },
                         placeholder = {
                             Text("Поиск по имени, @username или ID", color = Hd.Dim, style = MaterialTheme.typography.bodySmall)
                         },
@@ -175,7 +179,7 @@ fun TargetsScreen(
                     }
                 }
 
-                if (vm.loading && vm.targets.isEmpty()) {
+                if ((vm.loading || vm.targetPageLoading || searchPending) && filtered.isEmpty()) {
                     item("loading") { LoadingBlock() }
                 }
 
@@ -211,7 +215,15 @@ fun TargetsScreen(
                     }
                 }
 
-                if (!vm.loading && filtered.isEmpty()) {
+                vm.targetPageError?.let { message ->
+                    item("target-error") {
+                        ErrorBanner(message = message, onRetry = {
+                            if (vm.targetNextBefore == null) vm.reloadTargets() else vm.loadMoreTargets()
+                        })
+                    }
+                }
+
+                if (!vm.loading && !vm.targetPageLoading && !searchPending && vm.targetPageError == null && filtered.isEmpty()) {
                     item("empty") {
                         EmptyState(
                             emoji = "",
@@ -261,6 +273,17 @@ fun TargetsScreen(
                         },
                         onDelete = { toDelete = target },
                     )
+                }
+                if (vm.targetNextBefore != null && !searchPending) {
+                    item("more-targets") {
+                        OutlinedButton(
+                            onClick = { vm.loadMoreTargets() },
+                            enabled = !vm.targetPageLoading,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(if (vm.targetPageLoading) "Загружаю…" else "Показать ещё")
+                        }
+                    }
                 }
             }
         }

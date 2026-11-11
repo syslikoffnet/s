@@ -653,6 +653,40 @@ def create_app(settings: Settings) -> Starlette:
         guard(request)
         return [_target_payload(state.store, t) for t in state.store.list_targets(100)]
 
+    async def targets_page(request: Request) -> dict[str, Any]:
+        guard(request)
+        query = (request.query_params.get("q") or "").strip()
+        if len(query) > 128:
+            raise HTTPException(400, "q: не более 128 символов")
+        raw_cursor = request.query_params.get("before")
+        if raw_cursor:
+            try:
+                before = int(raw_cursor)
+                if before < 1 or before > 9_223_372_036_854_775_807:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(400, "before: неверный курсор") from exc
+        else:
+            before = None
+        limit = _q_int(request, "limit", 50, 1, 100)
+        rows = state.store.targets_page(before_id=before, query=query, limit=limit)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return {
+            "rows": [_target_payload(state.store, row) for row in rows],
+            "next_before": int(rows[-1]["id"]) if has_more else None,
+        }
+
+    async def target_lookup(request: Request) -> dict[str, Any]:
+        guard(request)
+        query = (request.query_params.get("q") or "").strip()
+        if not 1 <= len(query) <= 128:
+            raise HTTPException(400, "q: от 1 до 128 символов")
+        target = state.store.find_target(query)
+        if target is None:
+            raise HTTPException(404, "Цель не найдена")
+        return _target_payload(state.store, target)
+
     async def add_target(request: Request) -> dict[str, Any]:
         guard(request)
         body = await _body(request)
@@ -721,14 +755,15 @@ def create_app(settings: Settings) -> Starlette:
         target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
-        rows = state.store.all_target_groups(int(target["id"]))
+        target_pk = int(target["id"])
         offset = _q_int(request, "offset", 0, 0, 1_000_000)
         limit = _q_int(request, "limit", 100, 1, 500)
-        chunk = rows[offset : offset + limit]
+        total = state.store.count_target_groups(target_pk)
+        chunk = state.store.target_group_links_page(target_pk, offset=offset, limit=limit)
         return {
-            "total": len(rows),
+            "total": total,
             "offset": offset,
-            "has_more": offset + len(chunk) < len(rows),
+            "has_more": offset + len(chunk) < total,
             "rows": [
                 {
                     "title": row.get("title"),
@@ -1882,6 +1917,8 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/sessions/{name}", _route(delete_session), methods=["DELETE"]),
         Route("/api/targets", _route(targets), methods=["GET"]),
         Route("/api/targets", _route(add_target), methods=["POST"]),
+        Route("/api/targets/page", _route(targets_page), methods=["GET"]),
+        Route("/api/targets/lookup", _route(target_lookup), methods=["GET"]),
         Route("/api/targets/{tg_id:int}", _route(get_target), methods=["GET"]),
         Route("/api/targets/{tg_id:int}", _route(delete_target), methods=["DELETE"]),
         Route("/api/targets/{tg_id:int}/groups", _route(target_groups)),

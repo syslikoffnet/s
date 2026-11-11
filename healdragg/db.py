@@ -403,6 +403,7 @@ class Store:
 
     # ── инфраструктура ──────────────────────────────────────────────────────
     def _configure(self) -> None:
+        self._conn.create_function("hd_casefold", 1, lambda value: str(value or "").casefold(), deterministic=True)
         for pragma in (
             "PRAGMA journal_mode=WAL",
             "PRAGMA synchronous=NORMAL",
@@ -1119,7 +1120,8 @@ class Store:
         if not q:
             return None
         if q.lstrip("@").isdigit():
-            return self.get_target(int(q.lstrip("@")))
+            tg_id = int(q.lstrip("@"))
+            return self.get_target(tg_id) if tg_id <= 9_223_372_036_854_775_807 else None
         return self.query_one(
             "SELECT * FROM targets WHERE lower(username) = lower(?) ORDER BY updated_at DESC LIMIT 1",
             (q.lstrip("@"),),
@@ -1132,6 +1134,31 @@ class Store:
               FROM targets t ORDER BY t.updated_at DESC LIMIT ?
             """,
             (limit,),
+        )
+
+    def targets_page(self, *, before_id: int | None = None, query: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        """Стабильная постраничная выдача по неизменяемому ID, с Unicode-поиском.
+
+        Записи, добавленные после первой страницы, появятся при обновлении списка;
+        изменения профиля не перемещают уже просмотренные записи между страницами.
+        """
+        limit = max(1, min(100, int(limit)))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if before_id is not None:
+            clauses.append("t.id < ?")
+            params.append(int(before_id))
+        needle = query.strip().removeprefix("@").casefold()
+        if needle:
+            clauses.append("""(instr(hd_casefold(trim(coalesce(t.first_name, '') || ' ' || coalesce(t.last_name, ''))), ?) > 0
+                            OR instr(hd_casefold(coalesce(t.username, '')), ?) > 0
+                            OR instr(CAST(t.tg_user_id AS TEXT), ?) > 0)""")
+            params.extend([needle, needle, needle])
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(limit + 1)
+        return self.query(
+            "SELECT t.*, (SELECT COUNT(*) FROM target_groups tg WHERE tg.target_id = t.id) AS groups_count "
+            "FROM targets t" + where + " ORDER BY t.id DESC LIMIT ?", params
         )
 
     def count_targets(self) -> int:
@@ -2454,6 +2481,13 @@ class Store:
             TARGET_GROUP_SELECT
             + f" WHERE tg.target_id = ? ORDER BY {order_sql} LIMIT ? OFFSET ?",
             (target_pk, size, offset),
+        )
+
+    def target_group_links_page(self, target_pk: int, *, offset: int, limit: int) -> list[dict[str, Any]]:
+        return self.query(
+            TARGET_GROUP_SELECT
+            + " WHERE tg.target_id = ? ORDER BY coalesce(g.last_message_at, 0) DESC, g.id DESC LIMIT ? OFFSET ?",
+            (target_pk, limit, offset),
         )
 
     def all_target_groups(self, target_pk: int) -> list[dict[str, Any]]:

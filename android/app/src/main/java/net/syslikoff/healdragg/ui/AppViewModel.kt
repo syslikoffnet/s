@@ -47,6 +47,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     var targets by mutableStateOf<List<Target>>(emptyList())
         private set
+    var targetQuery by mutableStateOf("")
+        private set
+    var targetPageLoading by mutableStateOf(false)
+        private set
+    var targetPageError by mutableStateOf<String?>(null)
+        private set
+    var targetNextBefore by mutableStateOf<Long?>(null)
+        private set
+    private var targetGeneration = 0L
+
     var stats by mutableStateOf<Stats?>(null)
         private set
     var alerts by mutableStateOf<List<AlertItem>>(emptyList())
@@ -112,6 +122,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun rebuildApi() {
+        targetGeneration++
+        targets = emptyList()
+        targetNextBefore = null
+        targetPageLoading = false
+        targetPageError = null
         api = if (token.isBlank()) null else Api(baseUrl, token)
     }
 
@@ -308,16 +323,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh(force: Boolean = false) {
         val client = api ?: return
+        reloadTargets()
         if (refreshing) return
         refreshing = true
         if (firstLoad) loading = true
         viewModelScope.launch {
             try {
-                val freshTargets = client.targets()
                 val freshStats = runCatching { client.stats() }.getOrNull()
                 val (freshAlerts, freshUnread) = client.alerts()
                 val freshSessions = runCatching { client.sessions() }.getOrDefault(sessions)
-                targets = freshTargets
                 stats = freshStats
                 alerts = freshAlerts
                 unread = freshUnread
@@ -332,6 +346,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 refreshing = false
                 loading = false
                 firstLoad = false
+            }
+        }
+    }
+
+    fun setTargetQuery(query: String) {
+        if (targetQuery == query) return
+        targetQuery = query
+        targets = emptyList()
+        targetNextBefore = null
+        targetPageError = null
+        reloadTargets()
+    }
+
+    fun reloadTargets() {
+        val client = api ?: return
+        val generation = ++targetGeneration
+        val query = targetQuery
+        targetPageLoading = true
+        targetPageError = null
+        targetNextBefore = null
+        viewModelScope.launch {
+            try {
+                val page = client.targetsPage(query)
+                if (generation == targetGeneration && client === api) {
+                    targets = page.rows
+                    targetNextBefore = page.nextBefore
+                }
+            } catch (exc: Exception) {
+                if (generation == targetGeneration && client === api) targetPageError = exc.message ?: "Не удалось загрузить цели"
+            } finally {
+                if (generation == targetGeneration && client === api) targetPageLoading = false
+            }
+        }
+    }
+
+    fun loadMoreTargets() {
+        val client = api ?: return
+        val cursor = targetNextBefore ?: return
+        if (targetPageLoading) return
+        val generation = targetGeneration
+        val query = targetQuery
+        targetPageLoading = true
+        targetPageError = null
+        viewModelScope.launch {
+            try {
+                val page = client.targetsPage(query, cursor)
+                if (generation == targetGeneration && client === api) {
+                    val seen = targets.mapTo(mutableSetOf()) { it.tgId }
+                    targets = targets + page.rows.filter { seen.add(it.tgId) }
+                    targetNextBefore = page.nextBefore
+                }
+            } catch (exc: Exception) {
+                if (generation == targetGeneration && client === api) targetPageError = exc.message ?: "Не удалось загрузить цели"
+            } finally {
+                if (generation == targetGeneration && client === api) targetPageLoading = false
             }
         }
     }

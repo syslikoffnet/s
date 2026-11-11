@@ -583,3 +583,52 @@ def test_resume_prioritizes_pending_before_retrying_failures(client: TestClient,
     assert client.post(f"/api/gifts/runs/{run_id}/resume", headers=HEADERS).status_code == 200
     assert store.gift_crawl_counts(run_id)["pending"] == 1
     assert store.gift_crawl_next(run_id)["tg_id"] == 1
+
+
+def test_target_pagination_search_and_lookup(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    for i in range(125):
+        store.upsert_target(100_000 + i, username=f"user{i}", first_name=f"Имя {i}")
+    store.upsert_target(100_000, username="oldest", first_name="Алексей", last_name="Петров")
+    response = client.get("/api/targets/page?limit=20", headers=HEADERS)
+    assert response.status_code == 200
+    first = response.json()
+    assert len(first["rows"]) == 20
+    ids = [item["tg_user_id"] for item in first["rows"]]
+    cursor = first["next_before"]
+    # Updating an old row must not move it ahead of the cursor and lose it.
+    store.update_target_profile(100_000, bio="updated between pages")
+    store.upsert_target(900_000, username="new_after_start")
+    while cursor is not None:
+        page = client.get(f"/api/targets/page?limit=20&before={cursor}", headers=HEADERS).json()
+        ids.extend(item["tg_user_id"] for item in page["rows"])
+        cursor = page["next_before"]
+    assert len(ids) == len(set(ids)) == 126  # 125 plus the demo target
+    assert 100_000 in ids and 900_000 not in ids
+    assert client.get("/api/targets/page?q=АЛЕКСЕЙ%20пет", headers=HEADERS).json()["rows"][0]["tg_user_id"] == 100_000
+    assert client.get("/api/targets/page?q=%40OLDEST", headers=HEADERS).json()["rows"][0]["tg_user_id"] == 100_000
+    assert client.get("/api/targets/page?q=%25", headers=HEADERS).json()["rows"] == []
+    assert client.get("/api/targets/lookup?q=%40oldest", headers=HEADERS).json()["tg_user_id"] == 100_000
+    assert client.get("/api/targets/lookup?q=100000", headers=HEADERS).json()["tg_user_id"] == 100_000
+    assert client.get("/api/targets/lookup?q=missing", headers=HEADERS).status_code == 404
+    assert client.get("/api/targets/page?before=bad", headers=HEADERS).status_code == 400
+    assert client.get("/api/targets/page?before=999999999999999999999999", headers=HEADERS).status_code == 400
+    assert client.get("/api/targets/page?q=" + "a" * 129, headers=HEADERS).status_code == 400
+    assert client.get("/api/targets/page").status_code == 401
+    store.reopen()
+    assert client.get("/api/targets/page?q=алексей", headers=HEADERS).json()["rows"][0]["tg_user_id"] == 100_000
+
+
+def test_target_links_paginate_in_database(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = client.app.state.hd.store
+
+    def no_full_load(*args, **kwargs):
+        raise AssertionError("must not load the entire target group list")
+
+    monkeypatch.setattr(store, "all_target_groups", no_full_load)
+    first = client.get(f"/api/targets/{DEMO_TARGET}/links?limit=7", headers=HEADERS).json()
+    second = client.get(f"/api/targets/{DEMO_TARGET}/links?limit=7&offset=7", headers=HEADERS).json()
+    assert first["total"] == second["total"] == 40
+    assert len(first["rows"]) == len(second["rows"]) == 7
+    assert {row["tg_id"] for row in first["rows"]}.isdisjoint(row["tg_id"] for row in second["rows"])
+    assert client.get("/api/targets/lookup?q=" + "9" * 100, headers=HEADERS).status_code == 404
