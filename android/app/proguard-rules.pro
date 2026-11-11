@@ -12,3 +12,6 @@
 # немного агрессивнее: склеиваем классы и убираем неиспользуемые методы
 -allowaccessmodification
 -optimizationpasses 5
+
+# Аннотация исходников Okio, недоступна на Android и не нужна во время работы.
+-dontwarn javax.annotation.Nullable
