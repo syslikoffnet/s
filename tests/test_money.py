@@ -36,3 +36,14 @@ def test_format_price_defaults_to_rubles() -> None:
 def test_format_price_stars_rounds() -> None:
     label = format_price(98500, "STARS", currency="STARS", rates=RATES)
     assert label == "98 500 ★"
+
+
+def test_nft_estimate_uses_usd_cents_and_does_not_guess_currency() -> None:
+    from healdragg.money import enrich_row
+
+    row = {"slug": "Gift-1", "value_amount": 123456, "value_currency": "INR", "value_usd": 1234}
+    assert enrich_row(row, currency="USD", rates=RATES)["price_display"] == "12,34 $"
+    unknown = {"slug": "Gift-2", "value_amount": 123456, "value_currency": "INR"}
+    assert "price_display" not in enrich_row(unknown, currency="USD", rates=RATES)
+    usd = {"slug": "Gift-3", "value_amount": 1234, "value_currency": "USD"}
+    assert enrich_row(usd, currency="USD", rates=RATES)["price_display"] == "12,34 $"

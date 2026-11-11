@@ -29,7 +29,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import __version__
+from . import __version__, business
 from .activity import collect_activity
 from .backup import (
     MAX_ARCHIVE_BYTES,
@@ -618,6 +618,24 @@ def create_app(settings: Settings) -> Starlette:
         guard(request)
         await state.login.cancel(str(request.path_params.get("flow_id") or ""))
         return {"ok": True}
+
+    async def session_business(request: Request) -> dict[str, Any]:
+        guard(request)
+        name = str(request.path_params["name"])
+        if name not in state.store.session_names(only_active=False):
+            raise HTTPException(404, "Сессии нет")
+        confirmed = False
+        if request.method == "POST":
+            body = await _body(request)
+            confirmed = body.get("confirm") is True
+            if not confirmed:
+                raise HTTPException(400, "Нужно подтвердить подключение и права")
+        # Не подключаемся к аккаунту одновременно с импортом/входом через API.
+        async with state.session_mutation_lock:
+            if name not in state.store.session_names(only_active=False):
+                raise HTTPException(404, "Сессии нет")
+            account = await state.pool.account(name)
+            return await (business.connect(account) if confirmed else business.status(account))
 
     async def delete_session(request: Request) -> dict[str, Any]:
         guard(request)
@@ -2040,6 +2058,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/session/code", _route(session_code), methods=["POST"]),
         Route("/api/session/password", _route(session_password), methods=["POST"]),
         Route("/api/session/{flow_id}/cancel", _route(session_cancel), methods=["POST"]),
+        Route("/api/sessions/{name}/business-bot", _route(session_business), methods=["GET", "POST"]),
         Route("/api/sessions/{name}", _route(delete_session), methods=["DELETE"]),
         Route("/api/profiles/open", _route(open_profile), methods=["POST"]),
         Route("/api/targets", _route(targets), methods=["GET"]),

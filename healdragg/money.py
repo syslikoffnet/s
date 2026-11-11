@@ -151,10 +151,17 @@ def enrich_row(
 ) -> dict[str, Any]:
     """Дописывает в строку ``price_display`` — для карточек и CSV."""
     amount = row.get(amount_key)
-    if not amount and row.get("value_usd"):
-        amount, source = row["value_usd"], "USD"
-    else:
-        source = row.get(currency_key)
+    source = row.get(currency_key)
+    # Данные уникального подарка Telegram: value_usd — центы, а не доллары.
+    # Сырые локальные фиатные суммы идут в минорных единицах и могут быть в
+    # другой валюте; не конвертируем их, если нет известного экспонента.
+    if row.get("slug") or row.get("is_nft"):
+        if row.get("value_usd"):
+            amount, source = row["value_usd"] / 100, "USD"
+        elif str(source or "").upper() in {"USD", "EUR", "RUB"} and amount:
+            amount = amount / 100
+        elif str(source or "").upper() not in {"STARS", "STAR", "XTR"}:
+            amount = None
     label = format_price(amount, source, currency=currency, rates=rates)
     if label:
         row["price_display"] = label

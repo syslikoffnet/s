@@ -789,3 +789,9 @@ def test_alert_notification_snapshot_uses_id_not_count_or_date(client: TestClien
     assert payload["rows"][0]["title"] == "future"
     assert payload["notification"]["id"] == latest
     assert client.get("/api/alerts").status_code == 401
+
+
+def test_business_bot_requires_auth_confirmation_and_existing_session(client: TestClient) -> None:
+    assert client.get("/api/sessions/demo/business-bot").status_code == 401
+    assert client.post("/api/sessions/demo/business-bot", headers=HEADERS, json={}).status_code == 400
+    assert client.post("/api/sessions/missing/business-bot", headers=HEADERS, json={"confirm": True}).status_code == 404

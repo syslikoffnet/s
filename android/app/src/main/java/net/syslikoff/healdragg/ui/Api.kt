@@ -70,6 +70,12 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun sessions(): List<SessionInfo> = jsonObjects(array("api/sessions")).map(SessionInfo::from)
 
+    suspend fun businessBot(name: String, connect: Boolean = false): JSONObject {
+        val path = "api/sessions/${URLEncoder.encode(name, "UTF-8")}/business-bot"
+        return if (connect) obj(path, "POST", JSONObject().put("confirm", true), PROFILE_TIMEOUT)
+        else obj(path, timeoutMillis = PROFILE_TIMEOUT)
+    }
+
     suspend fun startLogin(phone: String, name: String = "main"): LoginFlow {
         val body = JSONObject().put("phone", phone).put("name", name)
         return LoginFlow.from(obj("api/session/start", "POST", body, LOGIN_TIMEOUT))

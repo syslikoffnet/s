@@ -463,7 +463,7 @@ data class GiftItem(
         get() = slug?.takeIf { it.isNotBlank() }?.let { "https://t.me/nft/$it" }
 
     val priceLabel: String?
-        get() = Money.both(valueAmount, valueCurrency)
+        get() = if (isNft) Money.estimate(valueAmount, valueCurrency, valueUsd) else Money.both(valueAmount, valueCurrency)
 
     companion object {
         fun from(o: JSONObject): GiftItem = GiftItem(
@@ -579,7 +579,7 @@ data class NftItem(
     val priceLabel: String?
         get() = when {
             resellAmount > 0 -> Money.both(resellAmount, "STARS")?.let { "$it · ресейл" }
-            valueAmount > 0 -> Money.both(valueAmount, valueCurrency)
+            valueAmount > 0 || valueUsd > 0 -> Money.estimate(valueAmount, valueCurrency, valueUsd)
             else -> null
         }
     val chainLabel: String

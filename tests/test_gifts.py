@@ -265,3 +265,10 @@ async def test_resolve_unique_gift_stores_only_matching_result(store: Store) -> 
     result = await resolve_unique_gift(Pool(), store, "PlushPepe-123")
     assert result["slug"] == "PlushPepe-123" and result["owner_tg_id"] == 42
     assert store.nft_items(q="PlushPepe-123")
+
+
+def test_nft_value_sort_never_mixes_local_fiat_currencies(store):
+    store.upsert_nft_item("Known-1", value_amount=100, value_currency="USD", value_usd=100)
+    store.upsert_nft_item("Known-2", value_amount=50000, value_currency="INR", value_usd=200)
+    store.upsert_nft_item("Unknown-1", value_amount=9999999, value_currency="INR")
+    assert [row["slug"] for row in store.nft_items(sort="value")] == ["Known-2", "Known-1", "Unknown-1"]

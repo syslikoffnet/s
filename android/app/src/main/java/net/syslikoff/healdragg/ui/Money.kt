@@ -2,6 +2,8 @@ package net.syslikoff.healdragg.ui
 
 import org.json.JSONObject
 import java.util.Locale
+import java.util.Currency
+import java.math.BigDecimal
 
 /**
  * Цены в валюте приложения.
@@ -68,8 +70,46 @@ object Money {
     fun both(amount: Long, source: String?): String? {
         val converted = format(amount, source) ?: return null
         if (source.isNullOrBlank() || source.equals(currency, true)) return converted
-        val original = compactNumber(amount.toInt()) + " " + source.uppercase(Locale.US)
+        val original = "%,d".format(Locale.US, amount).replace(',', ' ') + " " + source.uppercase(Locale.US)
         return "$original · $converted"
+    }
+
+    /** Оценка Telegram: фиат в минимальных единицах, USD — в центах.
+     * Не считаем исходную валюту звёздами и не выдаём оценку за цену продажи. */
+    fun estimate(amount: Long, source: String?, usdCents: Long): String? {
+        val code = source?.uppercase(Locale.US)?.trim().orEmpty()
+        if (code in setOf("STARS", "STAR", "XTR")) {
+            return both(amount, "STARS")?.let { "оценка $it" }
+        }
+        val digits = try { Currency.getInstance(code).defaultFractionDigits } catch (_: IllegalArgumentException) { -1 }
+        val original = when {
+            amount <= 0 || code.isBlank() -> null
+            digits in 0..4 -> BigDecimal.valueOf(amount, digits).stripTrailingZeros().toPlainString()
+                .replace('.', ',') + " " + code
+            else -> "$amount мин. ед. $code"
+        }
+        val usd = when {
+            usdCents > 0 -> usdCents.toDouble() / 100.0
+            code == "USD" && digits == 2 && amount > 0 -> amount.toDouble() / 100.0
+            code == "EUR" && digits == 2 && amount > 0 -> amount.toDouble() / 100.0 * 1.08
+            code in setOf("RUB", "RUR") && digits == 2 && amount > 0 -> amount.toDouble() / 100.0 / usdRub
+            else -> null
+        }
+        val converted = usd?.let {
+            when (currency) {
+                "USD" -> money(it) + " $"
+                "EUR" -> money(it / 1.08) + " €"
+                "TON" -> money(it / tonUsd) + " TON"
+                "STARS" -> money(it / starUsd) + " ★"
+                else -> money(it * usdRub) + " ₽"
+            }
+        }
+        val text = when {
+            original == null -> converted
+            converted == null || code == currency -> original
+            else -> "$original · ≈ $converted"
+        } ?: return null
+        return "оценка $text"
     }
 
     private fun money(value: Double): String {

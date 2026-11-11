@@ -42,6 +42,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -54,6 +55,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 private enum class LoginStep { Idle, Phone, Code, Password, Done }
 
@@ -73,6 +77,11 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
     var doneHandle by remember { mutableStateOf<String?>(null) }
     var toDelete by remember { mutableStateOf<SessionInfo?>(null) }
     var importing by remember { mutableStateOf(false) }
+    var businessSession by remember { mutableStateOf<SessionInfo?>(null) }
+    var businessData by remember { mutableStateOf<JSONObject?>(null) }
+    var businessError by remember { mutableStateOf<String?>(null) }
+    var businessBusy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val pickSession = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
@@ -343,7 +352,20 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
                 }
             } else {
                 items(vm.sessions, key = { it.name }) { session ->
-                    SessionRow(session) { toDelete = session }
+                    SessionRow(session, onDelete = { toDelete = session }, onBusiness = {
+                        businessSession = session
+                        businessData = null
+                        businessError = null
+                        businessBusy = true
+                        scope.launch {
+                            try {
+                                businessData = vm.api?.businessBot(session.name)
+                                    ?: throw ApiException(0, "Движок не запущен")
+                            } catch (exc: CancellationException) { throw exc }
+                            catch (exc: Exception) { businessError = exc.message ?: "Не удалось проверить бота" }
+                            finally { businessBusy = false }
+                        }
+                    })
                 }
             }
 
@@ -558,6 +580,52 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
         }
     }
 
+    businessSession?.let { session ->
+        val state = businessData?.optString("status").orEmpty()
+        AlertDialog(
+            onDismissRequest = { if (!businessBusy) businessSession = null },
+            title = { Text("Автоматизация · ${session.name}") },
+            text = {
+                Text(when {
+                    businessBusy -> "Проверяю Telegram…"
+                    businessError != null -> "$businessError\n\nЕсли запрос подключения уже был отправлен, проверьте состояние повторно, прежде чем повторять действие."
+                    state == "other_connected" -> "На аккаунте уже подключён другой бизнес-бот. Аккаунт пропущен, существующие настройки не менялись."
+                    state == "connected" -> {
+                        val missing = businessData?.optJSONArray("missing_rights")?.length() ?: 0
+                        if (missing > 0 || businessData?.optBoolean("all_chats") != true)
+                            "@echidbot подключён, но его доступ к сообщениям или список чатов ограничен. Измените права в настройках Telegram; приложение не меняет существующую настройку автоматически."
+                        else "@echidbot подключён. Это ещё не означает, что он сможет ответить в любом чате: Telegram ограничивает доступ и ответы бота."
+                    }
+                    state == "not_connected" -> "Подключить @echidbot ко всем личным чатам этого аккаунта? Бот получит доступ к сообщениям и права отвечать, отмечать прочитанным и удалять как свои, так и входящие сообщения. Права на профиль, подарки и Stars не выдаются. Продолжить?"
+                    else -> "Не удалось определить состояние."
+                }, style = MaterialTheme.typography.bodySmall, color = Hd.Muted)
+            },
+            confirmButton = {
+                if (state == "not_connected" && !businessBusy && businessError == null) {
+                    TextButton(onClick = {
+                        businessBusy = true
+                        scope.launch {
+                            try {
+                                businessData = vm.api?.businessBot(session.name, connect = true)
+                                    ?: throw ApiException(0, "Движок не запущен")
+                            } catch (exc: CancellationException) { throw exc }
+                            catch (exc: Exception) { businessError = exc.message ?: "Не удалось подключить бота" }
+                            finally { businessBusy = false }
+                        }
+                    }) { Text("Подключить") }
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !businessBusy, onClick = { businessSession = null }) {
+                    Text(if (state == "not_connected") "Отмена" else "Закрыть")
+                }
+            },
+            containerColor = Hd.Surface2,
+            titleContentColor = Hd.Text,
+            textContentColor = Hd.Muted,
+        )
+    }
+
     toDelete?.let { session ->
         AlertDialog(
             onDismissRequest = { toDelete = null },
@@ -594,7 +662,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
 }
 
 @Composable
-private fun SessionRow(session: SessionInfo, onDelete: () -> Unit) {
+private fun SessionRow(session: SessionInfo, onDelete: () -> Unit, onBusiness: () -> Unit) {
     HdCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(
@@ -632,5 +700,6 @@ private fun SessionRow(session: SessionInfo, onDelete: () -> Unit) {
                 )
             }
         }
+        TextButton(onClick = onBusiness) { Text("Проверить @echidbot") }
     }
 }

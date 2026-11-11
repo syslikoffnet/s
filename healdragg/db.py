@@ -1905,7 +1905,8 @@ class Store:
             chain=chain, q=q, resale_only=resale_only, collection=collection
         )
         order = {
-            "value": "coalesce(value_usd, value_amount, 0) DESC, seen_at DESC",
+            # Суммы в разных локальных валютах нельзя сравнивать друг с другом.
+            "value": "CASE WHEN value_usd > 0 THEN 0 ELSE 1 END, value_usd DESC, seen_at DESC, slug",
             "resell": "coalesce(resell_amount, 0) DESC, seen_at DESC",
             "recent": "seen_at DESC",
             "num": "num ASC",
