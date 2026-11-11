@@ -6,12 +6,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,35 +32,42 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
     val scope = rememberCoroutineScope()
     var direction by remember(tgId) { mutableStateOf("received") }
     var rows by remember(tgId, direction) { mutableStateOf<List<GiftItem>>(emptyList()) }
-    var more by remember(tgId, direction) { mutableStateOf(false) }
+    var cursors by remember(tgId, direction) { mutableStateOf(listOf<Long?>(null)) }
+    var pageIndex by remember(tgId, direction) { mutableStateOf(0) }
+    var next by remember(tgId, direction) { mutableStateOf<Long?>(null) }
     var loading by remember(tgId, direction) { mutableStateOf(false) }
-    var error by remember(tgId, direction) { mutableStateOf<String?>(null) }
+    var pageError by remember(tgId, direction) { mutableStateOf<String?>(null) }
+    var taskMessage by remember(tgId) { mutableStateOf<String?>(null) }
     var reload by remember(tgId) { mutableStateOf(0) }
     var job by remember(tgId) { mutableStateOf<Job?>(null) }
     var starting by remember(tgId) { mutableStateOf(false) }
+    var stopping by remember(tgId) { mutableStateOf(false) }
+    val before = cursors.getOrNull(pageIndex)
 
-    suspend fun load(reset: Boolean) {
-        val client = api ?: run { error = "Движок не запущен"; return }
-        if (loading) return
+    LaunchedEffect(tgId, direction, before, reload, api) {
+        val client = api
+        rows = emptyList()
+        next = null
+        pageError = null
+        if (client == null) { pageError = "Движок не запущен"; return@LaunchedEffect }
         loading = true
         try {
-            val page = client.profileGifts(tgId, direction, if (reset) 0 else rows.size)
-            rows = if (reset) page.rows else (rows + page.rows).distinctBy { it.id }
-            more = page.hasMore
-            error = null
-        } catch (exc: CancellationException) {
-            throw exc
-        } catch (exc: Exception) {
-            error = exc.message ?: "Не удалось загрузить подарки"
-        } finally { loading = false }
+            val page = client.profileGifts(tgId, direction, before)
+            rows = page.rows
+            next = page.nextBefore
+        } catch (exc: CancellationException) { throw exc }
+        catch (exc: Exception) { pageError = exc.message ?: "Не удалось загрузить подарки" }
+        finally { loading = false }
     }
-    LaunchedEffect(tgId, direction, reload, api) { load(true) }
     LaunchedEffect(tgId, api) {
         val client = api ?: return@LaunchedEffect
-        runCatching { client.jobs().firstOrNull { it.kind == "gifts" && it.targetId == tgId && !it.finished } }
-            .onSuccess { if (job == null && !starting) job = it }
+        try {
+            val active = client.jobs().firstOrNull { it.kind == "gifts" && it.targetId == tgId && !it.finished }
+            if (job == null && !starting) job = active
+        } catch (exc: CancellationException) { throw exc }
+        catch (_: Exception) { /* Сохранённая задача восстановится после переподключения движка. */ }
     }
-    LaunchedEffect(job?.key) {
+    LaunchedEffect(job?.key, api) {
         val key = job?.key ?: return@LaunchedEffect
         val client = api ?: return@LaunchedEffect
         while (true) {
@@ -68,16 +75,24 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
             val response = try { client.jobs() } catch (exc: CancellationException) { throw exc }
                 catch (_: Exception) { continue }
             val found = response.firstOrNull { it.key == key }
-            if (found == null) { job = null; reload++; break }
+            if (found == null) {
+                taskMessage = "Не удалось получить статус сбора. Проверьте сохранённые задачи в разделе «Подарки»."
+                job = null
+                reload++
+                break
+            }
             job = found
             if (found.finished) {
                 val counts = found.state?.obj("queue")
                 when {
-                    found.error != null -> error = found.error
-                    (counts?.optInt("deferred") ?: 0) > 0 -> error = "Большой профиль отложен. Откройте раздел «Подарки» для полного сбора."
-                    (counts?.optInt("unavailable") ?: 0) > 0 -> error = "Профиль недоступен аккаунту Telegram; данные могут быть неполными."
+                    found.phase == "отменено" -> taskMessage = "Сбор остановлен; сохранённые записи остались в базе."
+                    found.error != null -> taskMessage = found.error
+                    (counts?.optInt("deferred") ?: 0) > 0 -> taskMessage = "Большой профиль отложен. Откройте раздел «Подарки» для полного сбора."
+                    (counts?.optInt("unavailable") ?: 0) > 0 -> taskMessage = "Профиль недоступен аккаунту Telegram; данные могут быть неполными."
                     else -> onToast("Сбор завершён: ${found.found} записей")
                 }
+                pageIndex = 0
+                cursors = listOf(null)
                 reload++
                 job = null
                 break
@@ -94,19 +109,36 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
         }
         Button(onClick = {
             starting = true
+            taskMessage = null
             scope.launch {
-                try {
-                    job = api?.collectProfileGifts(tgId)
-                        ?: throw ApiException(0, "Движок не запущен")
-                } catch (exc: CancellationException) { throw exc }
-                catch (exc: Exception) { error = exc.message }
+                try { job = api?.collectProfileGifts(tgId) ?: throw ApiException(0, "Движок не запущен") }
+                catch (exc: CancellationException) { throw exc }
+                catch (exc: Exception) { taskMessage = exc.message ?: "Не удалось запустить сбор" }
                 finally { starting = false }
             }
         }, enabled = !starting && job == null) { Text(if (starting) "Запуск…" else "Собрать подарки профиля") }
-        job?.let { Text("${it.phase} · ${it.done}/${it.total} · найдено ${it.found}", color = Hd.Muted, style = MaterialTheme.typography.bodySmall) }
-        error?.let { ErrorBanner(it, onRetry = { reload++ }) }
-        if (loading && rows.isEmpty()) LoadingBlock()
-        if (!loading && error == null && rows.isEmpty()) Text("Записей пока нет; это не означает, что подарков нет.", color = Hd.Muted)
+        job?.let { active ->
+            Text("${active.phase} · ${active.done}/${active.total} · найдено ${active.found}", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+            TextButton(enabled = !stopping && !active.finished, onClick = {
+                stopping = true
+                scope.launch {
+                    try {
+                        if (api?.cancelJob(active.key) != true) taskMessage = "Задача уже завершилась или недоступна."
+                    } catch (exc: CancellationException) { throw exc }
+                    catch (exc: Exception) { taskMessage = exc.message ?: "Не удалось остановить сбор" }
+                    finally { stopping = false }
+                }
+            }) { Text(if (stopping) "Останавливаю…" else "Остановить сбор") }
+        }
+        taskMessage?.let { message ->
+            HdCard {
+                Text(message, color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { taskMessage = null }) { Text("Понятно") }
+            }
+        }
+        pageError?.let { ErrorBanner(it, onRetry = { reload++ }) }
+        if (loading) LoadingBlock()
+        if (!loading && pageError == null && rows.isEmpty()) Text("Записей пока нет; это не означает, что подарков нет.", color = Hd.Muted)
         rows.forEach { gift ->
             GiftCard(gift, api, onToast, onOpenProfile)
             if (!gift.nameHidden && gift.fromTgId > 0 && gift.fromTgId != tgId) {
@@ -116,7 +148,19 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
                 OutlinedButton(onClick = { onOpenProfile(gift.ownerTgId.toString()) }) { Text("Открыть профиль с записью") }
             }
         }
-        if (more) OutlinedButton(onClick = { scope.launch { load(false) } }, enabled = !loading, modifier = Modifier.fillMaxWidth()) { Text(if (loading) "Загружаю…" else "Показать ещё") }
-        Spacer(Modifier.height(8.dp).padding(bottom = 2.dp))
+        if (pageIndex > 0 || next != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = { pageIndex-- }, enabled = pageIndex > 0 && !loading, modifier = Modifier.weight(1f)) { Text("Назад") }
+                OutlinedButton(onClick = {
+                    val cursor = next
+                    if (cursor != null) {
+                        cursors = cursors.take(pageIndex + 1) + cursor
+                        pageIndex++
+                    }
+                }, enabled = next != null && !loading, modifier = Modifier.weight(1f)) { Text("Далее") }
+            }
+            Text("Страница ${pageIndex + 1} · по порядку сохранения. Новые записи появятся после обновления.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+        }
+        Spacer(Modifier.height(8.dp))
     }
 }

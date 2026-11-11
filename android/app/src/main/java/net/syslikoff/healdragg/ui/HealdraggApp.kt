@@ -61,6 +61,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,6 +75,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 private enum class Tab(
@@ -113,6 +116,27 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
 
     var tab by rememberSaveable { mutableStateOf(Tab.Targets) }
     var openTarget by rememberSaveable { mutableStateOf<Long?>(null) }
+    val historySaver = remember { listSaver<List<Long>, Long>(save = { it }, restore = { it.toList() }) }
+    var profileHistory by rememberSaveable(stateSaver = historySaver) { mutableStateOf(emptyList<Long>()) }
+    val screenStates = rememberSaveableStateHolder()
+    var searchMapOpen by rememberSaveable { mutableStateOf(false) }
+    var navigationVersion by remember { mutableStateOf(0) }
+    val showProfile: (Long) -> Unit = { id ->
+        if (openTarget != id) {
+            openTarget?.let { profileHistory = profileHistory + it }
+            openTarget = id
+        }
+        navigationVersion++
+    }
+    val backProfile: () -> Unit = {
+        val closing = openTarget
+        if (profileHistory.isNotEmpty()) {
+            openTarget = profileHistory.last()
+            profileHistory = profileHistory.dropLast(1)
+        } else openTarget = null
+        if (closing != null && closing != openTarget && closing !in profileHistory) screenStates.removeState("profile-$closing")
+        navigationVersion++
+    }
     var showSetup by rememberSaveable { mutableStateOf(vm.isLocal && !vm.hasCredentials) }
     var showAccounts by rememberSaveable { mutableStateOf(false) }
 
@@ -124,22 +148,29 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
             if (client == null) toast("Движок не запущен")
             else {
                 openingProfile = true
+                val requestedNavigation = navigationVersion
                 scope.launch {
                     try {
                         val existing = try { client.findTarget(key) } catch (exc: ApiException) {
                             if (exc.code == 404) null else throw exc
                         }
-                        if (existing != null) {
-                            openTarget = existing.tgId
-                            tab = Tab.Targets
+                        if (navigationVersion != requestedNavigation) {
+                            openingProfile = false
+                        } else if (existing != null) {
+                            showProfile(existing.tgId)
                             openingProfile = false
                         } else {
                             vm.addTarget(key) { result ->
                                 openingProfile = false
-                                result.onSuccess { target -> openTarget = target.tgId; tab = Tab.Targets }
-                                    .onFailure { toast(it.message ?: "Не удалось открыть профиль") }
+                                if (navigationVersion == requestedNavigation) {
+                                    result.onSuccess { target -> showProfile(target.tgId) }
+                                        .onFailure { toast(it.message ?: "Не удалось открыть профиль") }
+                                }
                             }
                         }
+                    } catch (exc: CancellationException) {
+                        openingProfile = false
+                        throw exc
                     } catch (exc: Exception) {
                         openingProfile = false
                         toast(exc.message ?: "Не удалось открыть профиль")
@@ -149,7 +180,15 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
         }
     }
 
-    BackHandler(enabled = openTarget != null) { openTarget = null }
+    @Composable
+    fun ProfileScreen(tgId: Long) {
+        screenStates.SaveableStateProvider("profile-$tgId") {
+            TargetDetailScreen(vm = vm, tgId = tgId, onBack = backProfile,
+                onToast = toast, onOpenProfile = openProfile)
+        }
+    }
+
+    BackHandler(enabled = openTarget != null) { backProfile() }
     BackHandler(enabled = openTarget == null && showSetup && (vm.hasCredentials || !vm.isLocal)) {
         showSetup = false
     }
@@ -201,6 +240,8 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             selected = tab == item && openTarget == null,
                             onClick = {
                                 openTarget = null
+                                profileHistory = emptyList()
+                                navigationVersion++
                                 tab = item
                             },
                             icon = { TabIcon(item, vm, tab == item) },
@@ -222,6 +263,8 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                         onRefresh = { vm.refresh(force = true) },
                         onSettings = {
                             openTarget = null
+                            profileHistory = emptyList()
+                            navigationVersion++
                             tab = Tab.Settings
                         },
                     )
@@ -230,19 +273,13 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             Tab.Catalog -> {
                                 val catalogTarget = openTarget
                                 if (catalogTarget != null) {
-                                    TargetDetailScreen(
-                                        vm = vm,
-                                        tgId = catalogTarget,
-                                        onBack = { openTarget = null },
-                                        onToast = toast,
-                                        onOpenProfile = openProfile,
-                                    )
+                                    ProfileScreen(catalogTarget)
                                 } else {
                                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                         Box(Modifier.widthIn(max = 900.dp).fillMaxWidth()) {
                                             CatalogScreen(
                                                 vm = vm,
-                                                onOpenTarget = { openTarget = it },
+                                                onOpenTarget = showProfile,
                                                 onToast = toast,
                                                 onOpenAccounts = { showAccounts = true },
                                             )
@@ -250,9 +287,18 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                     }
                                 }
                             }
-                            Tab.Gifts -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                                Box(Modifier.widthIn(max = 820.dp).fillMaxWidth()) {
-                                    GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
+                            Tab.Gifts -> {
+                                val giftTarget = openTarget
+                                if (giftTarget != null) {
+                                    ProfileScreen(giftTarget)
+                                } else {
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                                        Box(Modifier.widthIn(max = 820.dp).fillMaxWidth()) {
+                                            screenStates.SaveableStateProvider("gifts") {
+                                                GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Tab.Settings -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
@@ -269,27 +315,26 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             else -> Row(Modifier.fillMaxSize()) {
                                 Box(Modifier.width(listWidth).fillMaxHeight()) {
                                     if (tab == Tab.Targets) {
-                                        SearchScreen(
+                                        screenStates.SaveableStateProvider("search") {
+                                          SearchScreen(
                                             vm = vm,
-                                            onOpenTarget = { openTarget = it },
+                                            onOpenTarget = showProfile,
                                             onOpenProfile = openProfile,
                                             onToast = toast,
                                             onOpenAccounts = { showAccounts = true },
-                                        )
+                                            mapOpen = searchMapOpen,
+                                            profileOpen = openTarget != null,
+                                            onMapChange = { searchMapOpen = it; navigationVersion++ },
+                                          )
+                                        }
                                     } else {
-                                        AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                                        AlertsScreen(vm, onOpenTarget = showProfile, onToast = toast)
                                     }
                                 }
                                 Box(Modifier.width(1.dp).fillMaxHeight().background(Hd.Stroke))
                                 Box(Modifier.weight(1f).fillMaxHeight()) {
                                     if (openTarget != null) {
-                                        TargetDetailScreen(
-                                            vm = vm,
-                                            tgId = openTarget!!,
-                                            onBack = { openTarget = null },
-                                            onToast = toast,
-                                            onOpenProfile = openProfile,
-                                        )
+                                        ProfileScreen(openTarget!!)
                                     } else {
                                         EmptyDetailHint(tab)
                                     }
@@ -311,6 +356,8 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                         onRefresh = { vm.refresh(force = true) },
                         onSettings = {
                             openTarget = null
+                            profileHistory = emptyList()
+                            navigationVersion++
                             tab = Tab.Settings
                         },
                     )
@@ -321,7 +368,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             Tab.entries.forEach { item ->
                                 NavigationBarItem(
                                     selected = tab == item,
-                                    onClick = { tab = item },
+                                    onClick = { navigationVersion++; profileHistory = emptyList(); tab = item },
                                     icon = { TabIcon(item, vm, tab == item) },
                                     label = {
                                         Text(
@@ -349,28 +396,29 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
             ) { inner ->
                 Box(Modifier.padding(inner)) {
                     when {
-                        openTarget != null -> TargetDetailScreen(
+                        openTarget != null -> ProfileScreen(openTarget!!)
+                        tab == Tab.Targets -> screenStates.SaveableStateProvider("search") {
+                          SearchScreen(
                             vm = vm,
-                            tgId = openTarget!!,
-                            onBack = { openTarget = null },
-                            onToast = toast,
-                            onOpenProfile = openProfile,
-                        )
-                        tab == Tab.Targets -> SearchScreen(
-                            vm = vm,
-                            onOpenTarget = { openTarget = it },
+                            onOpenTarget = showProfile,
                             onOpenProfile = openProfile,
                             onToast = toast,
                             onOpenAccounts = { showAccounts = true },
-                        )
-                        tab == Tab.Alerts -> AlertsScreen(vm, onOpenTarget = { openTarget = it }, onToast = toast)
+                            mapOpen = searchMapOpen,
+                            profileOpen = false,
+                            onMapChange = { searchMapOpen = it; navigationVersion++ },
+                          )
+                        }
+                        tab == Tab.Alerts -> AlertsScreen(vm, onOpenTarget = showProfile, onToast = toast)
                         tab == Tab.Catalog -> CatalogScreen(
                             vm = vm,
-                            onOpenTarget = { openTarget = it },
+                            onOpenTarget = showProfile,
                             onToast = toast,
                             onOpenAccounts = { showAccounts = true },
                         )
-                        tab == Tab.Gifts -> GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
+                        tab == Tab.Gifts -> screenStates.SaveableStateProvider("gifts") {
+                            GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
+                        }
                         else -> SettingsScreen(
                             vm = vm,
                             onOpenBattery = onOpenBattery,

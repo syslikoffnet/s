@@ -1,6 +1,7 @@
 package net.syslikoff.healdragg.ui
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -57,20 +59,29 @@ fun SearchScreen(
     onOpenProfile: (String) -> Unit,
     onToast: (String) -> Unit,
     onOpenAccounts: () -> Unit,
+    mapOpen: Boolean,
+    profileOpen: Boolean,
+    onMapChange: (Boolean) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var query by rememberSaveable { mutableStateOf(vm.targetQuery) }
-    var map by rememberSaveable { mutableStateOf(false) }
     var giftResults by remember { mutableStateOf<GiftSearchResult?>(null) }
     var giftError by remember { mutableStateOf<String?>(null) }
     var giftLoading by remember { mutableStateOf(false) }
     var resultQuery by remember { mutableStateOf("") }
+    var peopleRows by remember { mutableStateOf<List<ObservedPerson>>(emptyList()) }
+    var peopleQuery by remember { mutableStateOf("") }
+    var peopleNext by remember { mutableStateOf<Long?>(null) }
+    var peopleLoading by remember { mutableStateOf(false) }
+    var peopleError by remember { mutableStateOf<String?>(null) }
+    var peopleReload by remember { mutableStateOf(0) }
     var nftBusy by remember { mutableStateOf(false) }
     var liveNft by remember { mutableStateOf<Pair<String, NftItem>?>(null) }
     var liveError by remember { mutableStateOf<Pair<String, String>?>(null) }
     val (normalized, canOpenProfile) = searchInput(query)
     val client = vm.api
     val pending = normalized != vm.targetQuery
+    val latestQuery by rememberUpdatedState(normalized)
     val canLookupNft = Regex("^[A-Za-z0-9_]+-[1-9][0-9]*$").matches(normalized)
 
     LaunchedEffect(normalized, client) {
@@ -88,12 +99,35 @@ fun SearchScreen(
         catch (exc: Exception) { giftError = exc.message ?: "Не удалось найти подарки" }
         finally { giftLoading = false }
     }
+    LaunchedEffect(normalized, client, peopleReload) {
+        peopleRows = emptyList()
+        peopleNext = null
+        peopleError = null
+        peopleQuery = normalized
+        if (normalized.isBlank() || client == null) { peopleLoading = false; return@LaunchedEffect }
+        peopleLoading = true
+        try {
+            delay(300)
+            val page = client.searchPeople(normalized)
+            if (latestQuery == normalized && client === vm.api) {
+                peopleRows = page.rows
+                peopleNext = page.nextBefore
+            }
+        } catch (exc: CancellationException) { throw exc }
+        catch (exc: Exception) {
+            if (latestQuery == normalized && client === vm.api) peopleError = exc.message ?: "Не удалось найти людей"
+        } finally {
+            if (latestQuery == normalized && client === vm.api) peopleLoading = false
+        }
+    }
+
     LaunchedEffect(client) {
         if (client != null && vm.targets.isEmpty() && !vm.targetPageLoading) vm.refresh(force = true)
     }
 
-    if (map) {
-        GlobalMapScreen(api = client, onBack = { map = false }, onOpenProfile = onOpenProfile, onToast = onToast)
+    if (mapOpen) {
+        BackHandler(enabled = !profileOpen) { onMapChange(false) }
+        GlobalMapScreen(api = client, onBack = { onMapChange(false) }, onOpenProfile = onOpenProfile, onToast = onToast)
         return
     }
 
@@ -133,7 +167,7 @@ fun SearchScreen(
                 OutlinedButton(onClick = onOpenAccounts, modifier = Modifier.fillMaxWidth()) { Text("Подключить аккаунт Telegram") }
             }
             item("map") {
-                OutlinedButton(onClick = { map = true }, modifier = Modifier.fillMaxWidth()) { Text("Общая карта собранных связей") }
+                OutlinedButton(onClick = { onMapChange(true) }, modifier = Modifier.fillMaxWidth()) { Text("Общая карта собранных связей") }
             }
             item("profiles-heading") {
                 Text(if (normalized.isBlank()) "Сохранённые профили" else "Профили в базе", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
@@ -153,6 +187,56 @@ fun SearchScreen(
                 }
                 if (vm.targetNextBefore != null) item("profiles-more") {
                     OutlinedButton(onClick = { vm.loadMoreTargets() }, enabled = !vm.targetPageLoading, modifier = Modifier.fillMaxWidth()) { Text(if (vm.targetPageLoading) "Загружаю…" else "Показать ещё профили") }
+                }
+            }
+            if (normalized.isNotBlank()) {
+                item("people-heading") {
+                    Text("Люди в собранных данных", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                    Text("Упоминания и записи подарков. Имена и username могли измениться; ID не подтверждает текущее владение NFT.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+                if (peopleLoading || peopleQuery != normalized) item("people-loading") { LoadingBlock() }
+                if (peopleQuery == normalized) {
+                    peopleError?.let { msg -> item("people-error") { ErrorBanner(msg, onRetry = { peopleReload++ }) } }
+                    items(peopleRows, key = { "observed-${it.tgId}" }) { person ->
+                        HdCard(onClick = { onOpenProfile(person.tgId.toString()) }, contentPadding = PaddingValues(14.dp)) {
+                            Text(person.name?.takeIf { it.isNotBlank() } ?: person.username?.let { "@$it" } ?: "ID ${person.tgId}", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                            Text(person.username?.let { "@$it · ID ${person.tgId}" } ?: "ID ${person.tgId}", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                            Text(when (person.source) {
+                                "peer" -> "Упоминание или ответ"
+                                "gift_sender" -> "Даритель в сохранённой записи"
+                                "gift_profile" -> "Профиль с записью подарка"
+                                else -> "Запись NFT"
+                            }, color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    if (!peopleLoading && peopleRows.isEmpty() && peopleError == null) item("people-empty") {
+                        Text("Людей в собранных данных не найдено.", color = Hd.Muted)
+                    }
+                    peopleNext?.let { cursor -> item("people-more") {
+                        OutlinedButton(onClick = {
+                            val requested = normalized
+                            val currentClient = client ?: return@OutlinedButton
+                            if (!peopleLoading) {
+                                peopleLoading = true
+                                peopleError = null
+                                scope.launch {
+                                    try {
+                                        val page = currentClient.searchPeople(requested, cursor)
+                                        if (latestQuery == requested && vm.api === currentClient) {
+                                            val seen = peopleRows.mapTo(mutableSetOf()) { it.tgId }
+                                            peopleRows = peopleRows + page.rows.filter { seen.add(it.tgId) }
+                                            peopleNext = page.nextBefore
+                                        }
+                                    } catch (exc: CancellationException) { throw exc }
+                                    catch (exc: Exception) {
+                                        if (latestQuery == requested && vm.api === currentClient) peopleError = exc.message ?: "Не удалось загрузить людей"
+                                    } finally {
+                                        if (latestQuery == requested && vm.api === currentClient) peopleLoading = false
+                                    }
+                                }
+                            }
+                        }, enabled = !peopleLoading, modifier = Modifier.fillMaxWidth()) { Text(if (peopleLoading) "Загружаю…" else "Показать ещё людей") }
+                    } }
                 }
             }
             if (normalized.isNotBlank()) {

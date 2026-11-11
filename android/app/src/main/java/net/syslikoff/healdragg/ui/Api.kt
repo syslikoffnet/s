@@ -12,7 +12,9 @@ import android.util.Base64
 import java.net.URLEncoder
 
 data class TargetPage(val rows: List<Target>, val nextBefore: Long?)
-data class ProfileGiftPage(val rows: List<GiftItem>, val hasMore: Boolean)
+data class ObservedPerson(val tgId: Long, val name: String?, val username: String?, val source: String, val observedAt: Long)
+data class ObservedPeoplePage(val rows: List<ObservedPerson>, val nextBefore: Long?)
+data class ProfileGiftPage(val rows: List<GiftItem>, val nextBefore: Long?)
 data class GiftSearchResult(val gifts: List<GiftItem>, val nft: List<NftItem>)
 
 class ApiException(val code: Int, override val message: String) : Exception(message)
@@ -36,6 +38,15 @@ class Api(private val baseUrl: String, private val token: String) {
         val data = obj("api/targets/page?limit=50&q=$encoded" + (before?.let { "&before=$it" } ?: ""))
         val next = if (data.isNull("next_before")) null else data.getLong("next_before")
         return TargetPage(jsonObjects(data.arr("rows")).map(Target::from), next)
+    }
+
+    suspend fun searchPeople(query: String, before: Long? = null): ObservedPeoplePage {
+        val data = obj("api/search/people?limit=25&q=${URLEncoder.encode(query, "UTF-8")}" + (before?.let { "&before=$it" } ?: ""))
+        val rows = jsonObjects(data.arr("rows")).map {
+            ObservedPerson(it.num("tg_id"), it.str("name"), it.str("username"), it.str("source").orEmpty(), it.num("observed_at"))
+        }
+        val next = if (data.isNull("next_before")) null else data.getLong("next_before")
+        return ObservedPeoplePage(rows, next)
     }
 
     suspend fun findTarget(query: String): Target =
@@ -169,9 +180,10 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun collectProfileGifts(tgId: Long): Job =
         Job.from(obj("api/targets/$tgId/gifts/collect", "POST", JSONObject()))
 
-    suspend fun profileGifts(tgId: Long, direction: String, offset: Int = 0): ProfileGiftPage {
-        val data = obj("api/targets/$tgId/gifts?direction=$direction&limit=50&offset=$offset")
-        return ProfileGiftPage(jsonObjects(data.arr("rows")).map(GiftItem::from), data.bool("has_more"))
+    suspend fun profileGifts(tgId: Long, direction: String, before: Long? = null): ProfileGiftPage {
+        val data = obj("api/targets/$tgId/gifts?direction=$direction&limit=30" + (before?.let { "&before=$it" } ?: ""))
+        return ProfileGiftPage(jsonObjects(data.arr("rows")).map(GiftItem::from),
+            if (data.isNull("next_before")) null else data.getLong("next_before"))
     }
 
     suspend fun searchGifts(query: String): GiftSearchResult {

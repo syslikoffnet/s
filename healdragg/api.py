@@ -702,6 +702,26 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, f"Не удалось найти аккаунт: {exc}") from exc
         return _target_payload(state.store, target)
 
+    async def search_people(request: Request) -> dict[str, Any]:
+        guard(request)
+        query = (request.query_params.get("q") or "").strip()
+        if not 1 <= len(query) <= 128:
+            raise HTTPException(400, "q: от 1 до 128 символов")
+        raw_cursor = request.query_params.get("before")
+        before = None
+        if raw_cursor:
+            try:
+                before = int(raw_cursor)
+                if not 1 <= before <= 9_223_372_036_854_775_807:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(400, "before: неверный курсор") from exc
+        limit = _q_int(request, "limit", 25, 1, 50)
+        rows = state.store.search_observed_people(query, before_id=before, limit=limit)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return {"rows": rows, "next_before": int(rows[-1]["tg_id"]) if has_more else None}
+
     async def open_profile(request: Request) -> dict[str, Any]:
         guard(request)
         body = await _body(request)
@@ -711,6 +731,17 @@ def create_app(settings: Settings) -> Starlette:
         known = state.store.find_target(query)
         if known:
             return _target_payload(state.store, known)
+        # Открыть уже наблюдавшийся ID можно и без Telegram-сессии. Метаданные
+        # могут устареть; открытие не включает автопилот и не делает сетевой запрос.
+        if query.isascii() and query.isdigit() and int(query) <= 9_223_372_036_854_775_807:
+            observed = state.store.search_observed_people(exact_id=int(query), limit=1, exclude_saved=False)
+            if observed:
+                person = observed[0]
+                target = state.store.upsert_target(
+                    int(person["tg_id"]), username=person.get("username"),
+                    first_name=person.get("name") or None, watch_enabled=False,
+                )
+                return _target_payload(state.store, target)
         if not state.store.session_names():
             raise HTTPException(409, "Подключите Telegram, чтобы найти неизвестный профиль")
         try:
@@ -741,8 +772,22 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, "direction: received или sent")
         limit = _q_int(request, "limit", 50, 1, 100)
         offset = _q_int(request, "offset", 0, 0, 1_000_000)
-        rows = state.store.profile_gifts(tg_id, direction, limit=limit, offset=offset)
-        return {"rows": rows[:limit], "has_more": len(rows) > limit}
+        raw_cursor = request.query_params.get("before")
+        before = None
+        if raw_cursor:
+            try:
+                before = int(raw_cursor)
+                if not 1 <= before <= 9_223_372_036_854_775_807:
+                    raise ValueError
+            except ValueError as exc:
+                raise HTTPException(400, "before: неверный курсор") from exc
+        if before is not None and offset:
+            raise HTTPException(400, "Используйте курсор или offset, но не оба сразу")
+        rows = state.store.profile_gifts(tg_id, direction, limit=limit, offset=offset, before_id=before)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return {"rows": rows, "has_more": has_more,
+                "next_before": int(rows[-1]["id"]) if has_more else None}
 
     async def search_gifts(request: Request) -> dict[str, Any]:
         guard(request)
@@ -2003,6 +2048,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/gifts", _route(profile_gifts)),
         Route("/api/targets/{tg_id:int}/gifts/collect", _route(collect_profile_gifts), methods=["POST"]),
         Route("/api/search/gifts", _route(search_gifts)),
+        Route("/api/search/people", _route(search_people)),
         Route("/api/search/nft", _route(search_unique_gift), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/links", _route(target_links)),
         Route("/api/targets/{tg_id:int}/graph", _route(target_graph)),

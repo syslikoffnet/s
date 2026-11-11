@@ -706,3 +706,64 @@ def test_profile_gift_collect_records_owner_and_refresh_flag(client: TestClient,
     assert run["expected_owner"] == DEMO_TARGET
     assert run["refresh_known"] == 1
     assert run["query"] == "demo_user"
+
+
+def test_search_people_finds_local_observations_without_hidden_senders(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    for tg_id in range(2001, 2031):
+        store.upsert_peer(tg_id, username=f"peer{tg_id}", first_name=f"Марина {tg_id}")
+    store.add_gift(3001, saved_id=1, gift_id=1, title="Bear", owner_name="Марина Владелец",
+                   from_tg_id=3002, from_name="Марина Даритель")
+    store.add_gift(3003, saved_id=2, gift_id=1, title="Bear", owner_name="Другой",
+                   from_tg_id=3004, from_name="Марина Скрытая", name_hidden=True)
+    store.upsert_nft_item("Bear-1", owner_tg_id=3005, owner_name="Марина NFT")
+    store.upsert_target(2001, first_name="Марина 2001")
+    found = []
+    before = None
+    while True:
+        path = "/api/search/people?q=МАРИНА&limit=7" + (f"&before={before}" if before else "")
+        response = client.get(path, headers=HEADERS)
+        assert response.status_code == 200
+        page = response.json()
+        found.extend(page["rows"])
+        before = page["next_before"]
+        if before is None:
+            break
+    ids = [row["tg_id"] for row in found]
+    assert len(ids) == len(set(ids)) == 32
+    assert {3001, 3002, 3005, 2030} <= set(ids)
+    assert 3004 not in ids and 2001 not in ids
+    assert client.get("/api/search/people?q=@PEER2030", headers=HEADERS).json()["rows"][0]["tg_id"] == 2030
+    assert client.get("/api/search/people?q=%25", headers=HEADERS).json()["rows"] == []
+    assert client.get("/api/search/people?q=марина&before=-1", headers=HEADERS).status_code == 400
+    assert client.get("/api/search/people?q=марина").status_code == 401
+
+    # The source is a local observation, not proof of current Telegram identity.
+    response = client.post("/api/profiles/open", headers=HEADERS, json={"query": "3002"})
+    assert response.status_code == 200 and response.json()["tg_user_id"] == 3002
+    assert store.get_target(3002)["watch_enabled"] == 0
+    assert client.get("/api/search/people?q=марина", headers=HEADERS).json()["rows"]
+    hidden = client.post("/api/profiles/open", headers=HEADERS, json={"query": "3004"})
+    assert hidden.status_code == 409 and store.get_target(3004) is None
+
+
+def test_profile_gifts_cursor_stable_while_dates_change(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    for index in range(75):
+        store.add_gift(DEMO_TARGET, saved_id=10000 + index, gift_id=100, title="Gift", date=1000 + index)
+    base = f"/api/targets/{DEMO_TARGET}/gifts?direction=received&limit=11"
+    first = client.get(base, headers=HEADERS).json()
+    ids = [r["id"] for r in first["rows"]]
+    cursor = first["next_before"]
+    # Changing dates and inserting a new observation must not shift the cursor.
+    store.add_gift(DEMO_TARGET, saved_id=10000, gift_id=100, title="Gift", date=999999)
+    store.add_gift(DEMO_TARGET, saved_id=20000, gift_id=100, title="New", date=2000)
+    while cursor is not None:
+        page = client.get(base + f"&before={cursor}", headers=HEADERS).json()
+        ids.extend(r["id"] for r in page["rows"])
+        cursor = page["next_before"]
+    assert len(ids) == len(set(ids)) == 75
+    assert store.list_gifts(DEMO_TARGET, limit=1)[0]["date"] == 999999
+    assert client.get(base + "&before=xyz", headers=HEADERS).status_code == 400
+    assert client.get(base + "&before=1&offset=1", headers=HEADERS).status_code == 400
+    assert client.get(base + "&before=999999999999999999999999", headers=HEADERS).status_code == 400

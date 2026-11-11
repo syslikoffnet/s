@@ -84,10 +84,14 @@ fun GiftsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val api = vm.api
+    var selectedOwnerId by rememberSaveable { mutableStateOf<Long?>(null) }
     var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
-    selectedOwner?.let { owner ->
-        BackHandler { selectedOwner = null }
-        OwnerGiftsScreen(vm, owner, onBack = { selectedOwner = null }, onToast = onToast, onOpenProfile = onOpenProfile)
+    val owner = selectedOwner?.takeIf { it.tgId == selectedOwnerId } ?: selectedOwnerId?.let {
+        NftOwner(tgId = it, username = null, name = null, nft = 0, onChain = 0, hosted = 0, seenAt = 0)
+    }
+    owner?.let {
+        BackHandler { selectedOwner = null; selectedOwnerId = null }
+        OwnerGiftsScreen(vm, it, onBack = { selectedOwner = null; selectedOwnerId = null }, onToast = onToast, onOpenProfile = onOpenProfile)
         return
     }
 
@@ -290,7 +294,7 @@ fun GiftsScreen(
             val client = api ?: return@launch
             runCatching { client.giftOwners(q = id.toString(), limit = 100).firstOrNull { it.tgId == id } }
                 .onSuccess { owner ->
-                    if (owner != null) selectedOwner = owner else onOpenProfile(id.toString())
+                    if (owner != null) { selectedOwner = owner; selectedOwnerId = owner.tgId } else onOpenProfile(id.toString())
                 }
                 .onFailure { error = it.message ?: "Не удалось открыть профиль" }
         }
@@ -1130,7 +1134,7 @@ fun GiftsScreen(
                     }
                 }
                 items(nftOwnersList, key = { "owner-${it.tgId}" }) { owner ->
-                    NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = { selectedOwner = owner })
+                    NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = { selectedOwner = owner; selectedOwnerId = owner.tgId })
                 }
             }
         }

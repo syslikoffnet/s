@@ -1666,16 +1666,75 @@ class Store:
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         return int(self.scalar(f"SELECT COUNT(*) FROM gifts {clause}", params, 0))
 
-    def profile_gifts(self, tg_id: int, direction: str, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    def search_observed_people(
+        self, query: str = "", *, before_id: int | None = None,
+        exact_id: int | None = None, limit: int = 25, exclude_saved: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Люди, упомянутые в локальных наблюдениях, без скрытых дарителей.
+
+        Имена и username — исторические метаданные, не доказательство идентичности.
+        Стабильный порядок по Telegram ID не зависит от обновления записей.
+        """
+        needle = query.strip().removeprefix("@").casefold()
+        if exact_id is None and not needle:
+            return []
+        filters = ["tg_id > 0"]
+        params: list[Any] = []
+        if exact_id is not None:
+            filters.append("tg_id = ?")
+            params.append(int(exact_id))
+        else:
+            filters.append("(instr(hd_casefold(coalesce(name, '')), ?) > 0 "
+                           "OR instr(hd_casefold(coalesce(username, '')), ?) > 0 "
+                           "OR instr(CAST(tg_id AS TEXT), ?) > 0)")
+            params.extend([needle, needle, needle])
+        if before_id is not None:
+            filters.append("tg_id < ?")
+            params.append(int(before_id))
+        if exclude_saved:
+            filters.append("NOT EXISTS (SELECT 1 FROM targets t WHERE t.tg_user_id = observations.tg_id)")
+        params.append(max(1, min(50, int(limit))) + 1)
+        sql = """
+            WITH observations AS (
+                SELECT tg_id, username, trim(coalesce(first_name, '') || ' ' || coalesce(last_name, '')) AS name,
+                       updated_at AS observed_at, 'peer' AS source FROM peers
+                UNION ALL
+                SELECT owner_tg_id, owner_username, owner_name, seen_at, 'gift_profile' FROM gifts
+                UNION ALL
+                SELECT from_tg_id, from_username, from_name, seen_at, 'gift_sender' FROM gifts
+                 WHERE coalesce(name_hidden, 0) = 0 AND from_tg_id IS NOT NULL
+                UNION ALL
+                SELECT owner_tg_id, owner_username, owner_name, seen_at, 'nft' FROM nft_items
+                 WHERE owner_tg_id IS NOT NULL
+                UNION ALL
+                SELECT owner_tg_id, username, name, detected_at, 'gift_profile' FROM gift_heavy_profiles
+            ), matches AS (
+                SELECT *, row_number() OVER (
+                    PARTITION BY tg_id ORDER BY coalesce(observed_at, 0) DESC,
+                    CASE source WHEN 'peer' THEN 0 WHEN 'gift_profile' THEN 1 ELSE 2 END,
+                    coalesce(username, ''), coalesce(name, '')
+                ) AS rn FROM observations WHERE """ + " AND ".join(filters) + """
+            )
+            SELECT tg_id, username, name, observed_at, source FROM matches
+             WHERE rn = 1 ORDER BY tg_id DESC LIMIT ?
+        """
+        return self.query(sql, params)
+
+    def profile_gifts(self, tg_id: int, direction: str, *, limit: int = 50, offset: int = 0,
+                      before_id: int | None = None) -> list[dict[str, Any]]:
         if direction == "received":
             where = "owner_tg_id = ?"
         elif direction == "sent":
             where = "from_tg_id = ? AND coalesce(name_hidden, 0) = 0"
         else:
             raise ValueError("неизвестное направление")
+        params: list[Any] = [tg_id]
+        if before_id is not None:
+            where += " AND id < ?"
+            params.append(before_id)
+        params.extend([max(1, min(limit, 100)) + 1, max(0, offset)])
         return self.query(
-            f"SELECT * FROM gifts WHERE {where} ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ? OFFSET ?",
-            (tg_id, max(1, min(limit, 100)) + 1, max(0, offset)),
+            f"SELECT * FROM gifts WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?", params
         )
 
     def profile_gift_relations(self, tg_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
