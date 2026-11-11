@@ -228,3 +228,23 @@ def test_migration_backfills_links(tmp_path) -> None:
         assert migrated.get_group(-1009876543210)["link"] == "https://t.me/pubchat"
     finally:
         migrated.close()
+
+
+def test_legacy_sessions_migrate_to_scan(tmp_path) -> None:
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, session_file TEXT NOT NULL,
+            tg_user_id INTEGER, username TEXT, first_name TEXT, phone TEXT,
+            status TEXT NOT NULL DEFAULT 'new', last_error TEXT, added_at INTEGER NOT NULL,
+            last_used_at INTEGER
+        )""")
+        conn.execute("INSERT INTO sessions (name, session_file, status, added_at) VALUES ('legacy', 'legacy.session', 'active', 1)")
+    db = Store(path)
+    try:
+        assert db.get_session("legacy")["purpose"] == "scan"
+        assert db.session_names() == ["legacy"]
+    finally:
+        db.close()

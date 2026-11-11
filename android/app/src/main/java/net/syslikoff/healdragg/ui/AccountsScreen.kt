@@ -79,7 +79,7 @@ fun AccountsScreen(vm: AppViewModel, onBack: () -> Unit, onToast: (String) -> Un
     var toDelete by remember { mutableStateOf<SessionInfo?>(null) }
     var importing by remember { mutableStateOf(false) }
     var accountPurpose by rememberSaveable { mutableStateOf("scan") }
-    var importPurpose by remember { mutableStateOf("scan") }
+    var importPurpose by rememberSaveable { mutableStateOf("scan") }
     var businessSession by remember { mutableStateOf<SessionInfo?>(null) }
     var businessData by remember { mutableStateOf<JSONObject?>(null) }
     var businessError by remember { mutableStateOf<String?>(null) }
