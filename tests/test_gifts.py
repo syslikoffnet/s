@@ -229,7 +229,7 @@ async def test_crawl_nft_chain_collects_owners(store: Store, tmp_path) -> None:
         FakeChainPool(FakeChainClient(items)),
         store,
         settings,
-        requests=10,
+        requests=2,
         discover=False,
     )
     assert result["items"] == 2
@@ -238,7 +238,7 @@ async def test_crawl_nft_chain_collects_owners(store: Store, tmp_path) -> None:
     assert result["on_chain"] == 1
     assert result["hosted"] == 1
     assert result["inventory"]["total"] == 2
-    assert store.next_nft_collection() is None
+    assert store.next_nft_collection()["cursor"] == 3
 
     wallet = store.nft_items(chain="wallet")
     assert len(wallet) == 1 and wallet[0]["owner_tg_id"] == 777

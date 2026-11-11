@@ -283,6 +283,16 @@ CREATE INDEX IF NOT EXISTS idx_nft_owner  ON nft_items(owner_tg_id, seen_at DESC
 CREATE INDEX IF NOT EXISTS idx_nft_gift   ON nft_items(gift_id);
 
 -- Коллекции уникальных подарков: перебираем slug'и по номерам и добираем владельцев.
+-- Лимит запроса и незавершённый запрос хранятся до обращения к Telegram.
+CREATE TABLE IF NOT EXISTS nft_chain_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, budget INTEGER NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0, discover INTEGER NOT NULL, discovery_done INTEGER NOT NULL DEFAULT 0,
+    discovery_used INTEGER NOT NULL DEFAULT 0, discovery_index INTEGER NOT NULL DEFAULT 0, discovery_ids TEXT,
+    slug TEXT, total INTEGER, session TEXT, session_tg_id INTEGER, status TEXT NOT NULL DEFAULT 'running',
+    inflight TEXT, new_items INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS nft_collections (
     slug_base     TEXT PRIMARY KEY,
     gift_id       INTEGER,
@@ -540,6 +550,12 @@ class Store:
         heavy_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gift_heavy_tasks)")}
         if heavy_cols and "session_tg_id" not in heavy_cols:
             self._soft("ALTER TABLE gift_heavy_tasks ADD COLUMN session_tg_id INTEGER")
+        chain_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(nft_chain_runs)")}
+        for column, ddl in {"discovery_used": "INTEGER NOT NULL DEFAULT 0",
+                            "discovery_index": "INTEGER NOT NULL DEFAULT 0",
+                            "discovery_ids": "TEXT", "session": "TEXT", "session_tg_id": "INTEGER"}.items():
+            if chain_cols and column not in chain_cols:
+                self._soft(f"ALTER TABLE nft_chain_runs ADD COLUMN {column} {ddl}")
         self._conn.commit()
 
     @contextmanager
@@ -1882,6 +1898,71 @@ class Store:
             (max(1, min(20000, limit)),),
         )
 
+    def create_nft_chain_run(self, budget: int, discover: bool, slug: str | None, total: int | None,
+                             session: str | None = None, session_tg_id: int | None = None) -> int:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET status='stopped', updated_at=? "
+                         "WHERE status IN ('paused', 'error')", (now_ts(),))
+            cursor = conn.execute(
+                "INSERT INTO nft_chain_runs(budget, discover, slug, total, session, session_tg_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (budget, int(discover), slug, total, session, session_tg_id, now_ts(), now_ts()),
+            )
+            return int(cursor.lastrowid)
+
+    def nft_chain_run(self, run_id: int | None = None) -> dict[str, Any] | None:
+        if run_id is None:
+            return self.query_one("SELECT * FROM nft_chain_runs ORDER BY id DESC LIMIT 1")
+        return self.query_one("SELECT * FROM nft_chain_runs WHERE id = ?", (run_id,))
+
+    def bind_nft_chain_account(self, run_id: int, session: str, user_id: int) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET session=?, session_tg_id=?, updated_at=? WHERE id=?",
+                         (session, user_id, now_ts(), run_id))
+
+    def reserve_nft_chain_request(self, run_id: int, subject: str) -> bool:
+        with self.tx() as conn:
+            cursor = conn.execute(
+                "UPDATE nft_chain_runs SET used=used+1, discovery_used=discovery_used+?, inflight=?, updated_at=? "
+                "WHERE id=? AND status='running' AND used < budget",
+                (int(subject.startswith("discovery:")), subject, now_ts(), run_id),
+            )
+            return bool(cursor.rowcount)
+
+    def save_nft_chain_catalog(self, run_id: int, entries: list[dict[str, Any]]) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET discovery_ids=?, inflight=NULL, updated_at=? WHERE id=?",
+                         (json.dumps(entries, ensure_ascii=False), now_ts(), run_id))
+
+    def advance_nft_chain_discovery(self, run_id: int, index: int) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET discovery_index=?, inflight=NULL, updated_at=? WHERE id=?",
+                         (index, now_ts(), run_id))
+
+    def finish_nft_chain_discovery(self, run_id: int) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET discovery_done=1, inflight=NULL, updated_at=? WHERE id=?",
+                         (now_ts(), run_id))
+
+    def finish_nft_chain_item(self, run_id: int, base: str, *, cursor: int,
+                              created: bool, owner: bool, on_chain: bool, error: str | None = None) -> None:
+        with self.tx() as conn:
+            conn.execute(
+                "UPDATE nft_collections SET cursor=?, scanned=scanned+1, owners=owners+?, "
+                "on_chain=on_chain+?, errors=errors+?, last_error=coalesce(?, last_error), updated_at=? "
+                "WHERE slug_base=?", (cursor, int(owner), int(on_chain), int(bool(error)), error, now_ts(), base),
+            )
+            conn.execute(
+                "UPDATE nft_chain_runs SET inflight=NULL, new_items=new_items+?, errors=errors+?, "
+                "last_error=coalesce(?, last_error), updated_at=? WHERE id=?",
+                (int(created), int(bool(error)), error, now_ts(), run_id),
+            )
+
+    def set_nft_chain_status(self, run_id: int, status: str, error: str | None = None) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET status=?, last_error=?, updated_at=? WHERE id=?",
+                         (status, error, now_ts(), run_id))
+
     def nft_collections(self, limit: int = 50) -> list[dict[str, Any]]:
         return self.query(
             """
@@ -1947,7 +2028,7 @@ class Store:
         with self.tx() as conn:
             conn.execute(
                 """
-                UPDATE nft_collections SET cursor = ?, scanned = ?,
+                UPDATE nft_collections SET cursor = ?, scanned = scanned + ?,
                        owners = owners + ?, on_chain = on_chain + ?,
                        errors = errors + ?, last_error = coalesce(?, last_error),
                        updated_at = ?

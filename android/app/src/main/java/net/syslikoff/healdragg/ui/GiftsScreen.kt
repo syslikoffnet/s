@@ -100,6 +100,7 @@ fun GiftsScreen(
     var job by remember { mutableStateOf<Job?>(null) }
     var heavyTasks by remember { mutableStateOf<List<Job>>(emptyList()) }
     var heavyErrors by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var chainRun by remember { mutableStateOf<org.json.JSONObject?>(null) }
     var savedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
     var savedRunLimit by remember { mutableStateOf(100) }
     var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
@@ -245,6 +246,7 @@ fun GiftsScreen(
             }
             runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
             runCatching { client.failedHeavyTasks() }.onSuccess { heavyErrors = it }
+            runCatching { client.nftChainStatus() }.onSuccess { chainRun = it }
             delay(3_000)
         }
     }
@@ -505,9 +507,12 @@ fun GiftsScreen(
                             }
                             TextButton(onClick = {
                                 scope.launch {
-                                    api?.cancelJob(current.key)
-                                    job = null
-                                    onToast("Обход отменён")
+                                    runCatching { api?.cancelJob(current.key) ?: false }
+                                        .onSuccess { stopped ->
+                                            if (stopped) { job = null; onToast("Обход остановлен") }
+                                            else error = "Задача уже завершилась"
+                                        }
+                                        .onFailure { error = it.message ?: "Не удалось остановить задачу" }
                                 }
                             }) { Text("Стоп", color = Hd.Bad) }
                         }
@@ -797,6 +802,27 @@ fun GiftsScreen(
 
                 item("chainForm") {
                     HdCard {
+                        val saved = chainRun?.takeIf { it.optString("status") in listOf("paused", "error") }
+                        if (saved != null && job?.kind != "giftchain") {
+                            val used = saved.optInt("used")
+                            val budget = saved.optInt("budget")
+                            Text("Сохранённый поиск: $used из $budget запросов", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
+                            saved.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
+                            if (used < budget) {
+                                OutlinedButton(onClick = {
+                                    scope.launch {
+                                        val client = api ?: return@launch
+                                        runCatching { client.resumeNftChain() }
+                                            .onSuccess { job = it; chainRun = null }
+                                            .onFailure { error = it.message ?: "Не удалось продолжить поиск" }
+                                    }
+                                }, enabled = !busy && job == null) { Text("Продолжить сохранённый поиск") }
+                            } else {
+                                Text("Лимит исчерпан. Новый поиск проверит оставшуюся позицию.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text("Новый поиск начнётся с сохранённых позиций коллекций, но с новым лимитом.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                            Spacer(Modifier.height(10.dp))
+                        }
                         Text(
                             "Поиск NFT по коллекциям",
                             style = MaterialTheme.typography.titleSmall,
@@ -807,7 +833,8 @@ fun GiftsScreen(
                             "Необязательный поиск NFT по номерам коллекций, независимо от выбранного профиля. " +
                                 "Найденные NFT и доступные владельцы попадают в общую базу. " +
                                 "Это может занять много времени и запросов Telegram. " +
-                                "После остановки поиск можно запустить снова с сохранённого места.",
+                                "После перезапуска приложения активный поиск продолжится. После «Стоп» его можно продолжить вручную. " +
+                                "Лимит учитывает вызовы поиска; Telegram может повторить запрос внутри соединения.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Hd.Muted,
                         )
@@ -854,7 +881,7 @@ fun GiftsScreen(
                                 modifier = Modifier.size(18.dp),
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Искать NFT по коллекциям")
+                            Text(if (saved != null) "Начать новый поиск" else "Искать NFT по коллекциям")
                         }
                         if (collections.isNotEmpty()) {
                             Spacer(Modifier.height(10.dp))

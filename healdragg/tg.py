@@ -81,7 +81,8 @@ class RateLimiter:
                 await asyncio.sleep(seconds)
                 last_error = exc
             except (RPCError, OSError, asyncio.TimeoutError) as exc:
-                if type(exc).__name__ in NON_RETRYABLE:
+                if (type(exc).__name__ in NON_RETRYABLE or
+                        getattr(exc, "message", None) == "STARGIFT_SLUG_INVALID"):
                     raise
                 last_error = exc
                 if attempt == attempts:

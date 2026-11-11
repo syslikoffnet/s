@@ -373,6 +373,10 @@ class Api(private val baseUrl: String, private val token: String) {
         return Job.from(obj("api/gifts/nft/profiles", "POST", body))
     }
 
+    suspend fun nftChainStatus(): JSONObject? = obj("api/gifts/chain").obj("task")
+
+    suspend fun resumeNftChain(): Job = Job.from(obj("api/gifts/chain/resume", "POST"))
+
     suspend fun startNftChain(requests: Int = 2000, discover: Boolean = true): Job {
         val body = JSONObject().put("requests", requests).put("discover", discover)
         return Job.from(obj("api/gifts/chain", "POST", body))

@@ -320,6 +320,9 @@ def create_app(settings: Settings) -> Starlette:
             launch_gift_crawl(int(run["id"]))
         for task in state.store.running_heavy_tasks():
             launch_heavy_task(task)
+        chain_run = state.store.nft_chain_run()
+        if chain_run and chain_run["status"] == "running":
+            launch_nft_chain_run(int(chain_run["id"]))
         auto_backup: asyncio.Task | None = None
         if settings.auto_backup:
             async def _backup_once() -> None:
@@ -993,13 +996,83 @@ def create_app(settings: Settings) -> Starlette:
             headers={"Content-Disposition": 'attachment; filename="healdragg-nft.csv"'},
         )
 
+    def launch_nft_chain_run(run_id: int) -> Job:
+        run = state.store.nft_chain_run(run_id)
+        if not run:
+            raise ValueError("Задача поиска NFT не найдена")
+        budget = int(run["budget"])
+        job = Job(key="gifts:chain", kind="giftchain")
+        job.state = {"phase": "восстанавливаю поиск", "done": int(run["used"]),
+                     "total": budget, "found": int(run["new_items"]), "run_id": run_id}
+        state.jobs[job.key] = job
+
+        async def on_progress(progress: dict[str, Any]) -> None:
+            current = state.store.nft_chain_run(run_id)
+            if current:
+                job.state = {**progress, "done": int(current["used"]), "total": budget,
+                             "found": int(current["new_items"]), "run_id": run_id}
+
+        async def runner() -> None:
+            try:
+                current = state.store.nft_chain_run(run_id)
+                if not current:
+                    raise ValueError("Задача поиска NFT не найдена")
+                if int(current["used"]) >= budget and current.get("inflight"):
+                    message = "Лимит исчерпан во время прерванного запроса. Для повтора начните новый поиск."
+                    state.store.set_nft_chain_status(run_id, "paused", message)
+                    job.error = message
+                    return
+                job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
+                async with state.gift_lock:
+                    await crawl_nft_chain(
+                        state.pool, state.store, settings, requests=budget, reporter=on_progress,
+                        discover=bool(run["discover"]), slug=run["slug"], total=run["total"], run_id=run_id,
+                    )
+                current = state.store.nft_chain_run(run_id) or run
+                state.store.set_nft_chain_status(run_id, "done")
+                job.state = {"phase": "готово", "done": int(current["used"]), "total": budget,
+                             "found": int(current["new_items"]), "errors": int(current["errors"]),
+                             "run_id": run_id}
+            except asyncio.CancelledError:
+                # Стоп записывается обработчиком; закрытие процесса оставляет задачу активной.
+                job.state = {**job.state, "phase": "остановлено"}
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.exception("поиск NFT-коллекций прервался")
+                job.error = str(exc)[:300] or "Не удалось продолжить поиск NFT"
+                state.store.set_nft_chain_status(run_id, "error", job.error)
+            finally:
+                job.finished = True
+
+        job.task = asyncio.create_task(runner(), name=job.key)
+        return job
+
+    async def nft_chain_status(request: Request) -> dict[str, Any]:
+        guard(request)
+        run = state.store.nft_chain_run()
+        return {"task": {key: value for key, value in run.items() if key != "discovery_ids"} if run else None}
+
+    async def resume_nft_chain(request: Request) -> dict[str, Any]:
+        guard(request)
+        run = state.store.nft_chain_run()
+        if not run or run["status"] not in ("paused", "error"):
+            raise HTTPException(409, "Нет приостановленного поиска NFT")
+        if state.running("gifts:chain"):
+            raise HTTPException(409, "Поиск NFT уже идёт")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет активного аккаунта Telegram")
+        if int(run["used"]) >= int(run["budget"]):
+            raise HTTPException(409, "Лимит исчерпан — начните новый поиск")
+        state.store.set_nft_chain_status(int(run["id"]), "running")
+        return launch_nft_chain_run(int(run["id"])).as_dict()
+
     async def start_nft_chain(request: Request) -> dict[str, Any]:
         """Массовый обход коллекций уникальных подарков: добираем владельцев."""
         guard(request)
         if not state.store.session_names():
-            raise HTTPException(409, "Нет аккаунта-сканера — войди в Telegram в приложении")
+            raise HTTPException(409, "Нет аккаунта-сканера — войдите в Telegram в приложении")
         if state.running("gifts:chain"):
-            raise HTTPException(409, "Обход NFT-коллекций уже идёт")
+            raise HTTPException(409, "Поиск NFT-коллекций уже идёт")
         body = await _body(request)
         requests_total = body.get("requests")
         requests_total = int(requests_total) if isinstance(requests_total, int) else 500
@@ -1008,46 +1081,10 @@ def create_app(settings: Settings) -> Starlette:
         slug = str(body.get("slug") or "").strip() or None
         total = body.get("total")
         total = int(total) if isinstance(total, int) else None
-
-        job = Job(key="gifts:chain", kind="giftchain")
-        job.state = {"phase": "старт", "done": 0, "total": requests_total, "found": 0}
-        state.jobs["gifts:chain"] = job
-
-        async def on_progress(progress: dict[str, Any]) -> None:
-            job.state = {**progress, "requests": requests_total}
-
-        async def runner() -> None:
-            try:
-                job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                async with state.gift_lock:
-                    result = await crawl_nft_chain(
-                        state.pool,
-                        state.store,
-                        settings,
-                        requests=requests_total,
-                        reporter=on_progress,
-                        discover=discover,
-                        slug=slug,
-                        total=total,
-                    )
-                job.state = {
-                    "phase": "готово",
-                    "done": int(result.get("requests", 0)),
-                    "total": int(result.get("budget", requests_total)),
-                    "found": int(result.get("new", 0)),
-                    "result": result,
-                }
-            except asyncio.CancelledError:
-                job.state = {**job.state, "phase": "отменено"}
-                raise
-            except Exception as exc:  # noqa: BLE001
-                log.exception("обход NFT-коллекций не удался")
-                job.error = str(exc)
-            finally:
-                job.finished = True
-
-        job.task = asyncio.create_task(runner(), name="gifts:chain")
-        return job.as_dict()
+        session = state.store.session_names()[0]
+        session_id = state.store.scalar("SELECT tg_user_id FROM sessions WHERE name = ?", (session,))
+        run_id = state.store.create_nft_chain_run(requests_total, discover, slug, total, session, session_id)
+        return launch_nft_chain_run(run_id).as_dict()
 
     async def start_gift_refresh(request: Request) -> dict[str, Any]:
         """Обновляет уже собранные профили: новые подарки и цены NFT."""
@@ -1619,6 +1656,10 @@ def create_app(settings: Settings) -> Starlette:
     async def cancel(request: Request) -> dict[str, Any]:
         guard(request)
         key = str(request.path_params["key"])
+        if key == "gifts:chain" and state.running(key):
+            run = state.store.nft_chain_run()
+            if run and run["status"] == "running":
+                state.store.set_nft_chain_status(int(run["id"]), "paused")
         if key.startswith("gifts:heavy:") and state.running(key):
             try:
                 state.store.set_heavy_task_status(int(key.rsplit(":", 1)[-1]), "stopped")
@@ -1768,6 +1809,8 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/nft/owners", _route(gifts_nft_owners)),
         Route("/api/gifts/nft/export.csv", _route(gifts_nft_csv)),
         Route("/api/gifts/chain", _route(start_nft_chain), methods=["POST"]),
+        Route("/api/gifts/chain", _route(nft_chain_status), methods=["GET"]),
+        Route("/api/gifts/chain/resume", _route(resume_nft_chain), methods=["POST"]),
         Route("/api/gifts/nft/profiles", _route(start_nft_profiles), methods=["POST"]),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
         Route("/api/gifts/runs", _route(gift_crawl_runs)),
