@@ -209,6 +209,7 @@ async def _saved_gifts(
     *,
     allow_heavy: bool = False,
     on_page: Callable[[list[Any], dict[int, User], int, int | None], Awaitable[None]] | None = None,
+    on_wait: Callable[[int, int | None], Awaitable[None]] | None = None,
 ) -> tuple[list[Any], dict[int, User], bool, int | None]:
     """Читает страницы. Отсутствие фиксируем только при полном стабильном обходе."""
     saved: list[Any] = []
@@ -221,6 +222,8 @@ async def _saved_gifts(
     received = 0
     while received < per_profile:
         limit = min(100, per_profile - received)
+        if on_wait is not None:
+            await on_wait(received, total)
         page = await limiter.call(
             lambda offset=offset, limit=limit: client(
                 GetSavedStarGiftsRequest(peer=peer, offset=offset, limit=limit)
@@ -288,6 +291,13 @@ async def crawl_gifts(
     max_profiles = max(1, min(MAX_PROFILES, int(max_profiles)))
     per_profile = max(10, min(MAX_HEAVY_PER_PROFILE if allow_heavy else MAX_PER_PROFILE, int(per_profile)))
 
+    async def report_stage(phase: str, profiles_done: int = 0, new_gifts: int = 0) -> None:
+        if reporter is not None:
+            await reporter({"phase": phase, "done": profiles_done, "total": max_profiles,
+                            "found": new_gifts, "profiles_done": profiles_done,
+                            "new_gifts": new_gifts})
+
+    await report_stage("подключаю аккаунт для сбора")
     account = await pool.first(sessions)
     if expected_session_user is not None and getattr(account, "user_id", None) != expected_session_user:
         raise ValueError("Выбранный аккаунт изменился или его ID недоступен. Выберите аккаунт заново.")
@@ -301,6 +311,7 @@ async def crawl_gifts(
     if run is None or not run["initialized"]:
         # Числовая строка в Telethon может трактоваться как телефон, а не user ID.
         seed_identifier: Any = int(query) if query.isascii() and query.isdigit() else query
+        await report_stage(f"ищу профиль {query} · ожидание Telegram")
         entity = await limiter.call(lambda: client.get_entity(seed_identifier))
         seed_user = entity if isinstance(entity, User) else None
         if seed_user is None:
@@ -340,6 +351,7 @@ async def crawl_gifts(
 
                     candidates.append(InputPeerUser(owner_id, int(pending["access_hash"])))
                 for candidate in candidates:
+                    await report_stage(f"ищу профиль {owner_id} · ожидание Telegram", scanned, new_count)
                     try:
                         resolved = await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
                         if isinstance(resolved, User) and int(resolved.id) == owner_id:
@@ -352,7 +364,8 @@ async def crawl_gifts(
                 scanned += 1
                 if reporter:
                     await reporter({"phase": "профиль недоступен", "done": scanned,
-                                    "total": max_profiles, "found": new_count})
+                                    "total": max_profiles, "found": new_count,
+                                    "profiles_done": scanned, "new_gifts": new_count})
                 continue
         else:
             if not queue:
@@ -373,6 +386,7 @@ async def crawl_gifts(
                     if sender_id in seen:
                         continue
                     seen.add(sender_id)
+                    await report_stage(f"ищу дарителя {sender_id} · ожидание Telegram", scanned, new_count)
                     try:
                         entity = await limiter.call(
                             lambda sender=sender, sender_id=sender_id: client.get_entity(
@@ -392,7 +406,8 @@ async def crawl_gifts(
                             "deferred": deferred})
             if reporter is not None:
                 await reporter({"phase": f"известный профиль · {display}", "done": scanned,
-                                "total": min(max_profiles, scanned + len(queue)), "found": new_count})
+                                "total": min(max_profiles, scanned + len(queue)), "found": new_count,
+                                "profiles_done": scanned, "new_gifts": new_count})
             continue
         profile_gifts = profile_nft = profile_new = 0
         error: str | None = None
@@ -537,7 +552,7 @@ async def crawl_gifts(
 
         async def process_page(
             gifts: list[Any], users: dict[int, User], received: int, total: int | None,
-            *, display: str = display,
+            *, display: str = display, profiles_done: int = scanned,
         ) -> None:
             for item in gifts:
                 process_item(item, users)
@@ -547,7 +562,19 @@ async def crawl_gifts(
                     "done": received,
                     "total": total or 0,
                     "found": received,
+                    "profiles_done": profiles_done,
+                    "new_gifts": new_count,
+                    "page_received": received,
+                    "page_total": total,
                 })
+
+        async def wait_for_page(received: int, total: int | None, *, display: str = display,
+                                profiles_done: int = scanned) -> None:
+            if reporter is not None:
+                await reporter({"phase": f"запрашиваю подарки · {display} · ожидание Telegram",
+                                "done": received, "total": total or 0, "found": received,
+                                "profiles_done": profiles_done, "new_gifts": new_count,
+                                "page_received": received, "page_total": total})
 
         try:
             peer = utils.get_input_peer(user)
@@ -555,6 +582,7 @@ async def crawl_gifts(
                 client, limiter, peer, per_profile,
                 allow_heavy=allow_heavy,
                 on_page=process_page,
+                on_wait=wait_for_page,
             )
             if heavy_count is not None:
                 store.defer_gift_profile(owner_id, username, display, heavy_count)
@@ -600,6 +628,8 @@ async def crawl_gifts(
                     "done": scanned,
                     "total": min(max_profiles, scanned + len(queue)),
                     "found": new_count,
+                    "profiles_done": scanned,
+                    "new_gifts": new_count,
                 }
             )
 
@@ -724,26 +754,45 @@ async def crawl_nft_profiles(
     у дарителей — свои подарки. Так база растёт по живой сети, без глобального
     поиска пользователей (его у Telegram нет).
     """
+    if reporter is not None:
+        await reporter({"phase": "подбираю владельцев из базы", "done": 0, "total": limit,
+                        "found": 0, "owners_done": 0, "errors": 0})
     owners = store.nft_owners_fresh(limit)
     total = len(owners)
-    if not total:
-        return {
-            "owners": 0,
-            "profiles": 0,
-            "gifts": 0,
-            "new": 0,
-            "nft": 0,
-            "errors": 0,
-            "summary": store.gift_summary(),
-            "results": [],
-        }
-    profiles = gifts = new = nft = errors = 0
+    profiles = gifts = new = nft = errors = owners_done = 0
+    last_error: str | None = None
     results: list[dict[str, Any]] = []
+    if reporter is not None:
+        await reporter({"phase": "владельцы подобраны" if total else "новых владельцев для чтения нет",
+                        "done": 0, "total": limit, "found": 0, "owners_done": 0,
+                        "owners_total": total, "errors": 0})
+    index = 0
+
+    async def report_inner(progress: dict[str, Any]) -> None:
+        if reporter is None:
+            return
+        current = {
+            "phase": progress.get("phase", "читаю профиль"),
+            "done": min(limit, profiles + int(progress.get("profiles_done", 0))),
+            "total": limit,
+            "found": new + int(progress.get("new_gifts", 0)),
+            "owners_done": owners_done, "owners_total": total,
+            "current_owner": index, "errors": errors,
+        }
+        if last_error:
+            current["last_error"] = last_error
+        if progress.get("page_received") is not None:
+            current["page_received"] = progress["page_received"]
+            current["page_total"] = progress.get("page_total")
+        await reporter(current)
+
     for index, owner in enumerate(owners, 1):
         if profiles >= limit:
             break
         owner_id = int(owner["owner_tg_id"])
         query = owner.get("owner_username") or str(owner_id)
+
+        await report_inner({"phase": f"готовлю владельца {query}"})
         try:
             result = await crawl_gifts(
                 pool,
@@ -755,32 +804,33 @@ async def crawl_nft_profiles(
                 per_profile=per_profile,
                 sessions=sessions,
                 skip_known=True,
+                reporter=report_inner,
             )
             profiles += int(result.get("profiles", 0))
             gifts += int(result.get("gifts", 0))
             new += int(result.get("new", 0))
             nft += int(result.get("nft", 0))
+            errors += int(result.get("errors", 0))
+            for row in result.get("results", []):
+                if row.get("error"):
+                    last_error = str(row["error"])[:200]
             results.append({"owner_tg_id": owner_id, "query": query, "new": result.get("new", 0)})
         except Exception as exc:  # noqa: BLE001
             errors += 1
+            last_error = str(exc)[:200] or type(exc).__name__
             log.info("профиль владельца NFT %s: %s", owner_id, exc)
-            results.append({"owner_tg_id": owner_id, "query": query, "error": str(exc)[:200]})
-        if reporter is not None:
-            await reporter(
-                {
-                    "phase": f"владелец {index}/{total}",
-                    "done": index,
-                    "total": total,
-                    "found": new,
-                }
-            )
+            results.append({"owner_tg_id": owner_id, "query": query, "error": last_error})
+        owners_done += 1
+        await report_inner({"phase": f"обработан владелец {index}/{total}"})
     return {
-        "owners": total,
+        "owners": owners_done,
+        "owners_total": total,
         "profiles": profiles,
         "gifts": gifts,
         "new": new,
         "nft": nft,
         "errors": errors,
+        "last_error": last_error,
         "summary": store.gift_summary(),
         "results": results,
     }

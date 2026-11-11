@@ -92,6 +92,7 @@ fun GiftsScreen(
     vm: AppViewModel,
     onToast: (String) -> Unit,
     onOpenProfile: (String) -> Unit = {},
+    onOpenAccounts: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -189,7 +190,7 @@ fun GiftsScreen(
 
     if (showOfferCandidates) {
         BackHandler { showOfferCandidates = false }
-        OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenProfile = { key ->
+        OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts, onOpenProfile = { key ->
             showOfferCandidates = false
             onOpenProfile(key)
         })
@@ -350,7 +351,17 @@ fun GiftsScreen(
                     error = fresh.error
                     onToast("Обход прервался: ${fresh.error}")
                 } else {
-                    onToast(if (fresh.kind == "giftchain") "Поиск завершён: новых NFT ${fresh.found}" else "Готово: подарков ${fresh.found}")
+                    if (fresh.kind == "giftprofiles" && (fresh.state?.optInt("errors") ?: 0) > 0) {
+                        val lastError = fresh.state?.str("last_error")
+                        error = "Сбор завершён с ошибками: ${fresh.state?.optInt("errors") ?: 0}" +
+                            if (lastError != null) ". Последняя ошибка: $lastError" else ""
+                    }
+                    onToast(when (fresh.kind) {
+                        "giftchain" -> "Поиск завершён: новых NFT ${fresh.found}"
+                        "giftprofiles" -> if (fresh.state?.optInt("owners_total") == 0) "Новых владельцев для чтения нет" else
+                            "Обработано профилей: ${fresh.done} · новых подарков: ${fresh.found} · ошибок: ${fresh.state?.optInt("errors") ?: 0}"
+                        else -> "Готово: подарков ${fresh.found}"
+                    })
                 }
                 reload()
                 if (mode == 1 && nftRows.size <= 200 && !nftMoreBusy) loadNft(reset = true)
@@ -889,17 +900,23 @@ fun GiftsScreen(
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    if (current.kind == "giftchain") "Ищу NFT по коллекциям"
-                                    else "Читаю подарки",
+                                    when (current.kind) {
+                                        "giftchain" -> "Ищу NFT по коллекциям"
+                                        "giftprofiles" -> "Читаю подарки владельцев"
+                                        else -> "Читаю подарки"
+                                    },
                                     style = MaterialTheme.typography.titleSmall,
                                     color = Hd.Text,
                                 )
                                 Text(
                                     buildString {
                                         append(current.phase)
-                                        if (current.total > 0) append(" · ${current.done}/${current.total}")
-                                        if (current.kind == "giftchain") append(" · новых NFT ${current.found}")
-                                        else if (current.found > 0) append(" · подарков ${current.found}")
+                                        if (current.kind == "giftprofiles") append(" · профилей ${current.done} из лимита ${current.total} · новых подарков ${current.found}")
+                                        else {
+                                            if (current.total > 0) append(" · ${current.done}/${current.total}")
+                                            if (current.kind == "giftchain") append(" · новых NFT ${current.found}")
+                                            else if (current.found > 0) append(" · подарков ${current.found}")
+                                        }
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Hd.Muted,
@@ -915,6 +932,15 @@ fun GiftsScreen(
                                         .onFailure { error = it.message ?: "Не удалось остановить задачу" }
                                 }
                             }) { Text("Стоп", color = Hd.Bad) }
+                        }
+                        if (current.kind == "giftprofiles") {
+                            current.state?.let { state ->
+                                if (state.has("owners_total")) Text("Владельцев обработано: ${state.optInt("owners_done")} / ${state.optInt("owners_total")} · ошибок: ${state.optInt("errors")}", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                                if (state.has("page_received")) Text("В текущем профиле получено: ${state.optInt("page_received")}" +
+                                    if (!state.isNull("page_total")) " / ${state.optInt("page_total")}" else "", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                                state.str("last_error")?.let { Text("Последняя ошибка: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                            }
+                            Text("Ожидание Telegram может включать ограничение запросов и повторы. Если этап долго не меняется, проверьте сеть и журнал движка.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
                         }
                         current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                         current.state?.optJSONObject("queue")?.let { counts ->
@@ -1059,7 +1085,7 @@ fun GiftsScreen(
                             1 -> "1 — только этот профиль"
                             2 -> "2 — профиль и те, кто ему дарил"
                             3 -> "3 — дарители дарителей"
-                            8 -> "до 8 шагов по дарителям, пока хватает лимита профилей"
+                            8 -> "вся доступная сеть дарителей, пока хватает лимита профилей"
                             else -> "$depth — на $depth шага по сети дарителей"
                         },
                         style = MaterialTheme.typography.labelSmall,

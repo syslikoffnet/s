@@ -37,7 +37,7 @@ import java.math.BigDecimal
 
 /** Только локальный предварительный просмотр. Отправка предложений не реализована. */
 @Composable
-fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (String) -> Unit) {
+fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (String) -> Unit, onOpenAccounts: () -> Unit) {
     val api = vm.api
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
@@ -119,7 +119,9 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 OutlinedButton(onClick = onBack) { Text("Назад к подаркам") }
                 Text("Подбор кандидатов", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
                 Spacer(Modifier.height(6.dp))
-                Text("Только локальный предварительный отбор. Выбор ничего не отправляет и не создаёт оффер.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                Text("Только локальный предварительный отбор. Выбор ничего не отправляет и не создаёт оффер. Автоматическая отправка предложений пока не реализована.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = onOpenAccounts) { Text("Бизнес-бот @echidbot: проверить или подключить") }
+                Text("Откройте карточку нужного аккаунта и проверьте бота. Подключение требует отдельного согласия и само по себе не отправляет предложения.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.height(8.dp))
                 HdTextField(query, { query = it }, "Владелец или NFT", hint = "Имя, @ник, ID или название")
                 HdTextField(maxCount, { maxCount = it }, "Не больше NFT в базе", hint = "Например, 1 или 2", keyboard = KeyboardType.Number)

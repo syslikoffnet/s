@@ -1517,10 +1517,15 @@ def create_app(settings: Settings) -> Starlette:
                         reporter=on_progress,
                     )
                 job.state = {
+                    **job.state,
                     "phase": "готово",
-                    "done": int(result.get("owners", 0)),
-                    "total": int(result.get("owners", 0)),
+                    "done": int(result.get("profiles", 0)),
+                    "total": limit,
                     "found": int(result.get("new", 0)),
+                    "owners_done": int(result.get("owners", 0)),
+                    "owners_total": int(result.get("owners_total", 0)),
+                    "errors": int(result.get("errors", 0)),
+                    "last_error": result.get("last_error"),
                     "result": result,
                 }
             except asyncio.CancelledError:

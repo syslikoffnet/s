@@ -295,7 +295,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                                         Box(Modifier.widthIn(max = 820.dp).fillMaxWidth()) {
                                             screenStates.SaveableStateProvider("gifts") {
-                                                GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
+                                                GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile, onOpenAccounts = { showAccounts = true })
                                             }
                                         }
                                     }
@@ -417,7 +417,7 @@ fun HealdraggApp(vm: AppViewModel, onOpenBattery: () -> Unit) {
                             onOpenAccounts = { showAccounts = true },
                         )
                         tab == Tab.Gifts -> screenStates.SaveableStateProvider("gifts") {
-                            GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile)
+                            GiftsScreen(vm = vm, onToast = toast, onOpenProfile = openProfile, onOpenAccounts = { showAccounts = true })
                         }
                         else -> SettingsScreen(
                             vm = vm,

@@ -869,3 +869,41 @@ def test_offer_candidates_api_is_read_only_and_validated(client: TestClient) -> 
     assert client.post("/api/offers/candidates", headers=HEADERS, json={"limit": True}).status_code == 400
     assert client.post("/api/offers/candidates", headers=HEADERS, json={"gender": []}).status_code == 400
     assert client.post("/api/offers/candidates", headers=HEADERS, json={"send": True}).status_code == 400
+
+
+def test_nft_profiles_job_exposes_inner_progress_and_completion(client: TestClient, monkeypatch) -> None:
+    import asyncio
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    async def crawl(*args, **kwargs):
+        await kwargs["reporter"]({"phase": "жду страницу", "done": 2, "total": 10, "found": 3,
+                                  "owners_done": 0, "owners_total": 4, "errors": 1,
+                                  "last_error": "недоступен"})
+        started.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return {"profiles": 3, "owners": 1, "owners_total": 4, "new": 4,
+                "errors": 1, "last_error": "недоступен"}
+
+    monkeypatch.setattr("healdragg.api.crawl_nft_profiles", crawl)
+    store = client.app.state.hd.store
+    store.add_session("scan", "scan.session")
+    store.upsert_nft_item("Bear-1", owner_tg_id=99, ownership_observed=True)
+    assert client.post("/api/gifts/nft/profiles", headers=HEADERS, json={"limit": 10}).status_code == 200
+    assert started.wait(2)
+    job = next(j for j in client.get("/api/jobs", headers=HEADERS).json() if j["kind"] == "giftprofiles")
+    assert job["state"]["phase"] == "жду страницу" and job["state"]["done"] == 2
+    assert job["state"]["last_error"] == "недоступен" and job["state"]["owners_total"] == 4
+    release.set()
+    for _ in range(20):
+        job = next(j for j in client.get("/api/jobs", headers=HEADERS).json() if j["kind"] == "giftprofiles")
+        if job["finished"]:
+            break
+        import time
+        time.sleep(0.01)
+    assert job["finished"] and job["state"]["phase"] == "готово"
+    assert job["state"]["done"] == 3 and job["state"]["total"] == 10
+    assert job["state"]["found"] == 4 and job["state"]["errors"] == 1
