@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +37,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -49,6 +52,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -115,7 +119,10 @@ fun SettingsScreen(
     ) { uri ->
         val payload = pendingBackup
         pendingBackup = null
-        if (uri == null || payload == null) return@rememberLauncherForActivityResult
+        if (uri == null || payload == null) {
+            backupBusy = false
+            return@rememberLauncherForActivityResult
+        }
         val ok = writeDocument(context, uri, payload)
         backupBusy = false
         onToast(if (ok) "Копия сохранена в выбранный файл" else "Не удалось записать файл")
@@ -226,8 +233,30 @@ fun SettingsScreen(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().imePadding(),
+    val sections = remember { listOf("Движок" to 0, "Оформление" to 2, "Валюта и курсы" to 4,
+        "Telegram и аккаунты" to 6, "Резервные копии" to 10, "Связь" to 12, "О приложении" to 14) }
+    val listState = rememberLazyListState()
+    val currentSection by remember { derivedStateOf {
+        sections.lastOrNull { it.second <= listState.firstVisibleItemIndex }?.first ?: sections.first().first
+    } }
+    var sectionsOpen by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            OutlinedButton(onClick = { sectionsOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("Раздел: $currentSection ▾", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            DropdownMenu(expanded = sectionsOpen, onDismissRequest = { sectionsOpen = false }) {
+                sections.forEach { (label, index) ->
+                    DropdownMenuItem(text = { Text(label) }, onClick = {
+                        sectionsOpen = false
+                        scope.launch { listState.animateScrollToItem(index) }
+                    })
+                }
+            }
+        }
+        LazyColumn(
+        modifier = Modifier.weight(1f),
+        state = listState,
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 30.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -885,6 +914,7 @@ fun SettingsScreen(
                     color = Hd.Dim,
                 )
             }
+        }
         }
     }
 

@@ -16,6 +16,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -47,6 +48,7 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
     var location by rememberSaveable { mutableStateOf("any") }
     var gender by rememberSaveable { mutableStateOf("any") }
     var country by rememberSaveable { mutableStateOf("any") }
+    var advancedOpen by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var rows by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var next by remember { mutableStateOf<String?>(null) }
@@ -121,6 +123,13 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 Spacer(Modifier.height(8.dp))
                 HdTextField(query, { query = it }, "Владелец или NFT", hint = "Имя, @ник, ID или название")
                 HdTextField(maxCount, { maxCount = it }, "Не больше NFT в базе", hint = "Например, 1 или 2", keyboard = KeyboardType.Number)
+                TextButton(onClick = { advancedOpen = !advancedOpen }) {
+                    Text(if (advancedOpen) "Скрыть дополнительные фильтры" else "Дополнительные фильтры ▾")
+                }
+                if (!advancedOpen && (minimum.isNotBlank() || backdrop.isNotBlank() || location != "any" || gender != "any" || country != "any")) {
+                    Text("Дополнительные фильтры заданы", color = Hd.Accent, style = MaterialTheme.typography.labelSmall)
+                }
+                if (advancedOpen) {
                 HdTextField(minimum, { minimum = it }, "Оценка от, USD", hint = "Например, 25.50", keyboard = KeyboardType.Decimal)
                 HdTextField(backdrop, { backdrop = it }, "Название фона", hint = "Например, Black")
                 Text("Местоположение по наблюдению", color = Hd.Muted, style = MaterialTheme.typography.labelMedium)
@@ -133,6 +142,7 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(selected = gender == "female", onClick = { gender = if (gender == "female") "any" else "female" }, label = { Text("Женский") })
                     FilterChip(selected = country == "RU", onClick = { country = if (country == "RU") "any" else "RU" }, label = { Text("RU") })
+                }
                 }
                 Button(onClick = { load(true) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Загрузка…" else "Применить фильтры") }
                 Text("Число NFT — только найденное в базе, не полный инвентарь. Пол и страна — предположения по имени. Адрес не доказывает владельца, отсутствие адреса не доказывает владение в Telegram. Оценка и владелец могут устареть.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
