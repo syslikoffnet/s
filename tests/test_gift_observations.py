@@ -384,3 +384,21 @@ async def test_numeric_seed_is_resolved_as_user_id_and_can_refresh_known(setup):
                       skip_known=not bool(store.gift_crawl(run)["refresh_known"]))
     assert seen == [1, 1]
     assert len(store.list_gifts(1)) == 2
+
+
+async def test_profile_gift_refresh_rejects_reassigned_username(setup):
+    store, client, pool, settings = setup
+
+    async def wrong_user(value):
+        assert value == "oldname"
+        return types.User(id=999, access_hash=5, username="oldname")
+
+    client.get_entity = wrong_user
+    run = store.create_gift_crawl("oldname", 1, 1, 100, refresh_known=True, expected_owner=1)
+    store.reopen()
+    saved = store.gift_crawl(run)
+    assert saved["expected_owner"] == 1
+    with pytest.raises(ValueError, match="больше не принадлежит"):
+        await crawl_gifts(pool, store, settings, saved["query"], run_id=run,
+                          expected_owner=saved["expected_owner"], skip_known=False)
+    assert store.list_gifts(1) == []

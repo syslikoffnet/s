@@ -688,3 +688,21 @@ def test_open_profile_preserves_saved_and_does_not_start_watch(client: TestClien
     created = client.post("/api/profiles/open", json={"query": "@newperson"}, headers=HEADERS)
     assert created.status_code == 200
     assert app.store.get_target(1234567)["watch_enabled"] == 0
+
+
+def test_profile_gift_collect_records_owner_and_refresh_flag(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = client.app.state.hd
+    app.store.add_session("live", str(app.settings.sessions_dir / "live.session"), status="active")
+    from healdragg import api
+
+    async def fake_crawl(*args, **kwargs):
+        return {"gifts": 0, "new": 0}
+
+    monkeypatch.setattr(api, "crawl_gifts", fake_crawl)
+    result = client.post(f"/api/targets/{DEMO_TARGET}/gifts/collect", headers=HEADERS)
+    assert result.status_code == 200
+    run_id = result.json()["state"]["run_id"]
+    run = app.store.gift_crawl(run_id)
+    assert run["expected_owner"] == DEMO_TARGET
+    assert run["refresh_known"] == 1
+    assert run["query"] == "demo_user"

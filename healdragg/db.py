@@ -536,6 +536,8 @@ class Store:
         crawl_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gift_crawl_runs)")}
         if "refresh_known" not in crawl_cols:
             self._soft("ALTER TABLE gift_crawl_runs ADD COLUMN refresh_known INTEGER NOT NULL DEFAULT 0")
+        if "expected_owner" not in crawl_cols:
+            self._soft("ALTER TABLE gift_crawl_runs ADD COLUMN expected_owner INTEGER")
         gift_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gifts)")}
         gift_additions = {
             "slug": "TEXT",
@@ -1410,11 +1412,11 @@ class Store:
         row = self.query_one("SELECT document FROM gift_stickers WHERE gift_id = ?", (gift_id,))
         return bytes(row["document"]) if row else None
 
-    def create_gift_crawl(self, query: str, depth: int, max_profiles: int, per_profile: int, *, refresh_known: bool = False) -> int:
+    def create_gift_crawl(self, query: str, depth: int, max_profiles: int, per_profile: int, *, refresh_known: bool = False, expected_owner: int | None = None) -> int:
         with self.tx() as conn:
             cur = conn.execute(
-                "INSERT INTO gift_crawl_runs(query, depth, max_profiles, per_profile, created_at, updated_at, refresh_known) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)", (query, depth, max_profiles, per_profile, now_ts(), now_ts(), int(refresh_known)),
+                "INSERT INTO gift_crawl_runs(query, depth, max_profiles, per_profile, created_at, updated_at, refresh_known, expected_owner) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (query, depth, max_profiles, per_profile, now_ts(), now_ts(), int(refresh_known), expected_owner),
             )
             return int(cur.lastrowid)
 

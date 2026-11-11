@@ -575,7 +575,7 @@ data class NftItem(
 ) {
     val nftLink: String get() = "https://t.me/nft/$slug"
     val ownerHandle: String
-        get() = ownerUsername?.let { "@$it" } ?: ownerName ?: "id $ownerTgId"
+        get() = ownerUsername?.let { "@$it" } ?: ownerName ?: if (ownerTgId > 0) "id $ownerTgId" else "Владелец неизвестен"
     val priceLabel: String?
         get() = when {
             resellAmount > 0 -> Money.both(resellAmount, "STARS")?.let { "$it · ресейл" }

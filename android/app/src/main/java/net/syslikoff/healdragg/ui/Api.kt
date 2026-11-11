@@ -166,6 +166,9 @@ class Api(private val baseUrl: String, private val token: String) {
         return NftItem.from(data.getJSONObject("item"))
     }
 
+    suspend fun collectProfileGifts(tgId: Long): Job =
+        Job.from(obj("api/targets/$tgId/gifts/collect", "POST", JSONObject()))
+
     suspend fun profileGifts(tgId: Long, direction: String, offset: Int = 0): ProfileGiftPage {
         val data = obj("api/targets/$tgId/gifts?direction=$direction&limit=50&offset=$offset")
         return ProfileGiftPage(jsonObjects(data.arr("rows")).map(GiftItem::from), data.bool("has_more"))

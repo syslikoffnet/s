@@ -132,7 +132,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
             return@Column
         }
 
-        Text("Голубой — чат, зелёный — общение; жёлтая/розовая стрелка — подарок от дарителя к профилю записи. Это наблюдения, не гарантия текущего владения или прямой передачи NFT.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
+        Text("Голубой — чат, зелёный — общение; жёлтая/розовая стрелка — подарок от дарителя к профилю записи. Это наблюдения, не гарантия текущего владения или прямой передачи NFT. На графике до 40 чатов и 72 человек.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
         Box(
             Modifier
                 .fillMaxWidth()

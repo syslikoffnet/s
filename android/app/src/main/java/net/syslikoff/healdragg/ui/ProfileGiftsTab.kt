@@ -55,6 +55,11 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
         } finally { loading = false }
     }
     LaunchedEffect(tgId, direction, reload, api) { load(true) }
+    LaunchedEffect(tgId, api) {
+        val client = api ?: return@LaunchedEffect
+        runCatching { client.jobs().firstOrNull { it.kind == "gifts" && it.targetId == tgId && !it.finished } }
+            .onSuccess { if (job == null && !starting) job = it }
+    }
     LaunchedEffect(job?.key) {
         val key = job?.key ?: return@LaunchedEffect
         val client = api ?: return@LaunchedEffect
@@ -91,7 +96,7 @@ fun ProfileGiftsTab(vm: AppViewModel, tgId: Long, onToast: (String) -> Unit, onO
             starting = true
             scope.launch {
                 try {
-                    job = api?.crawlGifts(tgId.toString(), depth = 1, maxProfiles = 1, refreshKnown = true)
+                    job = api?.collectProfileGifts(tgId)
                         ?: throw ApiException(0, "Движок не запущен")
                 } catch (exc: CancellationException) { throw exc }
                 catch (exc: Exception) { error = exc.message }

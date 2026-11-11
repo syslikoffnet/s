@@ -1556,7 +1556,7 @@ def create_app(settings: Settings) -> Starlette:
         if not run:
             raise ValueError("Обход не найден")
         key = f"gifts:run:{run_id}"
-        job = Job(key=key, kind="gifts")
+        job = Job(key=key, kind="gifts", target_id=run.get("expected_owner"))
         job.state = {"phase": "ожидаю очередь", "done": 0, "total": 0, "found": 0, "run_id": run_id}
         state.jobs[key] = job
 
@@ -1575,6 +1575,7 @@ def create_app(settings: Settings) -> Starlette:
                         depth=int(run["depth"]), max_profiles=int(run["max_profiles"]),
                         per_profile=int(run["per_profile"]), reporter=on_progress,
                         skip_known=not bool(run.get("refresh_known")), run_id=run_id,
+                        expected_owner=run.get("expected_owner"),
                     )
                 counts = state.store.gift_crawl_counts(run_id)
                 status = "paused" if counts["pending"] else "done"
@@ -1637,6 +1638,20 @@ def create_app(settings: Settings) -> Starlette:
                 conn.execute("UPDATE gift_crawl_queue SET state = 'pending', error = NULL "
                              "WHERE run_id = ? AND state = 'unavailable'", (run_id,))
         state.store.gift_crawl_status(run_id, "running")
+        return launch_gift_crawl(run_id).as_dict()
+
+    async def collect_profile_gifts(request: Request) -> dict[str, Any]:
+        guard(request)
+        tg_id = request.path_params["tg_id"]
+        target = state.store.get_target(tg_id)
+        if not target:
+            raise HTTPException(404, "Профиль не найден")
+        if not state.store.session_names():
+            raise HTTPException(409, "Нет активного аккаунта Telegram")
+        if any(job.kind == "gifts" and job.target_id == tg_id and not job.finished for job in state.jobs.values()):
+            raise HTTPException(409, "Сбор этого профиля уже выполняется")
+        query = target.get("username") or str(tg_id)
+        run_id = state.store.create_gift_crawl(query, 1, 1, 1000, refresh_known=True, expected_owner=tg_id)
         return launch_gift_crawl(run_id).as_dict()
 
     async def start_gifts(request: Request) -> dict[str, Any]:
@@ -1986,6 +2001,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}", _route(delete_target), methods=["DELETE"]),
         Route("/api/targets/{tg_id:int}/groups", _route(target_groups)),
         Route("/api/targets/{tg_id:int}/gifts", _route(profile_gifts)),
+        Route("/api/targets/{tg_id:int}/gifts/collect", _route(collect_profile_gifts), methods=["POST"]),
         Route("/api/search/gifts", _route(search_gifts)),
         Route("/api/search/nft", _route(search_unique_gift), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/links", _route(target_links)),
