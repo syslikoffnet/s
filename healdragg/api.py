@@ -29,7 +29,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import __version__, business, offers
+from . import __version__, business, offer_check, offers
 from .activity import collect_activity
 from .backup import (
     MAX_ARCHIVE_BYTES,
@@ -1704,6 +1704,12 @@ def create_app(settings: Settings) -> Starlette:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    async def offer_verify(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        async with state.session_mutation_lock:
+            return await offer_check.check(state.store, state.pool, body)
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -2193,6 +2199,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
         Route("/api/offers/candidates", _route(offer_candidates), methods=["POST"]),
         Route("/api/offers/preview", _route(offer_plan), methods=["POST"]),
+        Route("/api/offers/verify", _route(offer_verify), methods=["POST"]),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),

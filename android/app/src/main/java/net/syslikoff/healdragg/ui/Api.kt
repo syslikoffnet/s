@@ -76,6 +76,9 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun offerPreview(settings: JSONObject): JSONObject =
         obj("api/offers/preview", "POST", settings, PROFILE_TIMEOUT)
 
+    suspend fun verifyOffer(body: JSONObject): JSONObject =
+        obj("api/offers/verify", "POST", body, PROFILE_TIMEOUT)
+
     suspend fun businessBot(name: String, connect: Boolean = false): JSONObject {
         val path = "api/sessions/${URLEncoder.encode(name, "UTF-8")}/business-bot"
         return if (connect) obj(path, "POST", JSONObject().put("confirm", true), PROFILE_TIMEOUT)

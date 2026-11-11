@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +68,10 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
     var planJson by rememberSaveable { mutableStateOf<String?>(null) }
     val plan = remember(planJson) { planJson?.let { JSONObject(it) } }
     var planBusy by remember { mutableStateOf(false) }
+    var offerSession by rememberSaveable { mutableStateOf("") }
+    var verifying by remember { mutableStateOf(false) }
+    var verified by remember { mutableStateOf<JSONObject?>(null) }
+    val offerSessions = vm.sessions.filter { it.active && it.purpose == "offers" }
 
     fun filters(): JSONObject {
         val body = JSONObject().put("query", query.trim()).put("location", location)
@@ -145,6 +150,25 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
         }
     }
 
+    fun verify(row: JSONObject) {
+        if (verifying) return
+        val client = api ?: run { error = "Движок не запущен"; return }
+        if (offerSessions.none { it.name == offerSession }) {
+            error = "Выберите активный аккаунт предложений"
+            return
+        }
+        val body = JSONObject().put("session", offerSession).put("slug", row.optString("slug"))
+            .put("seller_id", row.optLong("owner_tg_id"))
+        verifying = true
+        error = null
+        scope.launch {
+            try { verified = client.verifyOffer(body) }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось получить данные Telegram" }
+            finally { verifying = false }
+        }
+    }
+
     LaunchedEffect(api) { if (api != null && !loaded) load(true) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -188,6 +212,19 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 Text("Число NFT — только найденное в базе, не полный инвентарь. Пол и страна — предположения по имени. Адрес не доказывает владельца, отсутствие адреса не доказывает владение в Telegram. Оценка и владелец могут устареть.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
             }
         }
+        item("verify-account") {
+            HdCard {
+                Text("Проверка в Telegram", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                Text("Выберите аккаунт предложений и проверьте NFT в списке или черновике. Это только снимок: сообщения не отправляются.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    offerSessions.forEach { session ->
+                        FilterChip(selected = offerSession == session.name, onClick = { offerSession = session.name },
+                            label = { Text(session.username?.let { "@$it" } ?: session.name) })
+                    }
+                }
+                if (offerSessions.isEmpty()) Text("Нет активного аккаунта предложений. Добавьте его в аккаунтах.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
+            }
+        }
         item("plan-settings") {
             HdCard {
                 Text("Автоподбор партии · черновик", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
@@ -224,6 +261,9 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                     Text("${row.optString("slug")} · @${row.optString("owner_username")}", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
                     Text("Черновик: ${row.optLong("amount")} ${row.optString("currency")} · старая оценка $${BigDecimal.valueOf(row.optLong("value_usd_cents"), 2).toPlainString()}", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
                     TextButton(onClick = { clipboard.setText(AnnotatedString(row.optString("command"))) }) { Text("Скопировать команду для чата владельца") }
+                    OutlinedButton(onClick = { verify(row) }, enabled = !verifying) {
+                        Text(if (verifying) "Проверяю…" else "Проверить в Telegram")
+                    }
                 }
             }
         }
@@ -245,6 +285,9 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                     OutlinedButton(onClick = { onOpenProfile(ownerId.toString()) }) { Text("Профиль") }
                 }
                 if (selected == slug) {
+                    OutlinedButton(onClick = { verify(row) }, enabled = !verifying) {
+                        Text(if (verifying) "Проверяю…" else "Проверить в Telegram")
+                    }
                     Text("Ссылка: https://t.me/nft/$slug", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
                     OutlinedButton(onClick = { clipboard.setText(AnnotatedString("https://t.me/nft/$slug")) }) { Text("Скопировать ссылку") }
                 }
@@ -254,5 +297,16 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
             OutlinedButton(onClick = { load(false) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Показать ещё") }
             Text("Следующая страница использует последние применённые фильтры.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
         }
+    }
+    verified?.let { result ->
+        val bot = result.optJSONObject("bot")
+        val botOk = bot != null && bot.optString("status") == "connected" && bot.optBoolean("all_chats") && bot.arr("missing_rights").length() == 0
+        val value = if (result.isNull("value_usd_cents")) "нет оценки" else "$" + BigDecimal.valueOf(result.optLong("value_usd_cents"), 2).toPlainString()
+        AlertDialog(
+            onDismissRequest = { verified = null },
+            title = { Text("Снимок из Telegram") },
+            text = { Text("${result.optString("slug")} · @${result.optString("seller_username")} · ID ${result.optLong("seller_id")}\n\nВладелец NFT: ${if (result.optBoolean("owner_matches")) "совпадает" else "не подтверждён или изменился"}\nUsername: ${if (result.optBoolean("username_matches")) "совпадает" else "не подтверждён или изменился"}\nОценка Telegram: $value\nАккаунт ID ${result.optLong("account_id")} · Premium: ${if (result.optBoolean("premium")) "да" else "не подтверждён"}\nБизнес-бот: ${if (botOk) "подключён, проверенные права и доступ к чатам есть" else "проверьте настройки в аккаунтах"}\nПроверено: ${fullDate(result.optLong("checked_at"))}\n\n${result.optString("notice")} Курс и расчёт черновика здесь не проверяются; оценка Telegram не обязательно рыночная. Данные могут измениться после проверки.") },
+            confirmButton = { TextButton(onClick = { verified = null }) { Text("Закрыть") } },
+        )
     }
 }

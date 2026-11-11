@@ -920,3 +920,20 @@ def test_offer_preview_is_authenticated_and_never_sends(client: TestClient):
     assert data.json()["rows"][0]["amount"] == 550
     assert client.post("/api/offers/preview", json={**params, "send": True}, headers=HEADERS).status_code == 400
     assert not client.app.state.hd.jobs
+
+
+def test_offer_verify_api_is_protected_and_no_send_route(client: TestClient, monkeypatch):
+    from healdragg import offer_check
+
+    called = []
+
+    async def check(store, pool, body):
+        called.append(body)
+        return {"owner_matches": False}
+
+    monkeypatch.setattr(offer_check, "check", check)
+    body = {"session": "writer", "slug": "Bear-1", "seller_id": 42}
+    assert client.post("/api/offers/verify", json=body).status_code == 401
+    assert client.post("/api/offers/verify", headers=HEADERS, json=body).json() == {"owner_matches": False}
+    assert called == [body]
+    assert client.post("/api/offers/send", headers=HEADERS, json={}).status_code == 404
