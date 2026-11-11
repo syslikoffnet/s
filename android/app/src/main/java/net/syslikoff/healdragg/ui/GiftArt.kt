@@ -72,3 +72,65 @@ internal fun GiftArtwork(slug: String?, title: String, size: Dp, fallback: @Comp
         modifier = Modifier.size(size).clip(RoundedCornerShape(12)),
     )
 }
+
+private data class RegularArt(
+    val bitmap: ImageBitmap? = null,
+    val composition: com.airbnb.lottie.LottieComposition? = null,
+)
+
+/** Оригинальный стикер Telegram, по идентификатору подарка, а не по названию. */
+@Composable
+internal fun RegularGiftArtwork(
+    api: Api?, giftId: Long, title: String, size: Dp, fallback: @Composable () -> Unit,
+) {
+    val art by produceState<RegularArt?>(initialValue = null, key1 = api, key2 = giftId) {
+        if (api == null || giftId <= 0) return@produceState
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = api.giftArt(giftId)
+                if (bytes.size < 4 || bytes.size > 2_000_000) return@runCatching null
+                if (bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
+                    val json = java.util.zip.GZIPInputStream(bytes.inputStream()).use { stream ->
+                        val output = ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val n = stream.read(buffer)
+                            if (n < 0) break
+                            if (output.size() + n > 8_000_000) return@runCatching null
+                            output.write(buffer, 0, n)
+                        }
+                        output.toByteArray()
+                    }
+                    val composition = com.airbnb.lottie.LottieCompositionFactory
+                        .fromJsonInputStreamSync(json.inputStream(), "gift-$giftId").value
+                    composition?.let { RegularArt(composition = it) }
+                } else {
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                    if (opts.outWidth <= 0 || opts.outHeight <= 0 || opts.outWidth > 4096 || opts.outHeight > 4096) {
+                        return@runCatching null
+                    }
+                    val sample = BitmapFactory.Options().apply {
+                        inSampleSize = maxOf(1, maxOf(opts.outWidth, opts.outHeight) / 512)
+                    }
+                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, sample)?.asImageBitmap()
+                    bitmap?.let { RegularArt(bitmap = it) }
+                }
+            }.getOrNull()
+        }
+    }
+    when {
+        art?.composition != null -> com.airbnb.lottie.compose.LottieAnimation(
+            composition = art?.composition,
+            progress = { 0.5f },
+            modifier = Modifier.size(size),
+        )
+        art?.bitmap != null -> Image(
+            bitmap = art!!.bitmap!!,
+            contentDescription = "Изображение подарка $title",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(size),
+        )
+        else -> fallback()
+    }
+}

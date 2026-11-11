@@ -299,3 +299,15 @@ def test_wallet_host_is_not_invented_owner(store: Store):
     assert row["owner_tg_id"] is None
     assert row["owner_username"] is None
     assert row["owner_address"] == "EQwallet"
+
+
+async def test_scan_saves_original_sticker_reference(setup):
+    store, client, _, _ = setup
+    document = types.Document(id=123, access_hash=1, file_reference=b"reference",
+                              date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+                              mime_type="application/x-tgsticker", size=100, dc_id=1, attributes=[])
+    ordinary = gift(1)
+    ordinary.gift.sticker = document
+    client.pages[(1, "")] = page([ordinary])
+    await scan(setup, 1)
+    assert store.gift_sticker(44) == bytes(document)

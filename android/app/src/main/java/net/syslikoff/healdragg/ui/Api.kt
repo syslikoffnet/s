@@ -349,6 +349,9 @@ class Api(private val baseUrl: String, private val token: String) {
         return data.obj("counts") ?: JSONObject()
     }
 
+    suspend fun giftArt(giftId: Long): ByteArray =
+        raw("api/gifts/art/$giftId", timeoutMillis = 45_000)
+
     suspend fun giftRuns(): List<JSONObject> = jsonObjects(obj("api/gifts/runs").arr("rows"))
 
     suspend fun resumeGiftRun(id: Long): Job = Job.from(obj("api/gifts/runs/$id/resume", "POST"))

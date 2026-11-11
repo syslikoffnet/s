@@ -454,6 +454,7 @@ data class GiftItem(
     val burned: Boolean = false,
     val presence: String = "visible",
     val attributes: String? = null,
+    val giftId: Long = 0,
 ) {
     val ownerHandle: String
         get() = ownerUsername?.let { "@$it" } ?: "id $ownerTgId"
@@ -494,6 +495,7 @@ data class GiftItem(
             burned = o.optInt("burned") == 1,
             presence = o.str("presence") ?: "visible",
             attributes = o.str("raw"),
+            giftId = o.num("gift_id"),
         )
     }
 }

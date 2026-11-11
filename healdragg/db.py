@@ -218,6 +218,10 @@ CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
 
 -- Отложенные тяжёлые профили и история наблюдений владельцев NFT.
 -- Очередь обхода сохраняется независимо от процесса и экрана.
+-- Ссылка на оригинальный стикер Telegram; сам файл загружается по требованию.
+CREATE TABLE IF NOT EXISTS gift_stickers (
+    gift_id INTEGER PRIMARY KEY, document BLOB NOT NULL, updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS gift_crawl_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
     depth INTEGER NOT NULL, max_profiles INTEGER NOT NULL, per_profile INTEGER NOT NULL,
@@ -1327,6 +1331,20 @@ class Store:
                 "ON CONFLICT(owner_tg_id) DO UPDATE SET completed_at = excluded.completed_at",
                 (owner, now_ts()),
             )
+
+    def remember_gift_sticker(self, gift_id: int, document: bytes) -> None:
+        if gift_id <= 0 or not document or len(document) > 100_000:
+            return
+        with self.tx() as conn:
+            conn.execute(
+                "INSERT INTO gift_stickers(gift_id, document, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(gift_id) DO UPDATE SET document=excluded.document, updated_at=excluded.updated_at "
+                "WHERE document != excluded.document", (gift_id, document, now_ts()),
+            )
+
+    def gift_sticker(self, gift_id: int) -> bytes | None:
+        row = self.query_one("SELECT document FROM gift_stickers WHERE gift_id = ?", (gift_id,))
+        return bytes(row["document"]) if row else None
 
     def create_gift_crawl(self, query: str, depth: int, max_profiles: int, per_profile: int) -> int:
         with self.tx() as conn:

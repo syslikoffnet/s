@@ -29,7 +29,7 @@ from telethon.tl.functions.payments import (
     GetStarGiftsRequest,
     GetUniqueStarGiftRequest,
 )
-from telethon.tl.types import PeerUser, StarGiftUnique, User
+from telethon.tl.types import Document, PeerUser, StarGiftUnique, User
 
 from .config import Settings
 from .db import Store
@@ -404,6 +404,9 @@ async def crawl_gifts(
             is_nft = isinstance(gift, StarGiftUnique)
             meta = _unique_meta(gift) if is_nft else {}
             title = _gift_title(gift, gift_id)
+            sticker = getattr(gift, "sticker", None)
+            if not is_nft and isinstance(gift_id, int) and isinstance(sticker, Document):
+                store.remember_gift_sticker(gift_id, bytes(sticker))
             stars = getattr(gift, "stars", None)
             if stars is None and meta.get("value_currency") == "STARS":
                 stars = meta.get("value_amount")

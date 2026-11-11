@@ -30,6 +30,7 @@ from .activity import collect_activity
 from .backup import create_backup, list_backups, recover_from_latest, restore_backup
 from .config import Settings
 from .db import Store
+from .gift_art import GiftArt
 from .gifts import crawl_gifts, crawl_nft_chain, crawl_nft_profiles, refresh_gifts
 from .graph import build_global_graph, build_graph
 from .intel import guess
@@ -101,6 +102,7 @@ class AppState:
                 raise
             self.store = Store(settings.db_path)
         self.pool = SessionPool(settings, self.store)
+        self.gift_art = GiftArt(settings.home, self.store, self.pool)
         self.login = LoginManager(settings, self.store)
         self.jobs: dict[str, Job] = {}
         self.live_at: dict[str, float] = {}
@@ -786,6 +788,17 @@ def create_app(settings: Settings) -> Starlette:
         values = [n.strip() for n in names.split(",") if n.strip()] if names else [query]
         return {"rows": [guess(value).as_dict() for value in values]}
 
+    async def gift_art(request: Request) -> Response:
+        guard(request)
+        gift_id = int(request.path_params["gift_id"])
+        art = await state.gift_art.get(gift_id)
+        if not art:
+            raise HTTPException(404, "Иллюстрация подарка недоступна")
+        data, ext = art
+        content_types = {"tgs": "application/x-tgsticker", "webp": "image/webp",
+                         "png": "image/png", "jpg": "image/jpeg"}
+        return Response(data, media_type=content_types[ext], headers={"Cache-Control": "private, max-age=86400"})
+
     async def gifts_list(request: Request) -> dict[str, Any]:
         guard(request)
         owner_raw = (request.query_params.get("owner") or "").strip()
@@ -1096,7 +1109,7 @@ def create_app(settings: Settings) -> Starlette:
         per_profile = int(per_profile) if isinstance(per_profile, int) else 100
         per_profile = max(10, min(1000, per_profile))
         if not state.store.nft_summary()["owners"]:
-            raise HTTPException(400, "Владельцев NFT ещё нет — сначала соберите NFT-инвентарь")
+            raise HTTPException(400, "Владельцев NFT ещё нет — сначала найдите NFT в коллекциях или профилях")
 
         job = Job(key="gifts:nftprofiles", kind="giftprofiles")
         job.state = {"phase": "старт", "done": 0, "total": limit, "found": 0}
@@ -1627,6 +1640,7 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/targets/{tg_id:int}/profile/refresh", _route(refresh_target_profile), methods=["POST"]),
         Route("/api/targets/{tg_id:int}/photo", _route(target_photo)),
         Route("/api/gifts", _route(gifts_list)),
+        Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),
         Route("/api/gifts/heavy", _route(gifts_heavy)),
         Route("/api/gifts/owners", _route(gifts_all_owners)),

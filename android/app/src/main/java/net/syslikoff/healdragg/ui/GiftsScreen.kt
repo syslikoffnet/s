@@ -184,7 +184,7 @@ fun GiftsScreen(
                 nftHasMore = (if (reset) it.rows.size else nftRows.size) < it.total
                 error = null
             }
-            .onFailure { error = it.message ?: "Не удалось прочитать NFT-инвентарь" }
+            .onFailure { error = it.message ?: "Не удалось прочитать базу NFT" }
     }
 
     fun loadMoreNft() {
@@ -471,7 +471,7 @@ fun GiftsScreen(
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    if (current.kind == "giftchain") "Собираю NFT-инвентарь"
+                                    if (current.kind == "giftchain") "Ищу NFT по коллекциям"
                                     else "Читаю подарки",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = Hd.Text,
@@ -732,15 +732,16 @@ fun GiftsScreen(
                 item("chainForm") {
                     HdCard {
                         Text(
-                            "Массовый сбор NFT-владельцев",
+                            "Поиск NFT по коллекциям",
                             style = MaterialTheme.typography.titleSmall,
                             color = Hd.Text,
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Перебираем уникальные подарки по номерам во всех коллекциях и " +
-                                "запоминаем владельцев. Прогресс хранится в базе — обход можно " +
-                                "останавливать и продолжать, он не начнётся заново.",
+                            "Необязательный поиск NFT по номерам коллекций, независимо от выбранного профиля. " +
+                                "Найденные NFT и доступные владельцы попадают в общую базу. " +
+                                "Это может занять много времени и запросов Telegram. " +
+                                "После остановки поиск можно запустить снова с сохранённого места.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Hd.Muted,
                         )
@@ -765,8 +766,7 @@ fun GiftsScreen(
                         }
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Каждый запрос — одна вещь. 50 000 запросов ≈ 15–20 часов " +
-                                "спокойного темпа, лимиты Telegram приложение соблюдает само.",
+                            "Каждый запрос проверяет один номер. Скорость зависит от Telegram и ограничений аккаунта.",
                             style = MaterialTheme.typography.labelSmall,
                             color = Hd.Dim,
                         )
@@ -788,7 +788,7 @@ fun GiftsScreen(
                                 modifier = Modifier.size(18.dp),
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("Собрать NFT-инвентарь")
+                            Text("Искать NFT по коллекциям")
                         }
                         if (collections.isNotEmpty()) {
                             Spacer(Modifier.height(10.dp))
@@ -981,9 +981,8 @@ fun GiftsScreen(
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "У каждого владельца NFT есть дарители. Читаем их подарки — так база " +
-                                "растёт по живой сети и подтягивает новых людей, а не только тех, " +
-                                "кто попал в инвентарь.",
+                            "Читаем подарки известных владельцев NFT и по доступным дарителям " +
+                                "продолжаем обход. Так можно найти дополнительные профили.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Hd.Muted,
                         )
@@ -1016,7 +1015,7 @@ fun GiftsScreen(
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                if (nftSummary.owners > 0) "Собрать профили владельцев" else "Сначала соберите инвентарь",
+                                if (nftSummary.owners > 0) "Собрать профили владельцев" else "Сначала найдите NFT",
                                 color = Hd.Accent2,
                                 style = MaterialTheme.typography.labelLarge,
                             )
@@ -1126,8 +1125,14 @@ private fun GiftCard(
         contentPadding = PaddingValues(14.dp),
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            GiftArtwork(slug = gift.slug, title = gift.title, size = 68.dp) {
-                GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 68.dp)
+            if (gift.isNft) {
+                GiftArtwork(slug = gift.slug, title = gift.title, size = 68.dp) {
+                    GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 68.dp)
+                }
+            } else {
+                RegularGiftArtwork(api = api, giftId = gift.giftId, title = gift.title, size = 68.dp) {
+                    GiftBadge(title = gift.title, token = gift.title, size = 68.dp)
+                }
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
@@ -1634,8 +1639,14 @@ private fun GiftDetailsDialog(gift: GiftItem, api: Api?, onDismiss: () -> Unit) 
         title = { Text(gift.title) },
         text = {
             Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
-                GiftArtwork(gift.slug, gift.title, 120.dp) {
-                    GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 120.dp)
+                if (gift.isNft) {
+                    GiftArtwork(gift.slug, gift.title, 120.dp) {
+                        GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 120.dp)
+                    }
+                } else {
+                    RegularGiftArtwork(api, gift.giftId, gift.title, 120.dp) {
+                        GiftBadge(title = gift.title, token = gift.title, size = 120.dp)
+                    }
                 }
                 Spacer(Modifier.height(8.dp))
                 Text("Владелец: ${gift.ownerName ?: gift.ownerHandle} · ID ${gift.ownerTgId}")
