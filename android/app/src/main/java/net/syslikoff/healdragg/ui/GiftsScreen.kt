@@ -158,6 +158,10 @@ fun GiftsScreen(
     }
     var chain by rememberSaveable { mutableStateOf("") }
     var giftChain by rememberSaveable { mutableStateOf("") }
+    var giftSort by rememberSaveable { mutableStateOf("discovered") }
+    var giftTotal by remember { mutableStateOf(0) }
+    var giftSnapshot by remember { mutableStateOf(0L) }
+    var giftMoreBusy by remember { mutableStateOf(false) }
     var chainRequests by rememberSaveable { mutableStateOf(2_000) }
     var profileBudget by rememberSaveable { mutableStateOf(200) }
     var nftRows by remember { mutableStateOf<List<NftItem>>(emptyList()) }
@@ -217,11 +221,14 @@ fun GiftsScreen(
         val requestedOwner = ownerQuery.trim().ifBlank { null }
         val onlyNft = nftOnly
         val giftChainArg = giftChain.ifBlank { null }
+        val giftSortArg = giftSort
         loading = true
         try {
-            val page = client.gifts(nftOnly = onlyNft, chain = giftChainArg)
-            if (generation != reloadGeneration || client !== currentApi || onlyNft != nftOnly || giftChainArg != giftChain.ifBlank { null }) return
+            val page = client.gifts(nftOnly = onlyNft, chain = giftChainArg, sort = giftSortArg, lite = true)
+            if (generation != reloadGeneration || client !== currentApi || onlyNft != nftOnly || giftChainArg != giftChain.ifBlank { null } || giftSortArg != giftSort) return
             rows = page.rows
+            giftTotal = page.total
+            giftSnapshot = page.snapshotId
             summary = page.summary
             if (requestOwners) {
                 val owners = client.giftOwners(q = requestedOwner, limit = 500)
@@ -235,6 +242,29 @@ fun GiftsScreen(
             if (generation == reloadGeneration) error = exc.message ?: "Не удалось прочитать подарки"
         } finally {
             if (generation == reloadGeneration) loading = false
+        }
+    }
+
+    fun loadMoreGifts() {
+        val client = api ?: return
+        if (giftMoreBusy || loading || rows.size >= giftTotal) return
+        val generation = reloadGeneration
+        val start = rows.size
+        val snapshot = giftSnapshot
+        val onlyNft = nftOnly
+        val chain = giftChain.ifBlank { null }
+        val sort = giftSort
+        giftMoreBusy = true
+        scope.launch {
+            try {
+                val page = client.gifts(nftOnly = onlyNft, chain = chain, sort = sort, lite = true, offset = start, snapshotId = snapshot)
+                if (generation == reloadGeneration && client === currentApi && onlyNft == nftOnly && chain == giftChain.ifBlank { null } && sort == giftSort) {
+                    rows = (rows + page.rows).distinctBy { it.id }
+                    giftTotal = page.total
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось загрузить подарки" }
+            finally { giftMoreBusy = false }
         }
     }
 
@@ -300,7 +330,7 @@ fun GiftsScreen(
         }
     }
 
-    LaunchedEffect(api, mode, nftOnly, giftChain, ownerQuery) {
+    LaunchedEffect(api, mode, nftOnly, giftChain, giftSort, ownerQuery) {
         if (mode == 2 && ownerQuery.isNotBlank()) delay(400)
         reload()
     }
@@ -311,7 +341,7 @@ fun GiftsScreen(
     }
 
     // При возврате на экран получаем состояние из движка, а не из remember.
-    LaunchedEffect(api, savedRunLimit, chainRunLimit, showDeleted) {
+    LaunchedEffect(api, savedRunLimit, chainRunLimit, showDeleted, mode) {
         val client = api ?: return@LaunchedEffect
         while (true) {
             runCatching { client.jobs() }.onSuccess { jobs ->
@@ -322,9 +352,11 @@ fun GiftsScreen(
                 if (job == null && active != null) job = active
                 heavyTasks = jobs.filter { !it.finished && it.kind in listOf("gift_heavy", "gift_heavy_watch") }
             }
-            runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
-            runCatching { client.failedHeavyTasks() }.onSuccess { heavyErrors = it }
-            runCatching { client.nftChainRuns(limit = chainRunLimit) }.onSuccess { chainRuns = it }
+            if (mode == 3) {
+                runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
+                runCatching { client.failedHeavyTasks() }.onSuccess { heavyErrors = it }
+                runCatching { client.nftChainRuns(limit = chainRunLimit) }.onSuccess { chainRuns = it }
+            }
             if (showDeleted) {
                 runCatching { client.giftRuns(limit = savedRunLimit, archived = true) }.onSuccess { archivedRuns = it }
                 runCatching { client.nftChainRuns(archived = true, limit = chainRunLimit) }.onSuccess { archivedChains = it }
@@ -337,7 +369,7 @@ fun GiftsScreen(
         val key = job?.key ?: return@LaunchedEffect
         val client = api ?: return@LaunchedEffect
         while (true) {
-            delay(2_500)
+            delay(5_000)
             val poll = runCatching { client.jobs().firstOrNull { it.key == key } }
             if (poll.isFailure) continue  // временный сбой API не скрывает текущий обход
             val fresh = poll.getOrNull()
@@ -350,7 +382,7 @@ fun GiftsScreen(
                 // real-time: пока идёт обход, показываем уже найденное
                 // Автообновление не должно сбрасывать загруженные страницы.
                 if (mode == 1 && nftRows.size <= 200 && !nftMoreBusy) loadNft(reset = true)
-                reload()
+                if (mode == 0 && rows.size <= 100 && !giftMoreBusy) reload()
             }
             if (fresh.finished) {
                 if (fresh.error != null) {
@@ -544,6 +576,14 @@ fun GiftsScreen(
                     }
                 }
 
+                item("gift-sort") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = giftSort == "discovered", onClick = { giftSort = "discovered" }, label = { Text("Недавно найдены") }, colors = giftChipColors())
+                        FilterChip(selected = giftSort == "date", onClick = { giftSort = "date" }, label = { Text("Дата подарка") }, colors = giftChipColors())
+                    }
+                    Text("Недавно найдены — порядок добавления в базу, не дата отправки подарка. Список обновляется во время сбора.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+
                 item("gift-address-filter") {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -583,6 +623,12 @@ fun GiftsScreen(
                 items(rows, key = { it.id }) { gift ->
                     GiftCard(gift = gift, api = api, onToast = onToast, onOpenProfile = onOpenProfile,
                         onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
+                }
+                if (rows.isNotEmpty() && rows.size < giftTotal) item("more-gifts") {
+                    OutlinedButton(onClick = { loadMoreGifts() }, enabled = !giftMoreBusy && !loading, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (giftMoreBusy) "Загружаю…" else "Показать ещё · ${rows.size} из $giftTotal")
+                    }
+                    if (job?.finished == false && rows.size > 100) TextButton(onClick = { scope.launch { reload() } }) { Text("Обновить новые находки") }
                 }
             }
 

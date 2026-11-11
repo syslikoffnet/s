@@ -534,7 +534,7 @@ def create_app(settings: Settings) -> Starlette:
     async def graph_global(request: Request) -> dict[str, Any]:
         """Общая карта OSINT: цели ↔ чаты ↔ собеседники одним графом."""
         guard(request)
-        return build_global_graph(
+        return await _safe_io(build_global_graph,
             state.store,
             max_targets=_q_int(request, "targets", 60, 1, 500),
             max_groups=_q_int(request, "chats", 120, 1, 2000),
@@ -989,7 +989,7 @@ def create_app(settings: Settings) -> Starlette:
         target = state.store.get_target(request.path_params["tg_id"])
         if not target:
             raise HTTPException(404, "Цель не найдена")
-        return build_graph(
+        return await _safe_io(build_graph,
             state.store,
             int(target["id"]),
             max_peers=_q_int(request, "max_peers", 200, 10, 500),
@@ -1168,21 +1168,25 @@ def create_app(settings: Settings) -> Starlette:
         query = (request.query_params.get("q") or "").strip() or None
         limit = _q_int(request, "limit", 100, 1, 1000)
         offset = _q_int(request, "offset", 0, 0, 1_000_000)
-        rows = state.store.list_gifts(
-            owner or None,
-            nft_only=nft_only,
-            chain=chain,
-            q=query,
-            limit=limit,
-            offset=offset,
-        )
-        summary = state.store.gift_summary()
-        return {
-            "rows": rows,
-            "summary": summary,
-            "owners": state.store.gift_owners(20),
-            "total": state.store.count_gifts(owner or None, nft_only=nft_only, chain=chain, q=query),
-        }
+        sort = (request.query_params.get("sort") or "date").strip()
+        if sort not in ("date", "discovered"):
+            raise HTTPException(400, "Неизвестная сортировка подарков")
+        lite = _q_bool(request, "lite")
+        snapshot_raw = request.query_params.get("snapshot")
+        if snapshot_raw is not None and (not snapshot_raw.isascii() or not snapshot_raw.isdigit() or len(snapshot_raw) > 18):
+            raise HTTPException(400, "Некорректный снимок списка")
+        requested_snapshot = int(snapshot_raw) if snapshot_raw is not None else None
+
+        def read_page() -> dict[str, Any]:
+            snapshot = requested_snapshot if requested_snapshot is not None else int(state.store.scalar("SELECT coalesce(max(id), 0) FROM gifts", (), 0))
+            rows = state.store.list_gifts(owner or None, nft_only=nft_only, chain=chain,
+                                          q=query, limit=limit, offset=offset, sort=sort, snapshot_id=snapshot)
+            return {"rows": rows, "summary": state.store.gift_summary(), "snapshot_id": snapshot,
+                    "owners": [] if lite else state.store.gift_owners(20),
+                    "total": state.store.count_gifts(owner or None, nft_only=nft_only, chain=chain, q=query, snapshot_id=snapshot)}
+
+        # На большой базе агрегаты не должны блокировать сеть Telegram/event loop.
+        return await _safe_io(read_page)
 
     async def gifts_all_owners(request: Request) -> dict[str, Any]:
         guard(request)

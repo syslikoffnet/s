@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS gift_crawl_queue (
     PRIMARY KEY(run_id, tg_id)
 );
 CREATE INDEX IF NOT EXISTS idx_gift_queue_pending ON gift_crawl_queue(run_id, state, level);
+CREATE INDEX IF NOT EXISTS idx_gift_queue_user_state ON gift_crawl_queue(tg_id, state);
 
 CREATE TABLE IF NOT EXISTS gift_profile_state (
     owner_tg_id INTEGER PRIMARY KEY, completed_at INTEGER NOT NULL
@@ -418,6 +419,7 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._batch_depth = 0
         self._conn = sqlite3.connect(str(self.path), timeout=timeout, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         try:
@@ -615,10 +617,27 @@ class Store:
         with self._lock:
             try:
                 yield self._conn
-                self._conn.commit()
-            except Exception:
+                if not self._batch_depth:
+                    self._conn.commit()
+            except BaseException:
                 self._conn.rollback()
                 raise
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """One atomic commit for a synchronous page of nested store operations."""
+        with self._lock:
+            if self._batch_depth:
+                raise RuntimeError("nested batches are not supported")
+            self._batch_depth = 1
+            try:
+                yield
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+            finally:
+                self._batch_depth = 0
 
     def backup_to(self, dest: str | Path) -> Path:
         """Консистентная копия базы (sqlite backup API) — можно копировать на ходу."""
@@ -1668,10 +1687,15 @@ class Store:
         q: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        sort: str = "date",
+        snapshot_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """``chain``: ``wallet`` — NFT на TON-кошельке, ``telegram`` — внутри TG."""
         where: list[str] = []
         params: list[Any] = []
+        if snapshot_id is not None:
+            where.append("id <= ?")
+            params.append(snapshot_id)
         if owner_tg_id is not None:
             where.append("owner_tg_id = ?")
             params.append(owner_tg_id)
@@ -1690,17 +1714,21 @@ class Store:
             params.extend([needle] * 5)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         params.extend([max(1, min(1000, limit)), max(0, offset)])
+        order = "id DESC" if sort == "discovered" else "coalesce(date, 0) DESC, id DESC"
         return self.query(
-            f"SELECT * FROM gifts {clause} ORDER BY coalesce(date, 0) DESC, id DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM gifts {clause} ORDER BY {order} LIMIT ? OFFSET ?",
             params,
         )
 
     def count_gifts(
         self, owner_tg_id: int | None = None, *, nft_only: bool = False,
-        chain: str | None = None, q: str | None = None,
+        chain: str | None = None, q: str | None = None, snapshot_id: int | None = None,
     ) -> int:
         where: list[str] = []
         params: list[Any] = []
+        if snapshot_id is not None:
+            where.append("id <= ?")
+            params.append(snapshot_id)
         if owner_tg_id is not None:
             where.append("owner_tg_id = ?")
             params.append(owner_tg_id)
@@ -2286,20 +2314,16 @@ class Store:
 
     def gift_graph(self, seed: int | None = None, limit: int = 3000) -> dict[str, Any]:
         """Паутина подарков: узлы — владельцы и дарители, рёбра — подарки."""
+        seed_clause = " AND (from_tg_id = ? OR owner_tg_id = ?)" if seed is not None else ""
+        params = (seed, seed, max(1, min(10000, limit))) if seed is not None else (max(1, min(10000, limit)),)
         rows = self.query(
-            """
-            SELECT from_tg_id, owner_tg_id, COUNT(*) AS gifts,
-                   coalesce(SUM(stars), 0) AS stars, coalesce(SUM(is_nft), 0) AS nft,
-                   max(date) AS last_date
-              FROM gifts
-             WHERE from_tg_id IS NOT NULL AND from_tg_id <> owner_tg_id
-             GROUP BY from_tg_id, owner_tg_id
-             ORDER BY gifts DESC, stars DESC LIMIT ?
-            """,
-            (max(1, min(10000, limit)),),
+            "SELECT from_tg_id, owner_tg_id, COUNT(*) AS gifts, "
+            "coalesce(SUM(stars), 0) AS stars, coalesce(SUM(is_nft), 0) AS nft, "
+            "max(date) AS last_date FROM gifts "
+            "WHERE from_tg_id IS NOT NULL AND from_tg_id <> owner_tg_id AND name_hidden = 0 "
+            f"{seed_clause} GROUP BY from_tg_id, owner_tg_id "
+            "ORDER BY gifts DESC, stars DESC LIMIT ?", params,
         )
-        if seed is not None:
-            rows = [r for r in rows if seed in (r["from_tg_id"], r["owner_tg_id"])]
         nodes: dict[int, dict[str, Any]] = {}
         edges: list[dict[str, Any]] = []
         for row in rows:

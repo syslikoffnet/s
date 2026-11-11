@@ -402,3 +402,71 @@ async def test_profile_gift_refresh_rejects_reassigned_username(setup):
         await crawl_gifts(pool, store, settings, saved["query"], run_id=run,
                           expected_owner=saved["expected_owner"], skip_known=False)
     assert store.list_gifts(1) == []
+
+
+async def test_known_hash_reads_profile_without_extra_resolution(setup):
+    store, client, pool, settings = setup
+    run = store.create_gift_crawl('1', 1, 1, 100)
+    store.init_gift_crawl(run, 1, None, 991, False)
+    client.pages[(1, '')] = page([gift(9)])
+    async def no_resolve(_):
+        raise AssertionError('unnecessary profile resolution')
+    client.get_entity = no_resolve
+    result = await crawl_gifts(pool, store, settings, '1', run_id=run)
+    assert result['profiles'] == 1 and result['new'] == 1
+    assert client.calls == [(1, '')]
+    assert store.gift_crawl_counts(run)['done'] == 1
+
+
+async def test_expired_hash_falls_back_to_resolved_same_id(setup):
+    from telethon.errors import PeerIdInvalidError
+    store, client, pool, settings = setup
+    run = store.create_gift_crawl('1', 1, 1, 100)
+    store.init_gift_crawl(run, 1, None, 123, False)
+    original_call = client.__class__.__call__
+    calls = []
+    async def attempt(self, request):
+        calls.append(request.peer.access_hash)
+        if request.peer.access_hash == 123:
+            raise PeerIdInvalidError(request)
+        return await original_call(self, request)
+    old = client.__class__.__call__
+    client.__class__.__call__ = attempt
+    try:
+        client.pages[(1, '')] = page([gift(3)])
+        result = await crawl_gifts(pool, store, settings, '1', run_id=run)
+    finally:
+        client.__class__.__call__ = old
+    assert calls == [123, 9]
+    assert result['new'] == 1 and store.gift_crawl_counts(run)['done'] == 1
+
+
+def test_page_batch_rollback_does_not_leave_partial_writes(store):
+    with pytest.raises(RuntimeError):
+        with store.batch():
+            store.add_gift(1, saved_id=1, gift_id=2, title='first')
+            store.gift_crawl_enqueue(store.create_gift_crawl('1', 1, 2, 100), 1, 0)
+            raise RuntimeError('interrupted')
+    assert not store.list_gifts(1)
+    assert not store.gift_crawls()
+
+
+def test_discovered_order_is_not_gift_date_or_recheck_time(store):
+    store.add_gift(1, saved_id=1, gift_id=1, title='First', date=200)
+    store.add_gift(2, saved_id=2, gift_id=2, title='Second', date=100)
+    store.add_gift(1, saved_id=1, gift_id=1, title='First', date=200)
+    assert [r['title'] for r in store.list_gifts(sort='date')] == ['First', 'Second']
+    assert [r['title'] for r in store.list_gifts(sort='discovered')] == ['Second', 'First']
+
+
+def test_batch_commits_once_per_page(store):
+    statements = []
+    store._conn.set_trace_callback(statements.append)
+    try:
+        with store.batch():
+            for i in range(20):
+                store.add_gift(1, saved_id=i + 1, gift_id=1, title='Gift')
+    finally:
+        store._conn.set_trace_callback(None)
+    assert sum(s.upper() == 'COMMIT' for s in statements) == 1
+    assert len(store.list_gifts(1)) == 20

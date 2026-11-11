@@ -89,3 +89,68 @@ def test_graph_includes_directional_gift_observations_without_hidden_senders(tmp
     assert edges["gift_out"]["source"] == "target"
     assert edges["gift_out"]["target"] == peers[0]["id"]
     store.close()
+
+
+def test_context_edges_require_real_interactions_and_match_global_telegram_ids(tmp_path: Path) -> None:
+    from healdragg.graph import build_global_graph
+
+    store = Store(tmp_path / 'evidence.db')
+    target = store.upsert_target(42, first_name='Alice')
+    peer = store.upsert_peer(900123, first_name='Bob')
+    group = store.upsert_group(101, title='Evidence')
+    other = store.upsert_group(102, title='No interaction')
+    store.upsert_target_group(target['id'], group)
+    store.upsert_target_group(target['id'], other)
+    store.add_message(target['id'], group, 1, date=100, reply_to_peer=900123, text='reply')
+    store.add_message(target['id'], other, 2, date=101, text='unrelated')
+    store.bump_edge(target['id'], peer, replies=1, ts=100)
+    graph = build_graph(store, target['id'])
+    context = [e for e in graph['edges'] if e['kind'] == 'context']
+    assert len(context) == 1 and context[0]['weight'] == 1
+    assert context[0]['source'] == f'g{group}' and context[0]['target'] == f'p{peer}'
+    global_graph = build_global_graph(store)
+    links = [e for e in global_graph['links'] if e['kind'] == 'in_chat']
+    assert len(links) == 1 and links[0]['source'] == f'g{group}' and links[0]['target'] == f'p{peer}'
+    store.close()
+
+
+def test_global_graph_merges_people_and_includes_only_visible_gift_sources(tmp_path: Path) -> None:
+    from healdragg.graph import build_global_graph
+
+    store = Store(tmp_path / 'global-gifts.db')
+    alice = store.upsert_target(42, first_name='Alice')
+    store.upsert_target(99, first_name='Bob')
+    peer = store.upsert_peer(99, first_name='Bob')
+    store.bump_edge(alice['id'], peer, replies=1, ts=100)
+    store.add_gift(42, saved_id=1, gift_id=1, title='Gift', from_tg_id=99)
+    store.add_gift(42, saved_id=2, gift_id=2, title='Hidden', from_tg_id=99, name_hidden=True)
+    graph = build_global_graph(store)
+    assert len([n for n in graph['nodes'] if n['tg_id'] == 99 and n['type'] != 'chat']) == 1
+    edge = next(e for e in graph['links'] if e['kind'] == 'gift')
+    assert edge['weight'] == 1
+    assert next(n for n in graph['nodes'] if n['id'] == edge['source'])['tg_id'] == 99
+    assert next(n for n in graph['nodes'] if n['id'] == edge['target'])['tg_id'] == 42
+    store.close()
+
+
+def test_global_graph_can_start_from_gift_observations_alone(tmp_path: Path) -> None:
+    from healdragg.graph import build_global_graph
+
+    store = Store(tmp_path / 'gifts-only.db')
+    store.add_gift(42, saved_id=1, gift_id=1, title='Gift', from_tg_id=99, from_name='Bob', owner_name='Alice')
+    store.add_gift(42, saved_id=2, gift_id=2, title='Hidden', from_tg_id=123, name_hidden=True)
+    graph = build_global_graph(store)
+    assert {n['tg_id'] for n in graph['nodes']} == {42, 99}
+    assert [e['kind'] for e in graph['links']] == ['gift']
+    store.close()
+
+
+def test_seed_gift_graph_filters_before_limit_and_excludes_hidden(tmp_path: Path) -> None:
+    store = Store(tmp_path / 'seed.db')
+    store.add_gift(1, saved_id=1, gift_id=1, title='A', from_tg_id=2)
+    store.add_gift(1, saved_id=2, gift_id=1, title='A', from_tg_id=2)
+    store.add_gift(99, saved_id=1, gift_id=1, title='B', from_tg_id=98)
+    store.add_gift(99, saved_id=2, gift_id=1, title='Hidden', from_tg_id=97, name_hidden=True)
+    graph = store.gift_graph(seed=99, limit=1)
+    assert {n['tg_id'] for n in graph['nodes']} == {98, 99}
+    store.close()

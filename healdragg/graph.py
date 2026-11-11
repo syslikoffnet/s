@@ -153,6 +153,18 @@ def build_graph(
             }
         )
 
+    # Контекстная связь строится только при наблюдаемом ответе/упоминании
+    # конкретного человека в конкретном чате, а не по общему участию.
+    visible_chats = {int(node["tg_id"]): node["id"] for node in nodes if node["type"] == "chat"}
+    for node in nodes:
+        if node["type"] != "peer":
+            continue
+        for chat in node["meta"].get("chats", []):
+            chat_node = visible_chats.get(int(chat["tg_id"]))
+            if chat_node:
+                links.append({"source": chat_node, "target": node["id"], "kind": "context",
+                              "weight": int(chat["interactions"]), "last": chat["last"]})
+
     # Связи подарков основаны на сохранённых наблюдениях профилей. NFT могли
     # менять владельца: это не доказательство прямой передачи или текущего владения.
     by_tg = {int(node["tg_id"]): node for node in nodes if node["type"] == "peer"}
@@ -300,9 +312,6 @@ def build_global_graph(
         (max(1, int(max_targets)),),
     )
     target_pks = [int(row["id"]) for row in targets]
-    if not target_pks:
-        return {"nodes": [], "links": [], "stats": {"targets": 0, "chats": 0, "peers": 0, "links": 0}}
-
     marks = ",".join("?" for _ in target_pks)
     groups = store.query(
         f"""
@@ -319,7 +328,7 @@ def build_global_graph(
     group_pks = [int(row["group_id"]) for row in groups]
 
     peers: list[dict[str, Any]] = []
-    if group_pks:
+    if target_pks:
         peers = store.query(
             f"""
             SELECT e.peer_id, SUM(e.weight) AS weight, SUM(e.replies) AS replies,
@@ -376,9 +385,16 @@ def build_global_graph(
         )
 
     peer_index: dict[int, str] = {}
+    peer_tg_index: dict[int, str] = {}
+    person_index = {int(node["tg_id"]): node["id"] for node in nodes if node["type"] == "target"}
     for row in peers:
-        node_id = f"p{int(row['peer_id'])}"
+        tg_id = int(row["tg_id"])
+        node_id = person_index.get(tg_id) or f"p{int(row['peer_id'])}"
         peer_index[int(row["peer_id"])] = node_id
+        peer_tg_index[tg_id] = node_id
+        if tg_id in person_index:
+            continue
+        person_index[tg_id] = node_id
         nodes.append(
             {
                 "id": node_id,
@@ -424,7 +440,7 @@ def build_global_graph(
         tuple(target_pks),
     ):
         peer_node = peer_index.get(int(row["peer_id"]))
-        if not peer_node:
+        if not peer_node or peer_node == f"t{int(row['target_id'])}":
             continue
         links.append(
             {
@@ -451,7 +467,7 @@ def build_global_graph(
             (*target_pks, *group_pks),
         ):
             group_node = group_index.get(int(row["group_id"]))
-            peer_node = peer_index.get(int(row["peer_id"]))
+            peer_node = peer_tg_index.get(int(row["peer_id"]))
             if not group_node or not peer_node:
                 continue
             links.append(
@@ -463,13 +479,41 @@ def build_global_graph(
                 }
             )
 
+    # Включаем людей из записей подарков даже если они ещё не добавлены как
+    # цели или собеседники. Скрытые дарители никогда не становятся узлами.
+    gift_pairs = store.query(
+        "SELECT from_tg_id, owner_tg_id, count(*) AS n, max(date) AS last, "
+        "max(from_username) AS from_username, max(from_name) AS from_name, "
+        "max(owner_username) AS owner_username, max(owner_name) AS owner_name "
+        "FROM gifts WHERE from_tg_id > 0 AND owner_tg_id > 0 AND name_hidden=0 "
+        "AND from_tg_id <> owner_tg_id GROUP BY from_tg_id, owner_tg_id "
+        "ORDER BY n DESC, from_tg_id, owner_tg_id LIMIT ?", (min(3000, max(1, int(max_peers)) * 8),),
+    )
+    added_gift_people = 0
+    for row in gift_pairs:
+        people = ((int(row["from_tg_id"]), row.get("from_username"), row.get("from_name")),
+                  (int(row["owner_tg_id"]), row.get("owner_username"), row.get("owner_name")))
+        new_people = sum(1 for tg_id, _, _ in people if tg_id not in person_index)
+        if added_gift_people + new_people > max_peers:
+            continue
+        for tg_id, username, name in people:
+            if tg_id not in person_index:
+                node_id = f"gift-user-{tg_id}"
+                person_index[tg_id] = node_id
+                nodes.append({"id": node_id, "type": "peer", "tg_id": tg_id,
+                              "label": name or (f"@{username}" if username else f"ID {tg_id}"),
+                              "weight": int(row["n"]), "meta": {"username": username, "source": "gift"}})
+                added_gift_people += 1
+        links.append({"source": person_index[people[0][0]], "target": person_index[people[1][0]],
+                      "kind": "gift", "weight": int(row["n"]), "last": row["last"]})
+
     return {
         "nodes": nodes,
         "links": links,
         "stats": {
             "targets": len(targets),
             "chats": len(groups),
-            "peers": len(peers),
+            "peers": sum(1 for node in nodes if node["type"] == "peer"),
             "links": len(links),
             "built_at": now_ts(),
         },

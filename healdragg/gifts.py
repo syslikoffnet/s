@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from telethon import utils
-from telethon.errors import RPCError
+from telethon.errors import PeerIdInvalidError, RPCError, UserIdInvalidError
 from telethon.tl.functions.payments import (
     GetResaleStarGiftsRequest,
     GetSavedStarGiftsRequest,
@@ -332,6 +332,7 @@ async def crawl_gifts(
 
     while scanned < max_profiles:
         pending = store.gift_crawl_next(run_id) if run_id is not None else None
+        fast_peer = False
         if run_id is not None:
             if pending is None:
                 break
@@ -341,6 +342,12 @@ async def crawl_gifts(
             if user is None and skip_known and store.gift_profile_known(owner_id):
                 # Разворачиваем известные связи даже если профиль больше не разрешается.
                 user = User(id=owner_id, username=pending.get("username"))
+            if user is None and pending.get("access_hash"):
+                # ID и access_hash пришли вместе с профилем в ответе Telegram.
+                # Чтение подарков принимает InputPeerUser напрямую — не нужен
+                # дополнительный сетевой get_entity для каждого дарителя.
+                user = User(id=owner_id, access_hash=int(pending["access_hash"]), username=pending.get("username"))
+                fast_peer = True
             if user is None:
                 candidates: list[Any] = []
                 if pending.get("username"):
@@ -554,8 +561,9 @@ async def crawl_gifts(
             gifts: list[Any], users: dict[int, User], received: int, total: int | None,
             *, display: str = display, profiles_done: int = scanned,
         ) -> None:
-            for item in gifts:
-                process_item(item, users)
+            with store.batch():
+                for item in gifts:
+                    process_item(item, users)
             if reporter is not None:
                 await reporter({
                     "phase": f"читаю подарки · {display}",
@@ -578,12 +586,35 @@ async def crawl_gifts(
 
         try:
             peer = utils.get_input_peer(user)
-            saved, users, complete, heavy_count = await _saved_gifts(
-                client, limiter, peer, per_profile,
-                allow_heavy=allow_heavy,
-                on_page=process_page,
-                on_wait=wait_for_page,
-            )
+            try:
+                saved, users, complete, heavy_count = await _saved_gifts(
+                    client, limiter, peer, per_profile,
+                    allow_heavy=allow_heavy, on_page=process_page, on_wait=wait_for_page,
+                )
+            except (PeerIdInvalidError, UserIdInvalidError):
+                # Hash мог быть получен другой сессией или устареть. Только до
+                # первой обработанной страницы пробуем разрешить профиль заново.
+                if not fast_peer or profile_gifts:
+                    raise
+                await report_stage(f"обновляю доступ к профилю {owner_id} · ожидание Telegram", scanned, new_count)
+                resolved = None
+                for candidate in [pending.get("username"), owner_id]:
+                    if not candidate:
+                        continue
+                    try:
+                        candidate_user = await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+                        if isinstance(candidate_user, User) and int(candidate_user.id) == owner_id:
+                            resolved = candidate_user
+                            break
+                    except (RPCError, ValueError):
+                        continue
+                if resolved is None:
+                    raise ValueError("Не удалось обновить доступ к профилю") from None
+                user = resolved
+                saved, users, complete, heavy_count = await _saved_gifts(
+                    client, limiter, utils.get_input_peer(user), per_profile,
+                    allow_heavy=allow_heavy, on_page=process_page, on_wait=wait_for_page,
+                )
             if heavy_count is not None:
                 store.defer_gift_profile(owner_id, username, display, heavy_count)
             else:

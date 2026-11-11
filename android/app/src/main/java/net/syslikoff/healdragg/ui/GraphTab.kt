@@ -4,6 +4,8 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -28,12 +30,14 @@ import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,13 +56,11 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
-import kotlin.math.cos
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
- * Паутина связей на нативном Canvas: цель в центре, чаты кольцом, собеседники —
- * внешним кольцом. Жесты: щипок — зум, перетаскивание — сдвиг, тап — карточка узла.
+ * Паутина наблюдаемых связей: пружины, отталкивание и направленные подарки.
+ * Масштаб, сдвиг и перемещение выбранного узла — жестами.
  */
 @Composable
 fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (String) -> Unit) {
@@ -71,9 +73,14 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
     var scale by remember(tgId) { mutableStateOf(1f) }
     var pan by remember(tgId) { mutableStateOf(Offset.Zero) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var layer by remember(tgId) { mutableStateOf("all") }
+    var moveNode by remember(tgId) { mutableStateOf(false) }
+    var layoutVersion by remember(tgId) { mutableStateOf(0) }
+    var animationKick by remember(tgId) { mutableStateOf(0) }
+    var nodeSearch by remember(tgId) { mutableStateOf("") }
     val positions = remember(tgId) { mutableListOf<Pair<GraphNode, Offset>>() }
 
-    LaunchedEffect(tgId) {
+    LaunchedEffect(tgId, api) {
         loading = true
         val client = api
         if (client == null) {
@@ -106,6 +113,34 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
         }
         if (graph == null) return@Column
 
+        val allowedKinds = when (layer) {
+            "talks" -> setOf("peer", "context", "chat")
+            "gifts" -> setOf("gift_in", "gift_out")
+            "chats" -> setOf("chat")
+            else -> setOf("peer", "context", "chat", "gift_in", "gift_out")
+        }
+        val candidateEdges = graph.edges.filter { it.kind in allowedKinds }
+        val connectedIds = candidateEdges.flatMap { listOf(it.source, it.target) }.toSet()
+        val shownNodes = buildList {
+            graph.nodes.firstOrNull { it.type == "target" }?.let { add(it) }
+            addAll(graph.nodes.filter { it.type == "chat" && it.id in connectedIds }.sortedByDescending { it.weight }.take(40))
+            addAll(graph.nodes.filter { it.type == "peer" && it.id in connectedIds }.sortedByDescending { it.weight }.take(72))
+        }
+        val shownIds = shownNodes.map { it.id }.toSet()
+        val shownEdges = candidateEdges.filter { it.source in shownIds && it.target in shownIds }
+        val layoutKey = shownNodes.map { it.id }.sorted() to shownEdges.map { "${it.source}:${it.target}:${it.kind}:${it.weight}" }.sorted()
+        val engine = remember(layoutKey, layoutVersion) { GraphPhysics(shownNodes.map { it.id }, shownEdges) }
+        var world by remember(engine) { mutableStateOf(engine.positions()) }
+        LaunchedEffect(engine, layoutVersion, animationKick) {
+            while (engine.step()) {
+                withFrameNanos { }
+                world = engine.positions()
+            }
+        }
+        val selectedId = selected?.id?.takeIf { it in shownIds }
+        val related = shownEdges.filter { it.source == selectedId || it.target == selectedId }
+            .flatMap { listOf(it.source, it.target) }.toSet()
+
         val peers = graph.nodes.count { it.type == "peer" }
         Row(
             Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -119,6 +154,8 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                 scale = 1f
                 pan = Offset.Zero
                 selected = null
+                moveNode = false
+                layoutVersion++
             }) { Text("Сброс", color = Hd.Muted, style = MaterialTheme.typography.labelMedium) }
         }
 
@@ -132,7 +169,21 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
             return@Column
         }
 
-        Text("Голубой — чат, зелёный — общение; жёлтая/розовая стрелка — подарок от дарителя к профилю записи. Это наблюдения, не гарантия текущего владения или прямой передачи NFT. На графике до 40 чатов и 72 человек.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("all" to "Все связи", "talks" to "Общение", "gifts" to "Подарки", "chats" to "Чаты").forEach { (value, label) ->
+                FilterChip(selected = layer == value, onClick = { layer = value; selected = null; moveNode = false }, label = { Text(label) })
+            }
+        }
+        Text("Показано ${shownNodes.size} из ${graph.nodes.size} узлов · ${shownEdges.size} связей. Голубой — чат, зелёный — ответ/упоминание, жёлтая и розовая стрелки — записи подарков. Контекстная линия — реальное упоминание или ответ в чате, не просто общее участие. Данные неполны и не доказывают текущее владение NFT.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp))
+        HdTextField(nodeSearch, { nodeSearch = it }, "Найти узел", hint = "Имя, @username или ID")
+        if (nodeSearch.isNotBlank()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            shownNodes.filter { it.label.contains(nodeSearch.trim(), true) || (it.username ?: "").contains(nodeSearch.trim().removePrefix("@"), true) || it.tgId.toString().contains(nodeSearch.trim()) }.take(12).forEach { node ->
+                FilterChip(selected = selectedId == node.id, onClick = { selected = node; moveNode = false }, label = { Text(node.label.take(18)) })
+            }
+        }
+        if (selectedId != null && selectedId != "target") {
+            TextButton(onClick = { moveNode = !moveNode }) { Text(if (moveNode) "Перемещение узла: включено" else "Переместить выбранный узел") }
+        }
         Box(
             Modifier
                 .fillMaxWidth()
@@ -143,7 +194,14 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
         ) {
             val transformState = rememberTransformableState { zoomChange, panChange, _ ->
                 scale = (scale * zoomChange).coerceIn(0.45f, 3.2f)
-                pan += panChange
+                if (moveNode && selectedId != null && selectedId != "target" && zoomChange in 0.98f..1.02f) {
+                    val fit = min(canvasSize.width, canvasSize.height) / 620f * scale
+                    if (fit > 0f) {
+                        engine.move(selectedId, (panChange.x / fit).toDouble(), (panChange.y / fit).toDouble())
+                        world = engine.positions()
+                        animationKick++
+                    }
+                } else pan += panChange
             }
             val density = androidx.compose.ui.platform.LocalDensity.current
             val labelPaint = remember {
@@ -164,39 +222,24 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                                 (pos - tap).getDistance()
                             }?.takeIf { (_, pos) -> (pos - tap).getDistance() <= tapRadius }
                             selected = hit?.first
+                            moveNode = false
                         }
                     },
             ) {
                 val center = Offset(size.width / 2f, size.height / 2f)
-                val radiusBase = min(size.width, size.height) * 0.5f
-                fun screen(world: Offset): Offset = center + world * scale + pan
-
-                val targetNode = graph.nodes.firstOrNull { it.type == "target" }
-                val peerNodes = graph.nodes.filter { it.type == "peer" }
-                    .sortedByDescending { it.weight }.take(72)
-
-                val chatNodes = graph.nodes.filter { it.type == "chat" }.sortedByDescending { it.weight }.take(40)
-                val peerRing = radiusBase * 0.78f
-                val chatRing = radiusBase * 0.42f
-
-                val world = LinkedHashMap<String, Offset>()
-                world["target"] = Offset.Zero
-                chatNodes.forEachIndexed { index, node ->
-                    val angle = (2.0 * Math.PI * index / chatNodes.size - Math.PI / 2).toFloat()
-                    world[node.id] = Offset(cos(angle) * chatRing, sin(angle) * chatRing)
-                }
-                peerNodes.forEachIndexed { index, node ->
-                    val angle = (2.0 * Math.PI * index / peerNodes.size - Math.PI / 2 + 0.35).toFloat()
-                    world[node.id] = Offset(cos(angle) * peerRing, sin(angle) * peerRing)
-                }
+                val fit = min(size.width, size.height) / 620f
+                fun screen(point: Pair<Float, Float>): Offset = center + Offset(point.first, point.second) * (fit * scale) + pan
+                val targetNode = shownNodes.firstOrNull { it.type == "target" }
+                val peerNodes = shownNodes.filter { it.type == "peer" }
+                val chatNodes = shownNodes.filter { it.type == "chat" }
 
                 positions.clear()
-                graph.nodes.forEach { node ->
+                shownNodes.forEach { node ->
                     world[node.id]?.let { positions += node to screen(it) }
                 }
 
                 // рёбра
-                graph.edges.forEach { edge ->
+                shownEdges.forEach { edge ->
                     val from = world[edge.source] ?: return@forEach
                     val to = world[edge.target] ?: return@forEach
                     val strength = edge.weight.coerceIn(1, 40) / 40f
@@ -204,12 +247,14 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                     val edgeColor = when (edge.kind) {
                         "gift_in" -> Hd.Warn.copy(alpha = 0.8f)
                         "gift_out" -> Hd.Accent.copy(alpha = 0.8f)
-                        "peer" -> Hd.Good.copy(alpha = 0.18f + 0.35f * strength)
+                        "peer" -> Hd.Good.copy(alpha = 0.28f + 0.42f * strength)
+                        "context" -> Hd.Good.copy(alpha = 0.15f + 0.35f * strength)
                         else -> Hd.Accent2.copy(alpha = 0.14f + 0.28f * strength)
                     }
                     val a = screen(from)
                     val b = screen(to)
-                    drawLine(color = edgeColor, start = a, end = b,
+                    val highlighted = selectedId == null || edge.source == selectedId || edge.target == selectedId
+                    drawLine(color = edgeColor.copy(alpha = edgeColor.alpha * if (highlighted) 1f else 0.14f), start = a, end = b,
                         strokeWidth = (0.6f + 2.2f * strength) * scale.coerceIn(0.7f, 1.6f))
                     if (giftEdge) {
                         val delta = b - a
@@ -226,7 +271,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                 }
 
                 // узлы
-                graph.nodes.forEach { node ->
+                shownNodes.forEach { node ->
                     val pos = world[node.id]?.let { screen(it) } ?: return@forEach
                     val weight = node.weight.coerceIn(1, 40)
                     val radius = (5f + weight * 0.35f) * scale.coerceIn(0.6f, 1.8f)
@@ -239,7 +284,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                         drawCircle(color.copy(alpha = 0.22f), radius + 10f, pos)
                     }
                     drawCircle(color.copy(alpha = 0.22f), radius + 5f, pos)
-                    drawCircle(color, radius, pos)
+                    drawCircle(color.copy(alpha = if (selectedId == null || node.id == selectedId || node.id in related) 1f else 0.20f), radius, pos)
                     if (node.type == "target") {
                         drawCircle(Hd.Bg, radius * 0.42f, pos)
                     }
@@ -252,6 +297,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                     targetNode?.let { add(it) }
                     addAll(peerNodes.take(12))
                     addAll(chatNodes.take(5))
+                    selected?.takeIf { it.id in shownIds }?.let { if (it !in this) add(it) }
                 }
                 labelled.forEach { node ->
                     val pos = world[node.id]?.let { screen(it) } ?: return@forEach
@@ -276,7 +322,7 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             ) {
                 Text(
-                    "щипок — зум · тяни — сдвиг · тап — узел",
+                    if (moveNode) "тяни — двигать выбранный узел · щипок — зум" else "щипок — зум · тяни — сдвиг · тап — узел",
                     style = MaterialTheme.typography.labelSmall,
                     color = Hd.Dim,
                 )
@@ -285,9 +331,17 @@ fun GraphTab(api: Api?, tgId: Long, onToast: (String) -> Unit, onOpenProfile: (S
 
         selected?.let { node ->
             Spacer(Modifier.height(10.dp))
+            if (node.id in shownIds) {
+                val incident = shownEdges.filter { it.source == node.id || it.target == node.id }
+                val evidence = incident.groupBy { it.kind }.map { (kind, links) ->
+                    val label = when (kind) { "context" -> "контекст в чатах"; "peer" -> "ответы/упоминания"; "gift_in" -> "записи от дарителя"; "gift_out" -> "записи в профиле"; else -> "связи с чатами" }
+                    "$label: ${links.sumOf { it.weight }}"
+                }
+                Text(evidence.joinToString(" · "), color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+            }
             NodeCard(
                 node = node,
-                onClose = { selected = null },
+                onClose = { selected = null; moveNode = false },
                 onToast = onToast,
                 onOpenProfile = { onOpenProfile(node.tgId.toString()) },
                 onOpen = {
@@ -357,7 +411,7 @@ private fun NodeCard(
                 m.int("mentions").takeIf { it > 0 }?.let { add("${it} упоминаний") }
                 m.int("gifts_received").takeIf { it > 0 }?.let { add("${it} записей от этого пользователя") }
                 m.int("gifts_sent").takeIf { it > 0 }?.let { add("${it} записей в его профиле") }
-                m.int("weight").takeIf { it > 1 }?.let { add("сила ${it}") }
+                m.num("last").takeIf { it > 0 }?.let { add("последнее наблюдение: ${fullDate(it)}") }
             }
             if (lines.isNotEmpty()) {
                 Text(

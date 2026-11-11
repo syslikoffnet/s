@@ -241,9 +241,14 @@ class Api(private val baseUrl: String, private val token: String) {
         q: String? = null,
         limit: Int = 100,
         offset: Int = 0,
+        sort: String = "date",
+        lite: Boolean = false,
+        snapshotId: Long? = null,
     ): GiftPage {
         val path = buildString {
-            append("api/gifts?limit=$limit&offset=$offset")
+            append("api/gifts?limit=$limit&offset=$offset&sort=$sort")
+            if (lite) append("&lite=true")
+            if (snapshotId != null) append("&snapshot=$snapshotId")
             if (owner != null) append("&owner=$owner")
             if (nftOnly) append("&nft=true")
             if (!chain.isNullOrBlank()) append("&chain=$chain")
@@ -263,7 +268,7 @@ class Api(private val baseUrl: String, private val token: String) {
                 hosted = it.int("hosted"),
             )
         }
-        return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners, total = data.int("total"))
+        return GiftPage(rows = rows, summary = GiftSummary.from(data.obj("summary")), owners = owners, total = data.int("total"), snapshotId = data.num("snapshot_id"))
     }
 
     suspend fun giftOwners(q: String?, limit: Int = 500): List<NftOwner> {

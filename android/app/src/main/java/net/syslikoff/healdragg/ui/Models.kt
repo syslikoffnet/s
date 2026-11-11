@@ -696,6 +696,7 @@ data class GiftPage(
     val summary: GiftSummary,
     val owners: List<GiftOwner>,
     val total: Int = 0,
+    val snapshotId: Long = 0,
 )
 
 data class PhotoData(val base64: String, val updatedAt: Long)

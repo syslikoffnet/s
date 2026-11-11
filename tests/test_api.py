@@ -1057,3 +1057,26 @@ def test_prepare_single_endpoint(client: TestClient):
     assert run['rows'][0]['command'] == '/createoffer @seller42 https://t.me/nft/Bear-1 100 star ru'
     assert client.app.state.hd.offer_ledger.history() == []
     assert client.post(url, headers=HEADERS, json={**body, 'seller_id': 43}).status_code == 400
+
+
+def test_gifts_discovered_order_and_lite(client: TestClient):
+    store = client.app.state.hd.store
+    store.add_gift(11, saved_id=1, gift_id=1, title='First', date=900)
+    store.add_gift(12, saved_id=2, gift_id=2, title='Second', date=10)
+    data = client.get('/api/gifts?sort=discovered&lite=true', headers=HEADERS).json()
+    assert [row['title'] for row in data['rows'][:2]] == ['Second', 'First']
+    assert data['summary']['total'] >= 2 and data['owners'] == []
+    assert client.get('/api/gifts?sort=bad', headers=HEADERS).status_code == 400
+
+
+def test_gifts_paging_snapshot_excludes_new_inserts(client: TestClient):
+    store = client.app.state.hd.store
+    for i in range(4):
+        store.add_gift(1, saved_id=i + 1, gift_id=1, title=str(i), date=i)
+    first = client.get('/api/gifts?sort=discovered&limit=2', headers=HEADERS).json()
+    store.add_gift(1, saved_id=9, gift_id=1, title='new', date=99)
+    next_page = client.get(f"/api/gifts?sort=discovered&limit=2&offset=2&snapshot={first['snapshot_id']}", headers=HEADERS).json()
+    assert [r['title'] for r in first['rows']] == ['3', '2']
+    assert [r['title'] for r in next_page['rows']] == ['1', '0']
+    assert next_page['total'] == 4
+    assert client.get('/api/gifts?snapshot=oops', headers=HEADERS).status_code == 400
