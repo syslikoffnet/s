@@ -79,6 +79,13 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun verifyOffer(body: JSONObject): JSONObject =
         obj("api/offers/verify", "POST", body, PROFILE_TIMEOUT)
 
+    suspend fun startOfferBatch(session: String, plan: JSONObject): JSONObject =
+        obj("api/offers/batch", "POST", JSONObject().put("session", session).put("plan", plan), PROFILE_TIMEOUT)
+
+    suspend fun offerBatch(): JSONObject = obj("api/offers/batch", timeoutMillis = PROFILE_TIMEOUT)
+
+    suspend fun stopOfferBatch(): JSONObject = obj("api/offers/batch/stop", "POST", JSONObject(), PROFILE_TIMEOUT)
+
     suspend fun businessBot(name: String, connect: Boolean = false): JSONObject {
         val path = "api/sessions/${URLEncoder.encode(name, "UTF-8")}/business-bot"
         return if (connect) obj(path, "POST", JSONObject().put("confirm", true), PROFILE_TIMEOUT)

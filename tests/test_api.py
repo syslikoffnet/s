@@ -937,3 +937,31 @@ def test_offer_verify_api_is_protected_and_no_send_route(client: TestClient, mon
     assert client.post("/api/offers/verify", headers=HEADERS, json=body).json() == {"owner_matches": False}
     assert called == [body]
     assert client.post("/api/offers/send", headers=HEADERS, json={}).status_code == 404
+
+
+def test_offer_batch_api_start_stop_and_recovery(client: TestClient, monkeypatch):
+    import asyncio
+
+    from healdragg import offer_check
+
+    async def wait_forever(store, pool, body):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(offer_check, "check", wait_forever)
+    store = client.app.state.hd.store
+    store.add_session("writer", "writer.session", purpose="offers")
+    store.upsert_nft_item("Bear-1", owner_tg_id=1, owner_username="seller1", value_usd=1000)
+    body = {"session": "writer", "plan": {"currency": "star", "usd_per_unit": "0.02",
+            "markup_percent": "0", "max_per_offer": 1000, "total_budget": 1000, "max_offers": 1}}
+    assert client.get("/api/offers/batch").status_code == 401
+    assert client.post("/api/offers/batch", json=body).status_code == 401
+    started = client.post("/api/offers/batch", headers=HEADERS, json=body)
+    assert started.status_code == 200 and started.json()["run"]["status"] == "running"
+    duplicate = client.post("/api/offers/batch", headers=HEADERS, json=body)
+    assert duplicate.status_code == 409
+    assert client.get("/api/offers/batch", headers=HEADERS).json()["run"]["status"] == "running"
+    stopped = client.post("/api/offers/batch/stop", headers=HEADERS, json={}).json()["run"]
+    assert stopped["status"] == "stopped"
+    assert stopped["rows"][0]["status"] == "pending"
+    assert client.post("/api/offers/batch/stop", headers=HEADERS, json={}).json()["run"]["status"] == "stopped"
+    assert client.post("/api/offers/send", headers=HEADERS, json={}).status_code == 404

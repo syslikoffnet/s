@@ -336,6 +336,28 @@ CREATE TABLE IF NOT EXISTS events (
     message TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
+
+-- Read-only batch verification; this is not an offer or payment ledger.
+CREATE TABLE IF NOT EXISTS offer_check_runs (
+    id TEXT PRIMARY KEY,
+    session TEXT NOT NULL,
+    settings TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS offer_check_items (
+    run_id TEXT NOT NULL REFERENCES offer_check_runs(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    seller_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result TEXT,
+    error TEXT,
+    PRIMARY KEY(run_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_offer_check_runs_created ON offer_check_runs(created_at DESC);
 """
 
 FTS_SCHEMA = """

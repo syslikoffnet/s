@@ -32,6 +32,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.math.BigDecimal
@@ -66,6 +67,9 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
     var budget by rememberSaveable { mutableStateOf("") }
     var maxOffers by rememberSaveable { mutableStateOf("5") }
     var planJson by rememberSaveable { mutableStateOf<String?>(null) }
+    var planInputJson by rememberSaveable { mutableStateOf<String?>(null) }
+    var batch by remember { mutableStateOf<JSONObject?>(null) }
+    var batchBusy by remember { mutableStateOf(false) }
     val plan = remember(planJson) { planJson?.let { JSONObject(it) } }
     var planBusy by remember { mutableStateOf(false) }
     var offerSession by rememberSaveable { mutableStateOf("") }
@@ -141,9 +145,10 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
         } catch (e: IllegalArgumentException) { error = e.message; return }
         planBusy = true
         planJson = null
+        planInputJson = null
         error = null
         scope.launch {
-            try { planJson = client.offerPreview(body).toString() }
+            try { planJson = client.offerPreview(body).toString(); planInputJson = body.toString() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { error = e.message ?: "Не удалось рассчитать план" }
             finally { planBusy = false }
@@ -169,7 +174,40 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
         }
     }
 
+    fun startBatch() {
+        val client = api ?: run { error = "Движок не запущен"; return }
+        val input = planInputJson ?: run { error = "Сначала рассчитайте черновик"; return }
+        if (offerSessions.none { it.name == offerSession }) { error = "Выберите аккаунт предложений"; return }
+        batchBusy = true
+        error = null
+        scope.launch {
+            try { batch = client.startOfferBatch(offerSession, JSONObject(input)).optJSONObject("run") }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось запустить проверку партии" }
+            finally { batchBusy = false }
+        }
+    }
+    fun stopBatch() {
+        val client = api ?: return
+        batchBusy = true
+        scope.launch {
+            try { batch = client.stopOfferBatch().optJSONObject("run") }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось остановить проверку" }
+            finally { batchBusy = false }
+        }
+    }
+
     LaunchedEffect(api) { if (api != null && !loaded) load(true) }
+    LaunchedEffect(api) {
+        val client = api ?: return@LaunchedEffect
+        while (true) {
+            try { batch = client.offerBatch().optJSONObject("run") }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { /* Проверку можно обновить при следующем опросе. */ }
+            delay(3000)
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 100.dp),
@@ -241,6 +279,36 @@ fun OfferCandidatesScreen(vm: AppViewModel, onBack: () -> Unit, onOpenProfile: (
                 Text("Цена округляется вверх до целых единиц. Записи без оценки или username пропускаются. Курс и оценка могут устареть.", color = Hd.Warn, style = MaterialTheme.typography.bodySmall)
                 Button(onClick = { preview() }, enabled = !planBusy, modifier = Modifier.fillMaxWidth()) {
                     Text(if (planBusy) "Подбираю…" else "Рассчитать черновик")
+                }
+            }
+        }
+        item("batch-check") {
+            HdCard {
+                Text("Проверка партии в Telegram", style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                Text("По параметрам последнего черновика заново подбираются NFT; список мог измениться. Проверка обновляет оценки по Telegram и применяет введённый вручную курс и лимиты. Это не отправка, не резервирование средств и не запуск офферов.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                val running = batch?.optString("status") == "running"
+                if (running) {
+                    OutlinedButton(onClick = { stopBatch() }, enabled = !batchBusy, modifier = Modifier.fillMaxWidth()) { Text("Остановить проверку") }
+                } else {
+                    OutlinedButton(onClick = { startBatch() }, enabled = !batchBusy && planInputJson != null, modifier = Modifier.fillMaxWidth()) { Text("Проверить партию") }
+                }
+                batch?.let { run ->
+                    val batchRows = run.arr("rows")
+                    val done = (0 until batchRows.length()).count { batchRows.optJSONObject(it)?.optString("status") in listOf("checked", "skipped") }
+                    Text("Статус: ${when (run.optString("status")) { "running" -> "проверяется"; "done" -> "завершена"; "stopped" -> "остановлена"; "interrupted" -> "прервана при перезапуске"; else -> "ошибка" }} · $done/${batchRows.length()}", color = Hd.Text, style = MaterialTheme.typography.bodySmall)
+                    run.str("error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
+                    Text("После перезапуска проверка сама не возобновляется. Снимки устаревают; бот и создание оффера не подтверждены.", color = Hd.Warn, style = MaterialTheme.typography.labelSmall)
+                    for (index in 0 until batchRows.length()) {
+                        val row = batchRows.optJSONObject(index) ?: continue
+                        val result = row.optJSONObject("result")
+                        val stateText = when (row.optString("status")) {
+                            "checked" -> "проверен · ${result?.optLong("amount")} ${result?.optString("currency")}"
+                            "skipped" -> "пропущен · ${result?.optJSONArray("reasons")?.let { reasons -> (0 until reasons.length()).joinToString(", ") { reasons.optString(it) } } ?: "проверьте данные"}"
+                            "checking" -> "проверяется"
+                            else -> "ожидает"
+                        }
+                        Text("${row.optString("slug")} · $stateText", color = if (row.optString("status") == "skipped") Hd.Warn else Hd.Text, style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }

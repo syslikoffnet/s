@@ -29,7 +29,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
-from . import __version__, business, offer_check, offers
+from . import __version__, business, offer_batch, offer_check, offers
 from .activity import collect_activity
 from .backup import (
     MAX_ARCHIVE_BYTES,
@@ -394,6 +394,7 @@ def create_app(settings: Settings) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(_: Starlette):
+        offer_batch.interrupt_running(state.store)
         repaired = state.store.repair_session_paths(settings.sessions_dir)
         if repaired:
             log.info("починил пути к сессиям: %s", repaired)
@@ -596,6 +597,7 @@ def create_app(settings: Settings) -> Starlette:
                 await state.login.close_for_restore()
                 await state.pool.close_for_restore()
                 result = await _safe_io(restore_backup, payload, state.store, settings.sessions_dir)
+                offer_batch.interrupt_running(state.store)
                 state.jobs.clear()
                 log.warning("восстановление из копии: %s", result)
                 return result
@@ -1710,6 +1712,40 @@ def create_app(settings: Settings) -> Starlette:
         async with state.session_mutation_lock:
             return await offer_check.check(state.store, state.pool, body)
 
+    async def offer_batch_start(request: Request) -> dict[str, Any]:
+        guard(request)
+        body = await _body(request)
+        key = "offers:verify"
+        if state.running(key):
+            raise HTTPException(409, "Проверка партии уже выполняется")
+        run_id = offer_batch.create(state.store, body)
+        job = Job(key=key, kind="offer_verify", state={"phase": "проверка партии", "run_id": run_id})
+        state.jobs[key] = job
+
+        async def runner() -> None:
+            try:
+                await offer_batch.run(state.store, state.pool, run_id, state.session_mutation_lock)
+            finally:
+                job.finished = True
+                result = offer_batch.detail(state.store, run_id)
+                job.state = {**job.state, "phase": (result or {}).get("status", "unknown")}
+                job.error = (result or {}).get("error")
+
+        job.task = asyncio.create_task(runner(), name=key)
+        return {"run": offer_batch.detail(state.store, run_id)}
+
+    async def offer_batch_status(request: Request) -> dict[str, Any]:
+        guard(request)
+        return {"run": offer_batch.detail(state.store)}
+
+    async def offer_batch_stop(request: Request) -> dict[str, Any]:
+        guard(request)
+        job = state.jobs.get("offers:verify")
+        if job and not job.finished:
+            offer_batch.finish(state.store, job.state["run_id"], "stopped")
+            await state.cancel(job.key)
+        return {"run": offer_batch.detail(state.store)}
+
     async def gifts_graph(request: Request) -> dict[str, Any]:
         guard(request)
         seed_raw = (request.query_params.get("seed") or "").strip()
@@ -2051,6 +2087,8 @@ def create_app(settings: Settings) -> Starlette:
     async def cancel(request: Request) -> dict[str, Any]:
         guard(request)
         key = str(request.path_params["key"])
+        if key == "offers:verify" and state.running(key):
+            offer_batch.finish(state.store, state.jobs[key].state["run_id"], "stopped")
         if key == "gifts:chain" and state.running(key):
             run = state.store.nft_chain_run()
             if run and run["status"] == "running":
@@ -2200,6 +2238,9 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/offers/candidates", _route(offer_candidates), methods=["POST"]),
         Route("/api/offers/preview", _route(offer_plan), methods=["POST"]),
         Route("/api/offers/verify", _route(offer_verify), methods=["POST"]),
+        Route("/api/offers/batch", _route(offer_batch_status), methods=["GET"]),
+        Route("/api/offers/batch", _route(offer_batch_start), methods=["POST"]),
+        Route("/api/offers/batch/stop", _route(offer_batch_stop), methods=["POST"]),
         Route("/api/gifts", _route(gifts_list)),
         Route("/api/gifts/art/{gift_id:int}", _route(gift_art)),
         Route("/api/gifts/graph", _route(gifts_graph)),
