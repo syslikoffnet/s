@@ -795,3 +795,55 @@ def test_business_bot_requires_auth_confirmation_and_existing_session(client: Te
     assert client.get("/api/sessions/demo/business-bot").status_code == 401
     assert client.post("/api/sessions/demo/business-bot", headers=HEADERS, json={}).status_code == 400
     assert client.post("/api/sessions/missing/business-bot", headers=HEADERS, json={"confirm": True}).status_code == 404
+
+
+def test_waiting_gift_jobs_identify_blocker_and_release_on_stop(client: TestClient, monkeypatch) -> None:
+    import asyncio
+    import threading
+
+    started_a = threading.Event()
+    started_b = threading.Event()
+
+    async def hold_crawl(*args, **kwargs):
+        (started_a if args[3] == "one" else started_b).set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("healdragg.api.crawl_gifts", hold_crawl)
+    store = client.app.state.hd.store
+    store.add_session("active", "active.session")
+    first = client.post("/api/gifts/crawl", headers=HEADERS, json={"query": "one"}).json()
+    assert started_a.wait(2)
+    second = client.post("/api/gifts/crawl", headers=HEADERS, json={"query": "two"}).json()
+    jobs = client.get("/api/jobs", headers=HEADERS).json()
+    waiting = next(j for j in jobs if j["key"] == second["key"])
+    assert waiting["state"]["waiting_for"] == first["key"]
+    assert not started_b.is_set()
+    assert client.post(f"/api/jobs/{first['key']}/cancel", headers=HEADERS).json()["ok"]
+    assert started_b.wait(2)
+    assert client.post(f"/api/jobs/{second['key']}/cancel", headers=HEADERS).json()["ok"]
+    assert client.app.state.hd.gift_lock_owner is None
+    assert not client.app.state.hd.gift_lock.locked()
+
+
+def test_archive_gift_run_preserves_queue_and_requires_stop(client: TestClient, monkeypatch) -> None:
+    import asyncio
+
+    async def hold(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("healdragg.api.crawl_gifts", hold)
+    store = client.app.state.hd.store
+    store.add_session("active", "active.session")
+    run = store.create_gift_crawl("one", 2, 20, 100)
+    store.gift_crawl_enqueue(run, 42, 1, "test")
+    store.gift_crawl_status(run, "paused")
+    assert client.post(f"/api/gifts/runs/{run}/archive", headers=HEADERS, json={"archived": True}).json()["ok"]
+    assert not client.get("/api/gifts/runs?attention=true", headers=HEADERS).json()["rows"]
+    assert client.get("/api/gifts/runs?archived=true", headers=HEADERS).json()["rows"][0]["id"] == run
+    assert client.post(f"/api/gifts/runs/{run}/resume", headers=HEADERS).status_code == 409
+    assert client.post(f"/api/gifts/runs/{run}/archive", headers=HEADERS, json={"archived": False}).json()["ok"]
+    assert store.gift_crawl_next(run)["tg_id"] == 42
+    assert client.post(f"/api/gifts/runs/{run}/resume", headers=HEADERS).status_code == 200
+    assert client.post(f"/api/gifts/runs/{run}/archive", headers=HEADERS, json={"archived": True}).status_code == 409
+    assert client.post(f"/api/jobs/gifts:run:{run}/cancel", headers=HEADERS).json()["ok"]
+    assert store.gift_crawl_next(run)["tg_id"] == 42

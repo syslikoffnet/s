@@ -439,8 +439,12 @@ class Api(private val baseUrl: String, private val token: String) {
     suspend fun giftArt(giftId: Long): ByteArray =
         raw("api/gifts/art/$giftId", timeoutMillis = 45_000)
 
-    suspend fun giftRuns(limit: Int = 100): List<JSONObject> =
-        jsonObjects(obj("api/gifts/runs?attention=true&limit=$limit").arr("rows"))
+    suspend fun giftRuns(limit: Int = 100, archived: Boolean = false): List<JSONObject> =
+        jsonObjects(obj("api/gifts/runs?attention=true&limit=$limit&archived=$archived").arr("rows"))
+
+    suspend fun archiveGiftRun(id: Long, archived: Boolean) {
+        obj("api/gifts/runs/$id/archive", "POST", JSONObject().put("archived", archived))
+    }
 
     suspend fun giftRunIssues(id: Long, offset: Int): Pair<List<JSONObject>, Int> {
         val data = obj("api/gifts/runs/$id/issues?limit=25&offset=$offset")
@@ -456,7 +460,16 @@ class Api(private val baseUrl: String, private val token: String) {
 
     suspend fun nftChainStatus(): JSONObject? = obj("api/gifts/chain").obj("task")
 
-    suspend fun resumeNftChain(): Job = Job.from(obj("api/gifts/chain/resume", "POST"))
+    suspend fun nftChainRuns(archived: Boolean = false, limit: Int = 100): List<JSONObject> =
+        jsonObjects(obj("api/gifts/chain/runs?limit=$limit&archived=$archived").arr("rows"))
+
+    suspend fun archiveNftChain(id: Long, archived: Boolean) {
+        obj("api/gifts/chain/runs/$id/archive", "POST", JSONObject().put("archived", archived))
+    }
+
+    suspend fun resumeNftChain(id: Long, extraRequests: Int = 0): Job = Job.from(
+        obj("api/gifts/chain/runs/$id/resume", "POST", JSONObject().put("extra_requests", extraRequests))
+    )
 
     suspend fun startNftChain(requests: Int = 2000, discover: Boolean = true): Job {
         val body = JSONObject().put("requests", requests).put("discover", discover)

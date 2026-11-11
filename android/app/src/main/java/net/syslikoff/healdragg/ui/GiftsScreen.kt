@@ -104,9 +104,14 @@ fun GiftsScreen(
     var job by remember { mutableStateOf<Job?>(null) }
     var heavyTasks by remember { mutableStateOf<List<Job>>(emptyList()) }
     var heavyErrors by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
-    var chainRun by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    var allJobs by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var chainRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var archivedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var archivedChains by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var showDeleted by rememberSaveable { mutableStateOf(false) }
     var savedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
     var savedRunLimit by remember { mutableStateOf(100) }
+    var chainRunLimit by remember { mutableStateOf(100) }
     var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
     var summary by remember { mutableStateOf(GiftSummary()) }
     var loading by remember { mutableStateOf(true) }
@@ -238,10 +243,11 @@ fun GiftsScreen(
     }
 
     // При возврате на экран получаем состояние из движка, а не из remember.
-    LaunchedEffect(api, savedRunLimit) {
+    LaunchedEffect(api, savedRunLimit, chainRunLimit, showDeleted) {
         val client = api ?: return@LaunchedEffect
         while (true) {
             runCatching { client.jobs() }.onSuccess { jobs ->
+                allJobs = jobs.filter { !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles") }
                 val active = jobs.firstOrNull {
                     !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles")
                 }
@@ -250,7 +256,11 @@ fun GiftsScreen(
             }
             runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
             runCatching { client.failedHeavyTasks() }.onSuccess { heavyErrors = it }
-            runCatching { client.nftChainStatus() }.onSuccess { chainRun = it }
+            runCatching { client.nftChainRuns(limit = chainRunLimit) }.onSuccess { chainRuns = it }
+            if (showDeleted) {
+                runCatching { client.giftRuns(limit = savedRunLimit, archived = true) }.onSuccess { archivedRuns = it }
+                runCatching { client.nftChainRuns(archived = true, limit = chainRunLimit) }.onSuccess { archivedChains = it }
+            }
             delay(3_000)
         }
     }
@@ -520,6 +530,7 @@ fun GiftsScreen(
                                 }
                             }) { Text("Стоп", color = Hd.Bad) }
                         }
+                        current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                         current.state?.optJSONObject("queue")?.let { counts ->
                             Text(
                                 "В очереди: ${counts.optInt("pending")} · недоступно: ${counts.optInt("unavailable")} · отложено: ${counts.optInt("deferred")}",
@@ -539,6 +550,24 @@ fun GiftsScreen(
                 }
             }
 
+            items(allJobs.filter { it.key != job?.key }, key = { "queued-${it.key}" }) { current ->
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Text("Другая задача: ${current.key}", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                    Text(current.phase, color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                    current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching { api?.cancelJob(current.key) ?: false }
+                                .onSuccess { stopped ->
+                                    if (stopped) { allJobs = allJobs.filterNot { it.key == current.key }; onToast("Задача остановлена") }
+                                    else error = "Задача уже завершилась"
+                                }
+                                .onFailure { error = it.message ?: "Не удалось остановить задачу" }
+                        }
+                    }) { Text("Стоп", color = Hd.Bad) }
+                }
+            }
+
             items(heavyTasks, key = { "active-heavy-${it.targetId}" }) { current ->
                 HdCard(contentPadding = PaddingValues(14.dp)) {
                     Text(
@@ -549,6 +578,7 @@ fun GiftsScreen(
                     )
                     Text(current.phase + if (current.total > 0) " · ${current.done}/${current.total}" else "",
                         style = MaterialTheme.typography.labelSmall, color = Hd.Muted)
+                    current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                     current.state?.str("session")?.let { Text("Аккаунт: $it", color = Hd.Dim, style = MaterialTheme.typography.labelSmall) }
                     current.state?.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -588,12 +618,19 @@ fun GiftsScreen(
             }
 
             items(
-                savedRuns.filter { it.optLong("id") != job?.state?.optLong("run_id") },
+                savedRuns.filter { job?.kind != "gifts" || it.optLong("id") != job?.state?.optLong("run_id") },
                 key = { "saved-run-${it.optLong("id")}" },
             ) { run ->
                 GiftCrawlCard(
                     run = run, api = api, canResume = !busy && job == null,
                     onOpenProfile = onOpenProfile,
+                    onArchive = {
+                        scope.launch {
+                            runCatching { api?.archiveGiftRun(run.optLong("id"), true) ?: throw ApiException(0, "Движок не запущен") }
+                                .onSuccess { savedRuns = savedRuns.filterNot { it.optLong("id") == run.optLong("id") } }
+                                .onFailure { error = it.message ?: "Не удалось удалить из списка" }
+                        }
+                    },
                     onResume = {
                         scope.launch {
                             val client = api ?: return@launch
@@ -609,6 +646,39 @@ fun GiftsScreen(
                     TextButton(onClick = { savedRunLimit = (savedRunLimit + 100).coerceAtMost(500) }) {
                         Text("Показать ещё сохранённые обходы")
                     }
+                }
+            }
+
+            item("deleted-runs-toggle") {
+                TextButton(onClick = { showDeleted = !showDeleted }) {
+                    Text(if (showDeleted) "Скрыть удалённые задачи" else "Восстановить удалённые задачи")
+                }
+            }
+            if (showDeleted) {
+                items(archivedRuns, key = { "deleted-gift-${it.optLong("id")}" }) { run ->
+                    val id = run.optLong("id")
+                    HdCard {
+                        Text("Удалённый обход: ${run.optString("query")} · #$id", color = Hd.Muted)
+                        TextButton(onClick = { scope.launch {
+                            runCatching { api?.archiveGiftRun(id, false) ?: throw ApiException(0, "Движок не запущен") }
+                                .onSuccess { archivedRuns = archivedRuns.filterNot { it.optLong("id") == id } }
+                                .onFailure { error = it.message ?: "Не удалось восстановить" }
+                        } }) { Text("Восстановить") }
+                    }
+                }
+                items(archivedChains, key = { "deleted-chain-${it.optLong("id")}" }) { run ->
+                    val id = run.optLong("id")
+                    HdCard {
+                        Text("Удалённый поиск NFT #$id · ${run.optInt("used")} / ${run.optInt("budget")}", color = Hd.Muted)
+                        TextButton(onClick = { scope.launch {
+                            runCatching { api?.archiveNftChain(id, false) ?: throw ApiException(0, "Движок не запущен") }
+                                .onSuccess { archivedChains = archivedChains.filterNot { it.optLong("id") == id } }
+                                .onFailure { error = it.message ?: "Не удалось восстановить" }
+                        } }) { Text("Восстановить") }
+                    }
+                }
+                if (archivedRuns.isEmpty() && archivedChains.isEmpty()) {
+                    item("deleted-empty") { Text("Удалённых задач нет", color = Hd.Muted, style = MaterialTheme.typography.bodySmall) }
                 }
             }
 
@@ -804,29 +874,45 @@ fun GiftsScreen(
                     }
                 }
 
+                items(chainRuns.filter { it.optString("status") != "running" }, key = { "chain-saved-${it.optLong("id")}" }) { run ->
+                    val id = run.optLong("id")
+                    val used = run.optInt("used")
+                    val budget = run.optInt("budget")
+                    HdCard {
+                        Text("Поиск NFT #$id · $used / $budget", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
+                        run.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
+                        Text("Позиции коллекций общие: продолжение учитывает результаты других поисков.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(enabled = !busy && job == null && (used < budget || budget < 2_000_000_000), onClick = {
+                                scope.launch {
+                                    val extra = if (used >= budget) minOf(chainRequests, 2_000_000_000 - budget) else 0
+                                    runCatching { api?.resumeNftChain(id, extra) ?: throw ApiException(0, "Движок не запущен") }
+                                        .onSuccess { job = it }
+                                        .onFailure { error = it.message ?: "Не удалось продолжить поиск" }
+                                }
+                            }) { Text(if (used >= budget) "Продолжить с доп. лимитом" else "Продолжить") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching { api?.archiveNftChain(id, true) ?: throw ApiException(0, "Движок не запущен") }
+                                        .onSuccess { chainRuns = chainRuns.filterNot { it.optLong("id") == id } }
+                                        .onFailure { error = it.message ?: "Не удалось удалить из списка" }
+                                }
+                            }) { Text("Удалить") }
+                        }
+                        if (used >= budget && budget < 2_000_000_000) Text("Будет добавлено до ${minOf(chainRequests, 2_000_000_000 - budget)} запросов.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+
+                if (chainRuns.size >= chainRunLimit && chainRunLimit < 500) {
+                    item("more-chain-runs") {
+                        TextButton(onClick = { chainRunLimit = (chainRunLimit + 100).coerceAtMost(500) }) {
+                            Text("Показать ещё поиски NFT")
+                        }
+                    }
+                }
+
                 item("chainForm") {
                     HdCard {
-                        val saved = chainRun?.takeIf { it.optString("status") in listOf("paused", "error") }
-                        if (saved != null && job?.kind != "giftchain") {
-                            val used = saved.optInt("used")
-                            val budget = saved.optInt("budget")
-                            Text("Сохранённый поиск: $used из $budget запросов", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
-                            saved.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
-                            if (used < budget) {
-                                OutlinedButton(onClick = {
-                                    scope.launch {
-                                        val client = api ?: return@launch
-                                        runCatching { client.resumeNftChain() }
-                                            .onSuccess { job = it; chainRun = null }
-                                            .onFailure { error = it.message ?: "Не удалось продолжить поиск" }
-                                    }
-                                }, enabled = !busy && job == null) { Text("Продолжить сохранённый поиск") }
-                            } else {
-                                Text("Лимит исчерпан. Новый поиск проверит оставшуюся позицию.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
-                            }
-                            Text("Новый поиск начнётся с сохранённых позиций коллекций, но с новым лимитом.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
-                            Spacer(Modifier.height(10.dp))
-                        }
                         Text(
                             "Поиск NFT по коллекциям",
                             style = MaterialTheme.typography.titleSmall,
@@ -885,7 +971,7 @@ fun GiftsScreen(
                                 modifier = Modifier.size(18.dp),
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text(if (saved != null) "Начать новый поиск" else "Искать NFT по коллекциям")
+                            Text("Искать NFT по коллекциям")
                         }
                         if (collections.isNotEmpty()) {
                             Spacer(Modifier.height(10.dp))
@@ -1147,6 +1233,7 @@ private fun GiftCrawlCard(
     api: Api?,
     canResume: Boolean,
     onResume: () -> Unit,
+    onArchive: () -> Unit,
     onOpenProfile: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -1190,6 +1277,9 @@ private fun GiftCrawlCard(
             OutlinedButton(onClick = onResume, enabled = canResume) {
                 Text(if (pending > 0 || unavailable == 0) "Продолжить обход" else "Повторить недоступные")
             }
+        }
+        if (run.optString("status") != "running") {
+            TextButton(onClick = onArchive) { Text("Удалить") }
         }
         if (problemCount > 0) {
             TextButton(onClick = {

@@ -126,12 +126,32 @@ class AppState:
         self.live_at: dict[str, float] = {}
         # Не допускаем одновременных снимков профилей от разных задач подарков.
         self.gift_lock = asyncio.Lock()
+        self.gift_lock_owner: str | None = None
         self.session_mutation_lock = asyncio.Lock()
         self.auto_backup_busy = False
         self.auto_backup_task: asyncio.Task | None = None
         self.autopilot_task: asyncio.Task | None = None
         self.request_count = 0
         self.restoring = False
+
+    @asynccontextmanager
+    async def gift_access(self, job: Job | None = None):
+        if job:
+            job.state = {**job.state, "phase": "ожидаю очередь подарков", "waiting_for_gift_lock": True}
+        async with self.gift_lock:
+            self.gift_lock_owner = job.key if job else "gifts:lookup"
+            if job:
+                job.state = {**job.state, "phase": "подготовка", "waiting_for_gift_lock": False}
+            try:
+                yield
+            finally:
+                self.gift_lock_owner = None
+
+    def job_payload(self, job: Job) -> dict[str, Any]:
+        payload = job.as_dict()
+        if job.state.get("waiting_for_gift_lock") and not job.finished:
+            payload["state"] = {**job.state, "waiting_for": self.gift_lock_owner}
+        return payload
 
     def running(self, key: str) -> bool:
         job = self.jobs.get(key)
@@ -381,8 +401,9 @@ def create_app(settings: Settings) -> Starlette:
             launch_gift_crawl(int(run["id"]))
         for task in state.store.running_heavy_tasks():
             launch_heavy_task(task)
-        chain_run = state.store.nft_chain_run()
-        if chain_run and chain_run["status"] == "running":
+        chain_run = state.store.query_one(
+            "SELECT * FROM nft_chain_runs WHERE status = 'running' AND archived = 0 ORDER BY id DESC LIMIT 1")
+        if chain_run:
             launch_nft_chain_run(int(chain_run["id"]))
         if settings.auto_backup:
             async def _backup_once() -> None:
@@ -828,9 +849,10 @@ def create_app(settings: Settings) -> Starlette:
         if not state.store.session_names():
             raise HTTPException(409, "Нет активного аккаунта Telegram")
         if state.gift_lock.locked():
-            raise HTTPException(409, "Сейчас идёт другой сбор подарков, повторите позже")
+            raise HTTPException(409, f"Идёт другой сбор подарков ({state.gift_lock_owner or 'очередь'}); "
+                                 "откройте раздел «Подарки» и остановите нужную задачу")
         try:
-            async with state.gift_lock:
+            async with state.gift_access():
                 row = await resolve_unique_gift(state.pool, state.store, slug)
         except RPCError as exc:
             if getattr(exc, "message", None) == "STARGIFT_SLUG_INVALID":
@@ -1286,7 +1308,7 @@ def create_app(settings: Settings) -> Starlette:
                     job.error = message
                     return
                 job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                async with state.gift_lock:
+                async with state.gift_access(job):
                     await crawl_nft_chain(
                         state.pool, state.store, settings, requests=budget, reporter=on_progress,
                         discover=bool(run["discover"]), slug=run["slug"], total=run["total"], run_id=run_id,
@@ -1315,19 +1337,52 @@ def create_app(settings: Settings) -> Starlette:
         run = state.store.nft_chain_run()
         return {"task": {key: value for key, value in run.items() if key != "discovery_ids"} if run else None}
 
+    async def nft_chain_runs(request: Request) -> dict[str, Any]:
+        guard(request)
+        limit = _q_int(request, "limit", 100, 1, 500)
+        offset = _q_int(request, "offset", 0, 0, 1_000_000)
+        rows = state.store.nft_chain_runs(archived=_q_bool(request, "archived"), limit=limit, offset=offset)
+        return {"rows": [{k: v for k, v in row.items() if k != "discovery_ids"} for row in rows],
+                "offset": offset, "has_more": len(rows) == limit}
+
     async def resume_nft_chain(request: Request) -> dict[str, Any]:
         guard(request)
-        run = state.store.nft_chain_run()
-        if not run or run["status"] not in ("paused", "error"):
+        run_id = request.path_params.get("run_id")
+        run = state.store.nft_chain_run(int(run_id)) if run_id is not None else state.store.nft_chain_run()
+        if not run or run["status"] not in ("paused", "error", "stopped", "done"):
             raise HTTPException(409, "Нет приостановленного поиска NFT")
+        if run.get("archived"):
+            raise HTTPException(409, "Сначала восстановите поиск из удалённых")
         if state.running("gifts:chain"):
-            raise HTTPException(409, "Поиск NFT уже идёт")
+            raise HTTPException(409, "Другой поиск NFT уже идёт")
         if not state.store.session_names():
             raise HTTPException(409, "Нет активного аккаунта Telegram")
-        if int(run["used"]) >= int(run["budget"]):
-            raise HTTPException(409, "Лимит исчерпан — начните новый поиск")
+        body = await _body(request)
+        extra = body.get("extra_requests", 0)
+        if (type(extra) is not int or not 0 <= extra <= 200_000
+                or int(run["budget"]) + extra > 2_000_000_000):
+            raise HTTPException(400, "За раз можно добавить не более 200 000 запросов")
+        if int(run["used"]) >= int(run["budget"]) + extra:
+            raise HTTPException(409, "Лимит исчерпан — добавьте запросы для продолжения")
+        if extra:
+            state.store.increase_nft_chain_budget(int(run["id"]), extra)
         state.store.set_nft_chain_status(int(run["id"]), "running")
         return launch_nft_chain_run(int(run["id"])).as_dict()
+
+    async def archive_nft_chain(request: Request) -> dict[str, Any]:
+        guard(request)
+        run_id = int(request.path_params["run_id"])
+        run = state.store.nft_chain_run(run_id)
+        if not run:
+            raise HTTPException(404, "Поиск NFT не найден")
+        current = state.jobs.get("gifts:chain")
+        if run["status"] == "running" or (current and not current.finished and current.state.get("run_id") == run_id):
+            raise HTTPException(409, "Сначала остановите поиск")
+        archive = (await _body(request)).get("archived")
+        if not isinstance(archive, bool):
+            raise HTTPException(400, "archived: true или false")
+        state.store.set_run_archived("nft", run_id, archive)
+        return {"ok": True}
 
     async def start_nft_chain(request: Request) -> dict[str, Any]:
         """Массовый обход коллекций уникальных подарков: добираем владельцев."""
@@ -1376,7 +1431,7 @@ def create_app(settings: Settings) -> Starlette:
         async def runner() -> None:
             try:
                 job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                async with state.gift_lock:
+                async with state.gift_access(job):
                     result = await refresh_gifts(
                         state.pool,
                         state.store,
@@ -1435,7 +1490,7 @@ def create_app(settings: Settings) -> Starlette:
         async def runner() -> None:
             try:
                 job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                async with state.gift_lock:
+                async with state.gift_access(job):
                     result = await crawl_nft_profiles(
                         state.pool,
                         state.store,
@@ -1501,7 +1556,7 @@ def create_app(settings: Settings) -> Starlette:
                     state.store.set_heavy_task_status(owner, "running")
                     try:
                         job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                        async with state.gift_lock:
+                        async with state.gift_access(job):
                             result = await crawl_gifts(
                                 state.pool, state.store, settings, query,
                                 sessions=[session], depth=1, max_profiles=1,
@@ -1636,7 +1691,7 @@ def create_app(settings: Settings) -> Starlette:
         async def runner() -> None:
             try:
                 job.state = {**job.state, "phase": "ожидаю завершения другого обхода подарков"}
-                async with state.gift_lock:
+                async with state.gift_access(job):
                     result = await crawl_gifts(
                         state.pool, state.store, settings, run["query"],
                         depth=int(run["depth"]), max_profiles=int(run["max_profiles"]),
@@ -1671,7 +1726,9 @@ def create_app(settings: Settings) -> Starlette:
         guard(request)
         limit = _q_int(request, "limit", 100, 1, 500)
         offset = _q_int(request, "offset", 0, 0, 1_000_000)
-        runs = (state.store.gift_crawls_needing_attention(limit=limit, offset=offset)
+        runs = (state.store.query("SELECT * FROM gift_crawl_runs WHERE archived = 1 ORDER BY id DESC LIMIT ? OFFSET ?",
+                                  (limit, offset)) if _q_bool(request, "archived") else
+                state.store.gift_crawls_needing_attention(limit=limit, offset=offset)
                 if _q_bool(request, "attention") else
                 state.store.gift_crawls(("running", "paused", "error", "done"), limit=limit, offset=offset))
         return {"rows": [{**run, "queue": state.store.gift_crawl_counts(int(run["id"]))} for run in runs],
@@ -1694,6 +1751,8 @@ def create_app(settings: Settings) -> Starlette:
         run = state.store.gift_crawl(run_id)
         if not run:
             raise HTTPException(404, "Обход не найден")
+        if run.get("archived"):
+            raise HTTPException(409, "Сначала восстановите обход из удалённых")
         if not state.store.session_names():
             raise HTTPException(409, "Нет активного аккаунта Telegram")
         if state.running(f"gifts:run:{run_id}"):
@@ -1706,6 +1765,20 @@ def create_app(settings: Settings) -> Starlette:
                              "WHERE run_id = ? AND state = 'unavailable'", (run_id,))
         state.store.gift_crawl_status(run_id, "running")
         return launch_gift_crawl(run_id).as_dict()
+
+    async def archive_gift_crawl(request: Request) -> dict[str, Any]:
+        guard(request)
+        run_id = int(request.path_params["run_id"])
+        run = state.store.gift_crawl(run_id)
+        if not run:
+            raise HTTPException(404, "Обход не найден")
+        if run["status"] == "running" or state.running(f"gifts:run:{run_id}"):
+            raise HTTPException(409, "Сначала остановите обход")
+        archive = (await _body(request)).get("archived")
+        if not isinstance(archive, bool):
+            raise HTTPException(400, "archived: true или false")
+        state.store.set_run_archived("gifts", run_id, archive)
+        return {"ok": True}
 
     async def collect_profile_gifts(request: Request) -> dict[str, Any]:
         guard(request)
@@ -1930,7 +2003,7 @@ def create_app(settings: Settings) -> Starlette:
 
     async def jobs(request: Request) -> list[dict[str, Any]]:
         guard(request)
-        return [job.as_dict() for job in state.jobs.values()]
+        return [state.job_payload(job) for job in state.jobs.values()]
 
     async def cancel(request: Request) -> dict[str, Any]:
         guard(request)
@@ -2098,10 +2171,14 @@ def create_app(settings: Settings) -> Starlette:
         Route("/api/gifts/nft/export.csv", _route(gifts_nft_csv)),
         Route("/api/gifts/chain", _route(start_nft_chain), methods=["POST"]),
         Route("/api/gifts/chain", _route(nft_chain_status), methods=["GET"]),
+        Route("/api/gifts/chain/runs", _route(nft_chain_runs)),
+        Route("/api/gifts/chain/runs/{run_id:int}/resume", _route(resume_nft_chain), methods=["POST"]),
+        Route("/api/gifts/chain/runs/{run_id:int}/archive", _route(archive_nft_chain), methods=["POST"]),
         Route("/api/gifts/chain/resume", _route(resume_nft_chain), methods=["POST"]),
         Route("/api/gifts/nft/profiles", _route(start_nft_profiles), methods=["POST"]),
         Route("/api/gifts/crawl", _route(start_gifts), methods=["POST"]),
         Route("/api/gifts/runs", _route(gift_crawl_runs)),
+        Route("/api/gifts/runs/{run_id:int}/archive", _route(archive_gift_crawl), methods=["POST"]),
         Route("/api/gifts/runs/{run_id:int}/issues", _route(gift_crawl_issues)),
         Route("/api/gifts/runs/{run_id:int}/resume", _route(resume_gift_crawl), methods=["POST"]),
         Route("/api/gifts/refresh", _route(start_gift_refresh), methods=["POST"]),

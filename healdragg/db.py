@@ -542,6 +542,8 @@ class Store:
             self._soft("ALTER TABLE gift_crawl_runs ADD COLUMN refresh_known INTEGER NOT NULL DEFAULT 0")
         if "expected_owner" not in crawl_cols:
             self._soft("ALTER TABLE gift_crawl_runs ADD COLUMN expected_owner INTEGER")
+        if "archived" not in crawl_cols:
+            self._soft("ALTER TABLE gift_crawl_runs ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
         gift_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(gifts)")}
         gift_additions = {
             "slug": "TEXT",
@@ -568,7 +570,8 @@ class Store:
         chain_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(nft_chain_runs)")}
         for column, ddl in {"discovery_used": "INTEGER NOT NULL DEFAULT 0",
                             "discovery_index": "INTEGER NOT NULL DEFAULT 0",
-                            "discovery_ids": "TEXT", "session": "TEXT", "session_tg_id": "INTEGER"}.items():
+                            "discovery_ids": "TEXT", "session": "TEXT", "session_tg_id": "INTEGER",
+                            "archived": "INTEGER NOT NULL DEFAULT 0"}.items():
             if chain_cols and column not in chain_cols:
                 self._soft(f"ALTER TABLE nft_chain_runs ADD COLUMN {column} {ddl}")
         self._conn.commit()
@@ -1430,17 +1433,17 @@ class Store:
     def gift_crawls(self, statuses: tuple[str, ...] = ("running", "paused", "error"), *,
                     limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
         marks = ",".join("?" for _ in statuses)
-        sql = f"SELECT * FROM gift_crawl_runs WHERE status IN ({marks}) ORDER BY id DESC"
+        sql = f"SELECT * FROM gift_crawl_runs WHERE archived = 0 AND status IN ({marks}) ORDER BY id DESC"
         if limit is None:
             return self.query(sql, statuses)
         return self.query(sql + " LIMIT ? OFFSET ?", (*statuses, max(1, min(limit, 500)), max(0, offset)))
 
     def gift_crawls_needing_attention(self, *, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         return self.query(
-            "SELECT * FROM gift_crawl_runs AS r WHERE r.status IN ('running', 'error') "
+            "SELECT * FROM gift_crawl_runs AS r WHERE r.archived = 0 AND (r.status IN ('running', 'error') "
             "OR (r.status = 'paused' AND r.initialized = 0) "
             "OR (r.status IN ('paused', 'done') AND EXISTS (SELECT 1 FROM gift_crawl_queue AS q "
-            "WHERE q.run_id = r.id AND q.state IN ('pending', 'unavailable', 'deferred'))) "
+            "WHERE q.run_id = r.id AND q.state IN ('pending', 'unavailable', 'deferred')))) "
             "ORDER BY r.id DESC LIMIT ? OFFSET ?", (max(1, min(limit, 500)), max(0, offset)),
         )
 
@@ -2054,8 +2057,6 @@ class Store:
     def create_nft_chain_run(self, budget: int, discover: bool, slug: str | None, total: int | None,
                              session: str | None = None, session_tg_id: int | None = None) -> int:
         with self.tx() as conn:
-            conn.execute("UPDATE nft_chain_runs SET status='stopped', updated_at=? "
-                         "WHERE status IN ('paused', 'error')", (now_ts(),))
             cursor = conn.execute(
                 "INSERT INTO nft_chain_runs(budget, discover, slug, total, session, session_tg_id, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2067,6 +2068,26 @@ class Store:
         if run_id is None:
             return self.query_one("SELECT * FROM nft_chain_runs ORDER BY id DESC LIMIT 1")
         return self.query_one("SELECT * FROM nft_chain_runs WHERE id = ?", (run_id,))
+
+    def nft_chain_runs(self, *, archived: bool = False, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM nft_chain_runs WHERE archived = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                          (int(archived), max(1, min(500, limit)), max(0, offset)))
+
+    def set_run_archived(self, kind: str, run_id: int, archived: bool) -> bool:
+        table = {"gifts": "gift_crawl_runs", "nft": "nft_chain_runs"}.get(kind)
+        if table is None:
+            raise ValueError("Неизвестный тип очереди")
+        with self.tx() as conn:
+            result = conn.execute(
+                f"UPDATE {table} SET archived = ?, updated_at = ? WHERE id = ? AND status != 'running'",
+                (int(archived), now_ts(), run_id),
+            )
+            return bool(result.rowcount)
+
+    def increase_nft_chain_budget(self, run_id: int, extra: int) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE nft_chain_runs SET budget = budget + ?, updated_at = ? WHERE id = ?",
+                         (extra, now_ts(), run_id))
 
     def bind_nft_chain_account(self, run_id: int, session: str, user_id: int) -> None:
         with self.tx() as conn:

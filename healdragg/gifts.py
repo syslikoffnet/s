@@ -883,7 +883,7 @@ async def crawl_nft_chain(
     run_id: int | None = None,
 ) -> dict[str, Any]:
     """Перебирает NFT; курсор продвигается только после обработки ответа."""
-    budget = max(1, min(200_000, int(requests)))
+    budget = max(1, min(2_000_000_000, int(requests)))
     run = store.nft_chain_run(run_id) if run_id is not None else None
     if run_id is not None and run is None:
         raise ValueError("Задача поиска NFT не найдена")
@@ -932,8 +932,17 @@ async def crawl_nft_chain(
         if inflight and not inflight.startswith("discovery:"):
             base, sep, number = inflight.rpartition("-")
             collection = store.query_one("SELECT * FROM nft_collections WHERE slug_base = ?", (base,))
-            if not sep or not number.isdigit() or not collection or int(collection["cursor"]) != int(number):
+            if not sep or not number.isdigit() or not collection:
                 raise RuntimeError("Не найдена позиция прерванного запроса NFT")
+            saved_cursor = int(collection["cursor"])
+            if saved_cursor < int(number):
+                raise RuntimeError("Позиция коллекции оказалась раньше прерванного запроса NFT")
+            if saved_cursor > int(number):
+                # Другой поиск уже обработал этот номер в общей базе.
+                with store.tx() as conn:
+                    conn.execute("UPDATE nft_chain_runs SET inflight=NULL WHERE id=? AND inflight=?",
+                                 (run_id, inflight))
+                collection = store.next_nft_collection()
         else:
             collection = store.next_nft_collection()
         if collection is None:

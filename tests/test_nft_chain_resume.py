@@ -260,3 +260,62 @@ async def test_network_failure_makes_only_one_application_call(tmp_path):
     assert store.nft_chain_run(run)["used"] == 1
     assert store.next_nft_collection()["cursor"] == 1
     store.close()
+
+
+def test_multiple_saved_nft_runs_archive_and_resume_with_extra_budget(tmp_path, monkeypatch):
+    settings = settings_for(tmp_path)
+    entered = threading.Event()
+
+    async def hold(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("healdragg.api.crawl_nft_chain", hold)
+    app = create_app(settings)
+    app.state.hd.store.add_session("chosen", "chosen.session")
+    with TestClient(app) as client:
+        first = client.post("/api/gifts/chain", headers=HEADERS, json={"requests": 1}).json()["state"]["run_id"]
+        assert entered.wait(2)
+        assert client.post("/api/jobs/gifts:chain/cancel", headers=HEADERS).json()["ok"]
+        store = app.state.hd.store
+        store.set_nft_chain_status(first, "running")
+        assert store.reserve_nft_chain_request(first, "Bear-1")
+        store.set_nft_chain_status(first, "paused")
+        assert client.post(f"/api/gifts/chain/runs/{first}/archive", headers=HEADERS,
+                           json={"archived": True}).json()["ok"]
+        assert client.post(f"/api/gifts/chain/runs/{first}/resume", headers=HEADERS).status_code == 409
+        entered.clear()
+        second = client.post("/api/gifts/chain", headers=HEADERS, json={"requests": 10}).json()["state"]["run_id"]
+        assert entered.wait(2) and second != first
+        assert client.post("/api/jobs/gifts:chain/cancel", headers=HEADERS).json()["ok"]
+        assert client.post(f"/api/gifts/chain/runs/{first}/archive", headers=HEADERS,
+                           json={"archived": False}).json()["ok"]
+        assert {r["id"] for r in client.get("/api/gifts/chain/runs", headers=HEADERS).json()["rows"]} == {first, second}
+        assert client.post(f"/api/gifts/chain/runs/{first}/resume", headers=HEADERS).status_code == 409
+        entered.clear()
+        res = client.post(f"/api/gifts/chain/runs/{first}/resume", headers=HEADERS, json={"extra_requests": 5})
+        assert res.status_code == 200 and entered.wait(2)
+        assert store.nft_chain_run(first)["budget"] == 6
+        assert client.post(f"/api/gifts/chain/runs/{first}/archive", headers=HEADERS,
+                           json={"archived": True}).status_code == 409
+        assert client.post("/api/jobs/gifts:chain/cancel", headers=HEADERS).json()["ok"]
+
+
+async def test_resume_old_inflight_after_another_search_advanced_collection(tmp_path):
+    settings = settings_for(tmp_path)
+    store = Store(settings.db_path)
+    store.upsert_nft_collection("Bear", total=3)
+    run = store.create_nft_chain_run(5, False, None, None)
+    assert store.reserve_nft_chain_request(run, "Bear-1")
+    store.advance_nft_collection("Bear", cursor=2, scanned=1, owners=1, on_chain=0)
+    calls = []
+
+    class Client:
+        async def __call__(self, request):
+            calls.append(request.slug)
+            return UniqueStarGift(gift=unique(int(request.slug.split("-")[1])), chats=[], users=[])
+
+    await crawl_nft_chain(pool_for(Client()), store, settings, requests=5, discover=False, run_id=run)
+    assert calls == ["Bear-2", "Bear-3"]
+    assert store.nft_chain_run(run)["inflight"] is None
+    store.close()
