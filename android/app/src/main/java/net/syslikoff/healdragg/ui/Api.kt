@@ -307,12 +307,18 @@ class Api(private val baseUrl: String, private val token: String) {
         offset: Int = 0,
         resaleOnly: Boolean = false,
         collection: String? = null,
+        gender: String? = null,
+        country: String? = null,
+        distribution: Boolean = false,
     ): NftPage {
         val path = buildString {
             append("api/gifts/nft?limit=$limit&offset=$offset&sort=$sort")
             if (!chain.isNullOrBlank()) append("&chain=$chain")
             if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
             if (resaleOnly) append("&resell=1")
+            if (!gender.isNullOrBlank()) append("&gender=$gender")
+            if (!country.isNullOrBlank()) append("&country=$country")
+            if (distribution) append("&distribution=true")
             if (!collection.isNullOrBlank()) append("&collection=${URLEncoder.encode(collection, "UTF-8")}")
         }
         val data = obj(path)
@@ -322,6 +328,7 @@ class Api(private val baseUrl: String, private val token: String) {
             owners = jsonObjects(data.arr("owners")).map(NftOwner::from),
             collections = jsonObjects(data.arr("collections")).map(NftCollection::from),
             total = data.num("total").toInt(),
+            distribution = data.obj("distribution")?.let(NftDistribution::from),
         )
     }
 
@@ -346,12 +353,16 @@ class Api(private val baseUrl: String, private val token: String) {
         sort: String = "value",
         resaleOnly: Boolean = false,
         collection: String? = null,
+        gender: String? = null,
+        country: String? = null,
     ): ByteArray {
         val path = buildString {
             append("api/gifts/nft/export.csv?sort=$sort&limit=100000")
             if (!chain.isNullOrBlank()) append("&chain=$chain")
             if (!q.isNullOrBlank()) append("&q=${URLEncoder.encode(q, "UTF-8")}")
             if (resaleOnly) append("&resell=1")
+            if (!gender.isNullOrBlank()) append("&gender=$gender")
+            if (!country.isNullOrBlank()) append("&country=$country")
             if (!collection.isNullOrBlank()) append("&collection=${URLEncoder.encode(collection, "UTF-8")}")
         }
         return raw(path, "GET", null, "text/csv")

@@ -173,6 +173,9 @@ fun GiftsScreen(
     var nftHasMore by remember { mutableStateOf(false) }
     var nftResale by rememberSaveable { mutableStateOf(false) }
     var nftCollection by rememberSaveable { mutableStateOf("") }
+    var nftGender by rememberSaveable { mutableStateOf("") }
+    var nftCountry by rememberSaveable { mutableStateOf("") }
+    var nftDistribution by remember { mutableStateOf<NftDistribution?>(null) }
     var nftTotal by remember { mutableStateOf(0) }
     var ownerQuery by rememberSaveable { mutableStateOf("") }
     var ownerTotal by remember { mutableStateOf(0) }
@@ -212,7 +215,7 @@ fun GiftsScreen(
         return
     }
 
-    fun nftKey(): List<String> = listOf(chain, nftQuery.trim(), nftSort, nftResale.toString(), nftCollection)
+    fun nftKey(): List<String> = listOf(chain, nftQuery.trim(), nftSort, nftResale.toString(), nftCollection, nftGender, nftCountry)
 
     suspend fun reload() {
         val client = api ?: run { loading = false; return }
@@ -282,11 +285,13 @@ fun GiftsScreen(
         if (reset) nftLoading = true
         try {
             val page = client.giftsNft(chain = chainArg, q = query, sort = sort, limit = 200,
-                offset = offset, resaleOnly = resale, collection = collection)
+                offset = offset, resaleOnly = resale, collection = collection,
+                gender = nftGender.ifBlank { null }, country = nftCountry.ifBlank { null }, distribution = reset)
             if (generation != nftGeneration || requestedKey != nftKey() || client !== currentApi) return
             lastNftKey = requestedKey
             lastNftClient = client
             nftSummary = page.summary
+            if (reset) nftDistribution = page.distribution
             collections = page.collections
             nftRows = if (reset) page.rows else (nftRows + page.rows).distinctBy { row -> row.slug }
             nftTotal = page.total
@@ -320,6 +325,7 @@ fun GiftsScreen(
                     sort = nftSort,
                     resaleOnly = nftResale,
                     collection = nftCollection.ifBlank { null },
+                    gender = nftGender.ifBlank { null }, country = nftCountry.ifBlank { null },
                 )
             }
                 .onSuccess { payload ->
@@ -334,7 +340,7 @@ fun GiftsScreen(
         if (mode == 2 && ownerQuery.isNotBlank()) delay(400)
         reload()
     }
-    LaunchedEffect(api, mode, chain, nftQuery, nftSort, nftResale, nftCollection) {
+    LaunchedEffect(api, mode, chain, nftQuery, nftSort, nftResale, nftCollection, nftGender, nftCountry) {
         if (mode == 0 || api == null || (lastNftKey == nftKey() && lastNftClient === api)) return@LaunchedEffect
         if (nftQuery.isNotBlank()) delay(400)
         loadNft(reset = true)
@@ -710,8 +716,34 @@ fun GiftsScreen(
                             append(when (chain) { "wallet" -> "С адресом"; "telegram" -> "Без адреса"; else -> "Любое расположение" })
                             append(" · ")
                             append(when (nftSort) { "resell" -> "ресейл"; "recent" -> "новые"; "num" -> "по номеру"; else -> "дороже" })
+                            if (nftGender.isNotBlank()) append(" · имена: " + when (nftGender) { "female" -> "женские"; "male" -> "мужские"; else -> "неизвестно" })
+                            if (nftCountry.isNotBlank()) append(" · страна по имени: " + (nftDistribution?.countries?.firstOrNull { it.code == nftCountry }?.name ?: nftCountry))
                         }, color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
                         if (nftFiltersOpen) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Владелец · категории по имени (предположение)", color = Hd.Muted, style = MaterialTheme.typography.labelMedium)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Все", "female" to "Женские имена", "male" to "Мужские имена", "unknown" to "Неизвестно").forEach { (value, label) ->
+                                FilterChip(selected = nftGender == value, onClick = { nftGender = value },
+                                    label = { Text(label) }, colors = giftChipColors())
+                            }
+                        }
+                        Text("Предполагаемая страна по имени", color = Hd.Muted, style = MaterialTheme.typography.labelMedium)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(selected = nftCountry.isBlank(), onClick = { nftCountry = "" },
+                                label = { Text("Все") }, colors = giftChipColors())
+                            nftDistribution?.countries?.forEach { entry ->
+                                FilterChip(selected = nftCountry == entry.code, onClick = { nftCountry = entry.code },
+                                    label = { Text("${entry.name} · ${compactNumber(entry.count)}") }, colors = giftChipColors())
+                            }
+                        }
+                        nftDistribution?.let { stats ->
+                            Text("Уникальных аккаунтов: ${compactNumber(stats.owners)} · женские имена ${compactNumber(stats.female)} · мужские ${compactNumber(stats.male)} · неизвестно ${compactNumber(stats.unknown)}",
+                                color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                            Text("По текущему поиску и расположению, до фильтров пола и страны. Имя не доказывает пол, страну или владение NFT. Данные могут устареть." +
+                                if (stats.withoutOwner) " NFT без известного аккаунта не входят в число аккаунтов." else "",
+                                color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        }
                         Spacer(Modifier.height(8.dp))
                         Row(
                             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -820,7 +852,7 @@ fun GiftsScreen(
                     item("nftEmpty") {
                         HdCard(contentPadding = PaddingValues(16.dp)) {
                             Text(
-                                if (nftQuery.isBlank() && nftCollection.isBlank() && !nftResale && chain.isBlank())
+                                if (nftQuery.isBlank() && nftCollection.isBlank() && !nftResale && chain.isBlank() && nftGender.isBlank() && nftCountry.isBlank())
                                     "В базе пока пусто"
                                 else "Ничего не нашлось",
                                 style = MaterialTheme.typography.titleSmall,
@@ -835,13 +867,15 @@ fun GiftsScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Hd.Muted,
                             )
-                            if (nftQuery.isNotBlank() || nftCollection.isNotBlank() || nftResale || chain.isNotBlank()) {
+                            if (nftQuery.isNotBlank() || nftCollection.isNotBlank() || nftResale || chain.isNotBlank() || nftGender.isNotBlank() || nftCountry.isNotBlank()) {
                                 Spacer(Modifier.height(8.dp))
                                 TextButton(onClick = {
                                     nftQuery = ""
                                     nftCollection = ""
                                     nftResale = false
                                     chain = ""
+                                    nftGender = ""
+                                    nftCountry = ""
                                 }) {
                                     Text(
                                         "Сбросить фильтры",

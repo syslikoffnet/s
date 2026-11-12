@@ -671,6 +671,32 @@ data class NftCollection(
     }
 }
 
+data class NftCountryCount(val code: String, val name: String, val count: Int)
+
+data class NftDistribution(
+    val owners: Int = 0,
+    val male: Int = 0,
+    val female: Int = 0,
+    val unknown: Int = 0,
+    val countries: List<NftCountryCount> = emptyList(),
+    val withoutOwner: Boolean = false,
+) {
+    companion object {
+        fun from(o: org.json.JSONObject?): NftDistribution {
+            if (o == null) return NftDistribution()
+            val gender = o.obj("gender")
+            return NftDistribution(
+                owners = o.int("owners"), male = gender?.int("male") ?: 0,
+                female = gender?.int("female") ?: 0, unknown = gender?.int("unknown") ?: 0,
+                countries = jsonObjects(o.arr("countries")).map {
+                    NftCountryCount(it.str("code").orEmpty(), it.str("name") ?: "Неизвестно", it.int("count"))
+                },
+                withoutOwner = o.optBoolean("without_owner"),
+            )
+        }
+    }
+}
+
 data class NftPage(
     val rows: List<NftItem>,
     val summary: NftSummary,
@@ -678,6 +704,7 @@ data class NftPage(
     val collections: List<NftCollection>,
     /** Сколько всего строк подходит под фильтр (не только загруженная страница). */
     val total: Int = 0,
+    val distribution: NftDistribution? = null,
 )
 
 data class GiftOwner(

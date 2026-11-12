@@ -1253,8 +1253,19 @@ def create_app(settings: Settings) -> Starlette:
             raise HTTPException(400, "Укажите название NFT")
         return {"rows": state.store.nft_history(slug)}
 
+    def nft_demographic_filters(request: Request) -> tuple[str | None, str | None]:
+        from .intel import COUNTRIES
+
+        gender = (request.query_params.get("gender") or "").strip()
+        country = (request.query_params.get("country") or "").strip()
+        if gender and gender not in ("male", "female", "unknown"):
+            raise HTTPException(400, "Неизвестная категория пола")
+        if country and country not in {*COUNTRIES, "unknown"}:
+            raise HTTPException(400, "Неизвестная категория страны")
+        return gender or None, country or None
+
     async def gifts_nft(request: Request) -> dict[str, Any]:
-        """NFT-инвентарь: все уникальные вещи с фильтром «кошелёк / Telegram»."""
+        """NFT-инвентарь и необязательные приблизительные фильтры имён."""
         guard(request)
         chain = _q_chain(request)
         query = (request.query_params.get("q") or "").strip() or None
@@ -1263,24 +1274,25 @@ def create_app(settings: Settings) -> Starlette:
         offset = _q_int(request, "offset", 0, 0, 1_000_000)
         resale_only = _q_flag(request, "resell")
         collection = _q_collection(request)
-        return {
-            "rows": state.store.nft_items(
-                chain=chain,
-                q=query,
-                sort=sort,
-                limit=limit,
-                offset=offset,
-                resale_only=resale_only,
-                collection=collection,
-            ),
-            "total": state.store.nft_count(
-                chain=chain, q=query, resale_only=resale_only, collection=collection
-            ),
-            "summary": state.store.nft_summary(),
-            "owners": state.store.nft_owners(chain=chain, limit=24),
-            "collections": state.store.nft_collections(24),
-            "chain": chain or "all",
-        }
+        gender, country = nft_demographic_filters(request)
+        distribution = _q_bool(request, "distribution")
+
+        def read() -> dict[str, Any]:
+            common = dict(chain=chain, q=query, resale_only=resale_only, collection=collection)
+            filters = dict(**common, gender=gender, country=country)
+            result = {
+                "rows": state.store.nft_items(**filters, sort=sort, limit=limit, offset=offset),
+                "total": state.store.nft_count(**filters),
+                "summary": state.store.nft_summary(),
+                "owners": state.store.nft_owners(chain=chain, limit=24),
+                "collections": state.store.nft_collections(24),
+                "chain": chain or "all",
+            }
+            if distribution:
+                result["distribution"] = state.store.nft_owner_distribution(**common)
+            return result
+
+        return await _safe_io(read)
 
     async def gifts_nft_owners(request: Request) -> dict[str, Any]:
         """Владельцы NFT — почти все пользователи, которых собрали по сети."""
@@ -1301,14 +1313,15 @@ def create_app(settings: Settings) -> Starlette:
         query = (request.query_params.get("q") or "").strip() or None
         sort = (request.query_params.get("sort") or "value").strip()
         limit = _q_int(request, "limit", 5000, 1, 100_000)
-        rows = state.store.nft_items(
+        gender, country = nft_demographic_filters(request)
+        rows = await _safe_io(state.store.nft_items,
             chain=chain,
             q=query,
             sort=sort,
             limit=limit,
             offset=0,
             resale_only=_q_flag(request, "resell"),
-            collection=_q_collection(request),
+            collection=_q_collection(request), gender=gender, country=country,
         )
         buffer = io.StringIO()
         writer = csv.writer(buffer, delimiter=";")

@@ -1080,3 +1080,45 @@ def test_gifts_paging_snapshot_excludes_new_inserts(client: TestClient):
     assert [r['title'] for r in next_page['rows']] == ['1', '0']
     assert next_page['total'] == 4
     assert client.get('/api/gifts?snapshot=oops', headers=HEADERS).status_code == 400
+
+
+def test_nft_name_filters_and_distribution_are_consistent(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.upsert_nft_item('Demo-1', owner_tg_id=11, owner_name='Анна (@anna)', on_chain=False)
+    store.upsert_nft_item('Demo-2', owner_tg_id=11, owner_name='Анна (@anna)', on_chain=False)
+    store.upsert_nft_item('Demo-3', owner_tg_id=12, owner_name='Иван', on_chain=True)
+    store.upsert_nft_item('Demo-4', owner_tg_id=13, owner_name='@nickname')
+    store.upsert_nft_item('Demo-5', owner_tg_id=None, owner_name='Анна')
+    base = '/api/gifts/nft?collection=Demo&distribution=1'
+    data = client.get(base, headers=HEADERS).json()
+    stats = data['distribution']
+    assert data['total'] == 5 and stats['owners'] == 3 and stats['without_owner'] is True
+    assert stats['gender'] == {'female': 1, 'male': 1, 'unknown': 1}
+    assert {x['code']: x['count'] for x in stats['countries']} == {'RU': 2, 'unknown': 1}
+    female = client.get(base + '&gender=female&country=RU&limit=1', headers=HEADERS).json()
+    page2 = client.get(base + '&gender=female&country=RU&limit=1&offset=1', headers=HEADERS).json()
+    assert female['total'] == page2['total'] == 2
+    assert female['rows'][0]['slug'] != page2['rows'][0]['slug']
+    assert female['distribution'] == stats  # категории не исчезают после выбора
+    unknown = client.get(base + '&gender=unknown', headers=HEADERS).json()
+    assert {x['slug'] for x in unknown['rows']} == {'Demo-4', 'Demo-5'}
+    assert client.get(base + '&country=not_a_country', headers=HEADERS).status_code == 400
+    assert client.get(base + '&gender=invalid', headers=HEADERS).status_code == 400
+    csv_data = client.get('/api/gifts/nft/export.csv?collection=Demo&gender=female&country=RU', headers=HEADERS).text
+    assert 'Demo-1' in csv_data and 'Demo-2' in csv_data
+    assert 'Demo-3' not in csv_data and 'Demo-5' not in csv_data
+    wallet = client.get(base + '&chain=wallet', headers=HEADERS).json()['distribution']
+    assert wallet['owners'] == 1 and wallet['gender']['male'] == 1
+
+
+def test_nft_name_filters_use_latest_owner_name_consistently(client: TestClient) -> None:
+    store = client.app.state.hd.store
+    store.upsert_nft_item('Old-1', owner_tg_id=20, owner_name='Анна')
+    store.upsert_nft_item('Old-2', owner_tg_id=20, owner_name='Иван')
+    with store.tx() as conn:
+        conn.execute("UPDATE nft_items SET seen_at = 10 WHERE slug = 'Old-1'")
+        conn.execute("UPDATE nft_items SET seen_at = 11 WHERE slug = 'Old-2'")
+    result = client.get('/api/gifts/nft?gender=male&distribution=1', headers=HEADERS).json()
+    assert {r['slug'] for r in result['rows']} >= {'Old-1', 'Old-2'}
+    assert result['distribution']['gender']['male'] >= 1
+    assert not client.get('/api/gifts/nft?collection=Old&gender=female', headers=HEADERS).json()['rows']

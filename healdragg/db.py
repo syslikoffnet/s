@@ -286,6 +286,8 @@ CREATE TABLE IF NOT EXISTS nft_items (
 );
 CREATE INDEX IF NOT EXISTS idx_nft_chain  ON nft_items(on_chain, seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_nft_owner  ON nft_items(owner_tg_id, seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nft_owner_name_recent ON nft_items(owner_tg_id, seen_at DESC, slug DESC)
+    WHERE owner_name IS NOT NULL AND trim(owner_name) != '';
 CREATE INDEX IF NOT EXISTS idx_nft_gift   ON nft_items(gift_id);
 
 -- Коллекции уникальных подарков: перебираем slug'и по номерам и добираем владельцев.
@@ -432,8 +434,11 @@ class Store:
 
     # ── инфраструктура ──────────────────────────────────────────────────────
     def _configure(self) -> None:
+        from .gift_demographics import name_categories
         from .offers import backdrop_from_raw
 
+        self._conn.create_function("hd_name_gender", 1, lambda name: name_categories(name)[0], deterministic=True)
+        self._conn.create_function("hd_name_country", 1, lambda name: name_categories(name)[1], deterministic=True)
         self._conn.create_function("hd_casefold", 1, lambda value: str(value or "").casefold(), deterministic=True)
         self._conn.create_function("hd_backdrop", 1, backdrop_from_raw, deterministic=True)
         for pragma in (
@@ -1949,6 +1954,8 @@ class Store:
         q: str | None = None,
         resale_only: bool = False,
         collection: str | None = None,
+        gender: str | None = None,
+        country: str | None = None,
     ) -> tuple[str, list[Any]]:
         """Общее условие выборки NFT — одно и то же для списка, счётчика и CSV."""
         where: list[str] = []
@@ -1970,6 +1977,17 @@ class Store:
                 "OR CAST(owner_tg_id AS TEXT) LIKE ? OR CAST(num AS TEXT) = ?)"
             )
             params.extend([needle, needle, needle, needle, needle, needle, needle, q.strip()])
+        # Одно имя на владельца для всех его NFT: последнее сохранённое имя,
+        # даже если отдельные наблюдения содержат разные устаревшие метки.
+        name = ("(SELECT o.owner_name FROM nft_items o WHERE o.owner_tg_id = nft_items.owner_tg_id "
+                "AND o.owner_name IS NOT NULL AND trim(o.owner_name) != '' "
+                "ORDER BY o.seen_at DESC, o.slug DESC LIMIT 1)")
+        if gender:
+            where.append(f"hd_name_gender({name}) = ?")
+            params.append(gender)
+        if country:
+            where.append(f"hd_name_country({name}) = ?")
+            params.append(country)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         return clause, params
 
@@ -1983,9 +2001,11 @@ class Store:
         offset: int = 0,
         resale_only: bool = False,
         collection: str | None = None,
+        gender: str | None = None,
+        country: str | None = None,
     ) -> list[dict[str, Any]]:
         clause, params = self._nft_where(
-            chain=chain, q=q, resale_only=resale_only, collection=collection
+            chain=chain, q=q, resale_only=resale_only, collection=collection, gender=gender, country=country
         )
         order = {
             # Суммы в разных локальных валютах нельзя сравнивать друг с другом.
@@ -2008,13 +2028,42 @@ class Store:
         q: str | None = None,
         resale_only: bool = False,
         collection: str | None = None,
+        gender: str | None = None,
+        country: str | None = None,
     ) -> int:
         """Сколько всего NFT подходит под фильтр — для «найдено N из M»."""
         clause, params = self._nft_where(
-            chain=chain, q=q, resale_only=resale_only, collection=collection
+            chain=chain, q=q, resale_only=resale_only, collection=collection, gender=gender, country=country
         )
         row = self.query_one(f"SELECT COUNT(*) AS n FROM nft_items {clause}", params) or {}
         return int(row.get("n") or 0)
+
+    def nft_owner_distribution(
+        self, *, chain: str | None = None, q: str | None = None,
+        resale_only: bool = False, collection: str | None = None,
+    ) -> dict[str, Any]:
+        """Уникальные ID владельцев подходящих NFT; без гендерных фильтров."""
+        from .gift_demographics import name_categories
+        from .intel import COUNTRIES
+
+        clause, params = self._nft_where(chain=chain, q=q, resale_only=resale_only, collection=collection)
+        owners = self.query(
+            f"SELECT ids.owner_tg_id, (SELECT o.owner_name FROM nft_items o "
+            f"WHERE o.owner_tg_id = ids.owner_tg_id AND o.owner_name IS NOT NULL "
+            f"AND trim(o.owner_name) != '' ORDER BY o.seen_at DESC, o.slug DESC LIMIT 1) AS name "
+            f"FROM (SELECT DISTINCT owner_tg_id FROM nft_items {clause}) AS ids", params,
+        )
+        genders: dict[str, int] = {"male": 0, "female": 0, "unknown": 0}
+        countries: dict[str, int] = {}
+        ids = [row for row in owners if row["owner_tg_id"] is not None]
+        for row in ids:
+            gender, country = name_categories(row["name"])
+            genders[gender] += 1
+            countries[country] = countries.get(country, 0) + 1
+        return {"owners": len(ids), "gender": genders,
+                "countries": [{"code": code, "name": COUNTRIES.get(code, "Неизвестно"), "count": count}
+                              for code, count in sorted(countries.items(), key=lambda item: (-item[1], item[0]))],
+                "without_owner": any(row["owner_tg_id"] is None for row in owners)}
 
     def nft_summary(self) -> dict[str, Any]:
         row = self.query_one(
