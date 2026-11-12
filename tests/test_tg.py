@@ -243,3 +243,54 @@ async def test_reserved_offers_account_cannot_be_used_for_parsing(tmp_path):
     finally:
         await pool.close()
         store.close()
+
+
+async def test_first_stops_after_first_available_session(tmp_path) -> None:
+    from healdragg.config import Settings
+    from healdragg.db import Store
+    from healdragg.tg import SessionPool
+
+    store = Store(tmp_path / 'pool.db')
+    settings = Settings(home=tmp_path, db_path=tmp_path / 'pool.db', sessions_dir=tmp_path / 'sessions')
+    store.add_session('bad', 'bad.session')
+    store.add_session('good', 'good.session')
+    store.add_session('later', 'later.session')
+    pool = SessionPool(settings, store)
+    calls = []
+    account = SimpleNamespace(name='good')
+
+    async def connect(name):
+        calls.append(name)
+        if name == 'bad':
+            raise OSError('connection failed')
+        return account
+
+    pool.connect = connect
+    assert await pool.first(['bad', 'good', 'later']) is account
+    assert calls == ['bad', 'good']
+    store.close()
+
+
+async def test_flood_status_does_not_skip_wait(monkeypatch) -> None:
+    import asyncio
+
+    from telethon.errors import FloodWaitError
+
+    sleeps = []
+    events = []
+    async def sleep(seconds):
+        sleeps.append(seconds)
+    async def status(seconds):
+        events.append(seconds)
+    calls = 0
+    async def request():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise FloodWaitError(request=None, capture=3)
+        return 'ok'
+    monkeypatch.setattr(asyncio, 'sleep', sleep)
+    limiter = RateLimiter(0, 0)
+    assert await limiter.call(request, attempts=2, on_flood=status) == 'ok'
+    assert len(events) == 1 and events[0] >= 4
+    assert len(sleeps) == 1 and sleeps[0] >= 3

@@ -1648,7 +1648,7 @@ def create_app(settings: Settings) -> Starlette:
                         if not complete:
                             raise RuntimeError("Обход неполный — статусы подарков не менялись")
                         job.state = {"phase": "готово", "done": result["gifts"], "total": result["gifts"],
-                                     "found": result["gifts"], "new": result["new"], "complete": True,
+                                     "found": result["new"], "new": result["new"], "gifts_seen": result["gifts"], "complete": True,
                                      "session": session, "watch": watch}
                     except ValueError as exc:
                         # Изменение владельца username или аккаунта нельзя исправлять повтором вслепую.
@@ -1879,7 +1879,7 @@ def create_app(settings: Settings) -> Starlette:
             counts = state.store.gift_crawl_counts(run_id)
             job.state = {**progress, "run_id": run_id, "queue": counts,
                          "done": counts["done"] + counts["unavailable"] + counts["deferred"],
-                         "total": counts["total"]}
+                         "total": counts["total"], "found": int(progress.get("new_gifts", 0))}
 
         async def runner() -> None:
             try:

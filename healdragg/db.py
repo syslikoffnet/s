@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS gifts (
 );
 CREATE INDEX IF NOT EXISTS idx_gifts_owner ON gifts(owner_tg_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_owner_slug ON gifts(owner_tg_id, slug, seen_at DESC, id DESC) WHERE slug IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_gifts_slug_nft ON gifts(slug, is_nft, owner_tg_id) WHERE slug IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_gifts_from  ON gifts(from_tg_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_nft   ON gifts(is_nft, date DESC);
 CREATE INDEX IF NOT EXISTS idx_gifts_chain ON gifts(on_chain, date DESC);
@@ -1601,7 +1602,7 @@ class Store:
     def gift_profile_senders(self, owner: int) -> list[dict[str, Any]]:
         return self.query(
             "SELECT from_tg_id, max(from_username) AS username FROM gifts "
-            "WHERE owner_tg_id = ? AND from_tg_id IS NOT NULL "
+            "WHERE owner_tg_id = ? AND from_tg_id IS NOT NULL AND name_hidden = 0 "
             "GROUP BY from_tg_id ORDER BY max(date) DESC", (owner,),
         )
 

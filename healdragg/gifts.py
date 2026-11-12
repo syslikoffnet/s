@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections import deque
@@ -44,6 +45,9 @@ MAX_PROFILES = 50_000
 MAX_PER_PROFILE = 5000
 MAX_HEAVY_PER_PROFILE = 100_000
 HEAVY_PROFILE_THRESHOLD = 1000
+# Ограничиваем только сетевой запрос, не паузу лимитера/FloodWait.
+GIFT_REQUEST_TIMEOUT = 45.0
+GIFT_REQUEST_ATTEMPTS = 2
 
 
 def _as_int(value: Any) -> int | None:
@@ -210,6 +214,7 @@ async def _saved_gifts(
     allow_heavy: bool = False,
     on_page: Callable[[list[Any], dict[int, User], int, int | None], Awaitable[None]] | None = None,
     on_wait: Callable[[int, int | None], Awaitable[None]] | None = None,
+    on_flood: Callable[[int], Awaitable[None]] | None = None,
 ) -> tuple[list[Any], dict[int, User], bool, int | None]:
     """Читает страницы. Отсутствие фиксируем только при полном стабильном обходе."""
     saved: list[Any] = []
@@ -225,9 +230,9 @@ async def _saved_gifts(
         if on_wait is not None:
             await on_wait(received, total)
         page = await limiter.call(
-            lambda offset=offset, limit=limit: client(
+            lambda offset=offset, limit=limit: asyncio.wait_for(client(
                 GetSavedStarGiftsRequest(peer=peer, offset=offset, limit=limit)
-            )
+            ), timeout=GIFT_REQUEST_TIMEOUT), attempts=GIFT_REQUEST_ATTEMPTS, on_flood=on_flood,
         )
         count = _as_int(getattr(page, "count", None))
         if count is not None:
@@ -291,11 +296,22 @@ async def crawl_gifts(
     max_profiles = max(1, min(MAX_PROFILES, int(max_profiles)))
     per_profile = max(10, min(MAX_HEAVY_PER_PROFILE if allow_heavy else MAX_PER_PROFILE, int(per_profile)))
 
-    async def report_stage(phase: str, profiles_done: int = 0, new_gifts: int = 0) -> None:
+    last_progress: dict[str, Any] = {}
+
+    async def emit(progress: dict[str, Any]) -> None:
+        last_progress.clear()
+        last_progress.update(progress)
         if reporter is not None:
-            await reporter({"phase": phase, "done": profiles_done, "total": max_profiles,
-                            "found": new_gifts, "profiles_done": profiles_done,
-                            "new_gifts": new_gifts})
+            await reporter(progress)
+
+    async def report_stage(phase: str, profiles_done: int = 0, new_gifts: int = 0) -> None:
+        await emit({"phase": phase, "done": profiles_done, "total": max_profiles,
+                    "found": new_gifts, "profiles_done": profiles_done, "new_gifts": new_gifts})
+
+    async def flood_wait(seconds: int) -> None:
+        # Сохраняем текущую страницу и счётчики, обновляя только фазу.
+        await emit({**last_progress, "phase": f"ограничение Telegram · пауза около {seconds} сек",
+                    "flood_wait_seconds": seconds})
 
     await report_stage("подключаю аккаунт для сбора")
     account = await pool.first(sessions)
@@ -312,7 +328,11 @@ async def crawl_gifts(
         # Числовая строка в Telethon может трактоваться как телефон, а не user ID.
         seed_identifier: Any = int(query) if query.isascii() and query.isdigit() else query
         await report_stage(f"ищу профиль {query} · ожидание Telegram")
-        entity = await limiter.call(lambda: client.get_entity(seed_identifier))
+        try:
+            entity = await limiter.call(lambda: asyncio.wait_for(client.get_entity(seed_identifier), timeout=GIFT_REQUEST_TIMEOUT),
+                                        attempts=GIFT_REQUEST_ATTEMPTS, on_flood=flood_wait)
+        except asyncio.TimeoutError as exc:
+            raise ValueError("Telegram не ответил при поиске начального профиля; повторите позже") from exc
         seed_user = entity if isinstance(entity, User) else None
         if seed_user is None:
             users = getattr(entity, "users", None) or []
@@ -357,17 +377,21 @@ async def crawl_gifts(
                     from telethon.tl.types import InputPeerUser
 
                     candidates.append(InputPeerUser(owner_id, int(pending["access_hash"])))
+                resolve_error = None
                 for candidate in candidates:
                     await report_stage(f"ищу профиль {owner_id} · ожидание Telegram", scanned, new_count)
                     try:
-                        resolved = await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+                        resolved = await limiter.call(lambda candidate=candidate: asyncio.wait_for(client.get_entity(candidate), timeout=GIFT_REQUEST_TIMEOUT),
+                                                      attempts=GIFT_REQUEST_ATTEMPTS, on_flood=flood_wait)
                         if isinstance(resolved, User) and int(resolved.id) == owner_id:
                             user = resolved
                             break
                     except Exception as exc:  # noqa: BLE001
+                        if isinstance(exc, asyncio.TimeoutError):
+                            resolve_error = "Telegram не ответил при поиске профиля; повторите позже"
                         log.debug("профиль %s недоступен: %s", owner_id, exc)
             if user is None:
-                store.gift_crawl_finish_item(run_id, owner_id, "unavailable", "Профиль недоступен аккаунту")
+                store.gift_crawl_finish_item(run_id, owner_id, "unavailable", resolve_error or "Профиль недоступен аккаунту")
                 scanned += 1
                 if reporter:
                     await reporter({"phase": "профиль недоступен", "done": scanned,
@@ -396,9 +420,9 @@ async def crawl_gifts(
                     await report_stage(f"ищу дарителя {sender_id} · ожидание Telegram", scanned, new_count)
                     try:
                         entity = await limiter.call(
-                            lambda sender=sender, sender_id=sender_id: client.get_entity(
+                            lambda sender=sender, sender_id=sender_id: asyncio.wait_for(client.get_entity(
                                 sender.get("username") or sender_id
-                            )
+                            ), timeout=GIFT_REQUEST_TIMEOUT), attempts=GIFT_REQUEST_ATTEMPTS, on_flood=flood_wait,
                         )
                         if isinstance(entity, User) and int(entity.id) == sender_id:
                             queue.append((entity, level + 1))
@@ -560,12 +584,26 @@ async def crawl_gifts(
         async def process_page(
             gifts: list[Any], users: dict[int, User], received: int, total: int | None,
             *, display: str = display, profiles_done: int = scanned,
+            observed_ids: set[int] = observed_ids,
         ) -> None:
-            with store.batch():
-                for item in gifts:
-                    process_item(item, users)
+            nonlocal snapshot_valid, profile_gifts, profile_nft, profile_new
+            nonlocal gifts_found, new_count, nft_seen, nft_new, nft_chain, nft_hosted
+            counters = (profile_gifts, profile_nft, profile_new, gifts_found, new_count,
+                        nft_seen, nft_new, nft_chain, nft_hosted, snapshot_valid)
+            old_queue_size = len(queue)
+            try:
+                with store.batch():
+                    for item in gifts:
+                        process_item(item, users)
+            except BaseException:
+                (profile_gifts, profile_nft, profile_new, gifts_found, new_count,
+                 nft_seen, nft_new, nft_chain, nft_hosted, snapshot_valid) = counters
+                while len(queue) > old_queue_size:
+                    queued_user, _ = queue.pop()
+                    seen.discard(int(queued_user.id))
+                raise
             if reporter is not None:
-                await reporter({
+                await emit({
                     "phase": f"читаю подарки · {display}",
                     "done": received,
                     "total": total or 0,
@@ -579,7 +617,7 @@ async def crawl_gifts(
         async def wait_for_page(received: int, total: int | None, *, display: str = display,
                                 profiles_done: int = scanned) -> None:
             if reporter is not None:
-                await reporter({"phase": f"запрашиваю подарки · {display} · ожидание Telegram",
+                await emit({"phase": f"запрашиваю подарки · {display} · ожидание Telegram",
                                 "done": received, "total": total or 0, "found": received,
                                 "profiles_done": profiles_done, "new_gifts": new_count,
                                 "page_received": received, "page_total": total})
@@ -589,7 +627,7 @@ async def crawl_gifts(
             try:
                 saved, users, complete, heavy_count = await _saved_gifts(
                     client, limiter, peer, per_profile,
-                    allow_heavy=allow_heavy, on_page=process_page, on_wait=wait_for_page,
+                    allow_heavy=allow_heavy, on_page=process_page, on_wait=wait_for_page, on_flood=flood_wait,
                 )
             except (PeerIdInvalidError, UserIdInvalidError):
                 # Hash мог быть получен другой сессией или устареть. Только до
@@ -602,7 +640,8 @@ async def crawl_gifts(
                     if not candidate:
                         continue
                     try:
-                        candidate_user = await limiter.call(lambda candidate=candidate: client.get_entity(candidate))
+                        candidate_user = await limiter.call(lambda candidate=candidate: asyncio.wait_for(client.get_entity(candidate), timeout=GIFT_REQUEST_TIMEOUT),
+                                                            attempts=GIFT_REQUEST_ATTEMPTS, on_flood=flood_wait)
                         if isinstance(candidate_user, User) and int(candidate_user.id) == owner_id:
                             resolved = candidate_user
                             break
@@ -613,7 +652,7 @@ async def crawl_gifts(
                 user = resolved
                 saved, users, complete, heavy_count = await _saved_gifts(
                     client, limiter, utils.get_input_peer(user), per_profile,
-                    allow_heavy=allow_heavy, on_page=process_page, on_wait=wait_for_page,
+                    allow_heavy=allow_heavy, on_page=process_page, on_wait=wait_for_page, on_flood=flood_wait,
                 )
             if heavy_count is not None:
                 store.defer_gift_profile(owner_id, username, display, heavy_count)
@@ -621,7 +660,8 @@ async def crawl_gifts(
                 response = (saved, users, complete)
         except Exception as exc:  # noqa: BLE001 — скрытые подарки не должны ронять обход
             log.warning("подарки %s недоступны: %s", owner_id, exc)
-            error = str(exc)[:300]
+            error = ("Telegram не ответил вовремя; профиль можно повторить позже" if isinstance(exc, asyncio.TimeoutError)
+                     else (str(exc)[:300] or type(exc).__name__))
             errors += 1
 
         if response is not None:
@@ -633,7 +673,7 @@ async def crawl_gifts(
         if run_id is not None:
             if not error and response is not None and (not complete or not snapshot_valid):
                 error = "Профиль прочитан не полностью или выдача содержит повторяющиеся записи"
-            state_name = "unavailable" if error else ("deferred" if heavy_count is not None else "done")
+            state_name = "unavailable" if error or (response is None and heavy_count is None) else ("deferred" if heavy_count is not None else "done")
             store.gift_crawl_finish_item(run_id, owner_id, state_name, error)
 
         results.append(

@@ -69,7 +69,8 @@ class RateLimiter:
                 await asyncio.sleep(sleep_for)
             self._last = time.monotonic()
 
-    async def call(self, factory: Callable[[], Awaitable[T]], *, attempts: int = 3) -> T:
+    async def call(self, factory: Callable[[], Awaitable[T]], *, attempts: int = 3,
+                   on_flood: Callable[[int], Awaitable[None]] | None = None) -> T:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             await self.wait()
@@ -78,6 +79,11 @@ class RateLimiter:
             except FloodWaitError as exc:
                 seconds = int(getattr(exc, "seconds", 0)) + random.uniform(1, 4)
                 log.warning("FloodWait %.0f c — сплю", seconds)
+                if on_flood is not None:
+                    try:
+                        await on_flood(int(seconds) + 1)
+                    except Exception:  # noqa: BLE001 — статус не должен отменять паузу Telegram
+                        log.exception("не удалось сообщить о FloodWait")
                 await asyncio.sleep(seconds)
                 last_error = exc
             except (RPCError, OSError, asyncio.TimeoutError) as exc:
@@ -220,10 +226,15 @@ class SessionPool:
         return out
 
     async def first(self, names: Sequence[str] | None = None) -> Account:
-        accounts = await self.connect_many(names)
-        if not accounts:
-            raise RuntimeError("Нет доступных сессий. Войди в Telegram в приложении")
-        return accounts[0]
+        # Для одного запроса не нужно подключать все аккаунты: это может занять
+        # минуты на больших пулах или при недоступных следующих сессиях.
+        for name in list(names or self.store.session_names()):
+            try:
+                return await self.connect(name)
+            except Exception as exc:  # noqa: BLE001 — попробовать следующую сессию
+                log.warning("сессия %s: %s", name, exc)
+                self.store.log_event("error", f"сессия {name}: {exc}", "pool")
+        raise RuntimeError("Нет доступных сессий. Войди в Telegram в приложении")
 
     def connected(self) -> list[Account]:
         return [a for a in self._accounts.values() if a.client.is_connected()]

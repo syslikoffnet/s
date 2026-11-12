@@ -470,3 +470,122 @@ def test_batch_commits_once_per_page(store):
         store._conn.set_trace_callback(None)
     assert sum(s.upper() == 'COMMIT' for s in statements) == 1
     assert len(store.list_gifts(1)) == 20
+
+
+async def test_empty_error_does_not_mark_profile_done(setup):
+    import asyncio
+
+    store, client, pool, settings = setup
+    store.add_gift(1, saved_id=99, gift_id=44, title='Previously visible')
+    client.pages[(1, '')] = asyncio.TimeoutError()
+    run = store.create_gift_crawl('1', 1, 5, 100)
+    result = await crawl_gifts(pool, store, settings, '1', run_id=run)
+    assert result['errors'] == 1
+    assert store.gift_crawl_counts(run)['unavailable'] == 1
+    assert not store.gift_profile_known(1)
+    assert 'не ответил' in store.gift_crawl_issues(run)[0]['error']
+    assert store.list_gifts(1)[0]['presence'] == 'visible'
+
+
+async def test_hung_page_times_out_and_preserves_saved_page(setup, monkeypatch):
+    import asyncio
+
+    from healdragg import gifts
+
+    store, client, pool, settings = setup
+    monkeypatch.setattr(gifts, 'GIFT_REQUEST_TIMEOUT', 0.02)
+    monkeypatch.setattr(gifts, 'GIFT_REQUEST_ATTEMPTS', 1)
+    store.add_gift(1, saved_id=99, gift_id=44, title='Earlier')
+
+    async def request(req):
+        if not req.offset:
+            return page([gift(1)], count=2, next_offset='next')
+        await asyncio.Event().wait()
+
+    client.__class__ = type('HangingClient', (Client,), {'__call__': lambda self, req: request(req)})
+    run = store.create_gift_crawl('1', 1, 5, 100)
+    result = await asyncio.wait_for(crawl_gifts(pool, store, settings, '1', run_id=run), 2)
+    assert result['errors'] == 1 and result['new'] == 1
+    assert store.gift_crawl_counts(run)['unavailable'] == 1
+    assert {r['presence'] for r in store.list_gifts(1)} == {'visible'}
+    assert len(store.list_gifts(1)) == 2
+
+
+async def test_failed_page_rolls_back_counts_and_queue(setup, monkeypatch):
+    store, client, pool, settings = setup
+    item = gift(1)
+    item.from_id = types.PeerUser(2)
+    response = page([item, gift(2)], count=2)
+    response.users = [types.User(id=2, access_hash=9)]
+    client.pages[(1, '')] = response
+    run = store.create_gift_crawl('1', 8, 5, 100)
+    original = store.add_gift
+    count = 0
+    def fail_second(*args, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise RuntimeError('storage failed')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(store, 'add_gift', fail_second)
+    result = await crawl_gifts(pool, store, settings, '1', run_id=run, depth=8)
+    assert result['new'] == result['gifts'] == 0
+    assert store.list_gifts() == []
+    assert store.gift_crawl_counts(run)['total'] == 1
+    assert store.gift_crawl_counts(run)['unavailable'] == 1
+
+
+def test_hidden_sender_not_enqueued_for_known_profile(store):
+    store.add_gift(1, saved_id=1, gift_id=1, title='Gift', from_tg_id=2)
+    store.add_gift(1, saved_id=1, gift_id=1, title='Gift', name_hidden=True)
+    assert store.gift_profile_senders(1) == []
+
+
+def test_nft_owner_update_has_slug_index(store):
+    plan = store.query("EXPLAIN QUERY PLAN UPDATE gifts SET presence='previous_owner' "
+                       "WHERE slug = ? AND owner_tg_id != ? AND is_nft = 1", ('Bear-1', 1))
+    assert any('idx_gifts_slug_nft' in row['detail'] for row in plan)
+
+
+async def test_flood_wait_status_retains_profile_page_progress(setup, monkeypatch):
+    from telethon.errors import FloodWaitError
+
+    from healdragg import tg
+
+    store, client, pool, settings = setup
+    monkeypatch.setattr(tg.random, 'uniform', lambda a, b: 0)
+    calls = 0
+
+    async def request(req):
+        nonlocal calls
+        if not req.offset:
+            return page([gift(1)], count=2, next_offset='next')
+        calls += 1
+        if calls == 1:
+            raise FloodWaitError(request=req, capture=0)
+        return page([gift(2)], count=2)
+
+    client.__class__ = type('FloodClient', (Client,), {'__call__': lambda self, req: request(req)})
+    progress = []
+    async def report(event):
+        progress.append(event)
+    result = await crawl_gifts(pool, store, settings, '1', reporter=report)
+    flood = next(item for item in progress if item.get('flood_wait_seconds') is not None)
+    assert flood['page_received'] == 1 and flood['new_gifts'] == 1
+    assert 'ограничение Telegram' in flood['phase']
+    assert result['new'] == 2 and result['errors'] == 0
+
+
+async def test_initial_profile_timeout_has_actionable_error(setup, monkeypatch):
+    import asyncio
+
+    from healdragg import gifts
+
+    store, client, pool, settings = setup
+    monkeypatch.setattr(gifts, 'GIFT_REQUEST_TIMEOUT', 0.02)
+    monkeypatch.setattr(gifts, 'GIFT_REQUEST_ATTEMPTS', 1)
+    async def hanging(_):
+        await asyncio.Event().wait()
+    client.get_entity = hanging
+    with pytest.raises(ValueError, match='не ответил при поиске начального профиля'):
+        await asyncio.wait_for(crawl_gifts(pool, store, settings, '1'), 2)

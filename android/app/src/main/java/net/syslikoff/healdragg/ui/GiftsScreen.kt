@@ -398,7 +398,7 @@ fun GiftsScreen(
                         "giftchain" -> "Поиск завершён: новых NFT ${fresh.found}"
                         "giftprofiles" -> if (fresh.state?.optInt("owners_total") == 0) "Новых владельцев для чтения нет" else
                             "Обработано профилей: ${fresh.done} · новых подарков: ${fresh.found} · ошибок: ${fresh.state?.optInt("errors") ?: 0}"
-                        else -> "Готово: подарков ${fresh.found}"
+                        else -> "Готово: новых подарков ${fresh.found}"
                     })
                 }
                 reload()
@@ -969,7 +969,7 @@ fun GiftsScreen(
                                         else {
                                             if (current.total > 0) append(" · ${current.done}/${current.total}")
                                             if (current.kind == "giftchain") append(" · новых NFT ${current.found}")
-                                            else if (current.found > 0) append(" · подарков ${current.found}")
+                                            else if (current.found > 0) append(" · новых подарков ${current.found}")
                                         }
                                     },
                                     style = MaterialTheme.typography.labelSmall,
@@ -995,6 +995,13 @@ fun GiftsScreen(
                                 state.str("last_error")?.let { Text("Последняя ошибка: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                             }
                             Text("Ожидание Telegram может включать ограничение запросов и повторы. Если этап долго не меняется, проверьте сеть и журнал движка.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (current.kind == "gifts") {
+                            current.state?.let { state ->
+                                if (state.has("page_received")) Text("В текущем профиле: ${state.optInt("page_received")}" +
+                                    if (!state.isNull("page_total")) " / ${state.optInt("page_total")}" else "", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text("Ожидание включает паузу между запросами, возможный FloodWait и повторы. Недоступные профили можно повторить позже.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
                         }
                         current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
                         current.state?.optJSONObject("queue")?.let { counts ->
