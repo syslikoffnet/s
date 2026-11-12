@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from telethon import utils
-from telethon.errors import PeerIdInvalidError, RPCError, UserIdInvalidError
+from telethon.errors import PeerIdInvalidError, RPCError, UserIdInvalidError, UsernameNotOccupiedError
 from telethon.tl.functions.payments import (
     GetResaleStarGiftsRequest,
     GetSavedStarGiftsRequest,
@@ -328,11 +328,51 @@ async def crawl_gifts(
         # Числовая строка в Telethon может трактоваться как телефон, а не user ID.
         seed_identifier: Any = int(query) if query.isascii() and query.isdigit() else query
         await report_stage(f"ищу профиль {query} · ожидание Telegram")
+        async def resolve_seed() -> Any:
+            return await limiter.call(
+                lambda: asyncio.wait_for(client.get_entity(seed_identifier), timeout=GIFT_REQUEST_TIMEOUT),
+                attempts=GIFT_REQUEST_ATTEMPTS, on_flood=flood_wait,
+            )
+
         try:
-            entity = await limiter.call(lambda: asyncio.wait_for(client.get_entity(seed_identifier), timeout=GIFT_REQUEST_TIMEOUT),
-                                        attempts=GIFT_REQUEST_ATTEMPTS, on_flood=flood_wait)
+            entity = await resolve_seed()
         except asyncio.TimeoutError as exc:
             raise ValueError("Telegram не ответил при поиске начального профиля; повторите позже") from exc
+        except ValueError as exc:
+            # Telethon превращает USERNAME_NOT_OCCUPIED в ValueError, сохраняя
+            # исходную RPC-ошибку в __cause__. Не используем кэш username:
+            # он может принадлежать уже другому человеку.
+            if not isinstance(exc.__cause__, UsernameNotOccupiedError):
+                raise
+            entity = None
+            # При явно выбранной сессии/аккаунте подмена недопустима. Иначе
+            # пробуем до трёх других сканеров только после отказа первого.
+            if sessions is None and expected_session_user is None:
+                alternatives = [name for name in pool.store.session_names() if name != account.name][:3]
+                for name in alternatives:
+                    await report_stage("Telegram не нашёл имя · проверяю другой аккаунт", 0, 0)
+                    try:
+                        candidate = await pool.connect(name)
+                    except Exception as connect_exc:  # noqa: BLE001
+                        log.warning("не удалось подключить резервный сканер %s: %s", name, connect_exc)
+                        continue
+                    client = candidate.client
+                    limiter = candidate.limiter or RateLimiter()
+                    try:
+                        entity = await resolve_seed()
+                        account = candidate
+                        break
+                    except ValueError as next_exc:
+                        if not isinstance(next_exc.__cause__, UsernameNotOccupiedError):
+                            raise
+                    except asyncio.TimeoutError as timeout_exc:
+                        raise ValueError("Telegram не ответил при поиске профиля на другом аккаунте; повторите позже") from timeout_exc
+            if entity is None:
+                raise ValueError(
+                    "Telegram не нашёл этот username для аккаунта сбора. Проверьте имя, откройте профиль "
+                    "в Telegram этим аккаунтом или попробуйте его числовой ID/другой аккаунт-сканер. "
+                    "Открывающаяся ссылка не гарантирует доступ с выбранного аккаунта."
+                ) from exc
         seed_user = entity if isinstance(entity, User) else None
         if seed_user is None:
             users = getattr(entity, "users", None) or []

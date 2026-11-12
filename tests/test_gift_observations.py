@@ -589,3 +589,91 @@ async def test_initial_profile_timeout_has_actionable_error(setup, monkeypatch):
     client.get_entity = hanging
     with pytest.raises(ValueError, match='не ответил при поиске начального профиля'):
         await asyncio.wait_for(crawl_gifts(pool, store, settings, '1'), 2)
+
+
+def username_not_occupied():
+    from telethon.errors import UsernameNotOccupiedError
+
+    try:
+        raise UsernameNotOccupiedError(request=None)
+    except UsernameNotOccupiedError as exc:
+        raise ValueError('No user has "exampleuser" as username') from exc
+
+
+async def test_seed_username_not_occupied_tries_other_scan_account(setup):
+    store, client, _, settings = setup
+    first_client = Client()
+    async def missing(_):
+        username_not_occupied()
+    first_client.get_entity = missing
+    async def found(query):
+        assert query == '@exampleuser'
+        return types.User(id=1, username='exampleuser', access_hash=9)
+    client.get_entity = found
+    client.pages[(1, '')] = page([gift(1)])
+    first = SimpleNamespace(name='first', client=first_client, limiter=RateLimiter(0, 0))
+    second = SimpleNamespace(name='second', client=client, limiter=RateLimiter(0, 0))
+    store.add_session('first', 'first.session')
+    store.add_session('second', 'second.session')
+    class Pool:
+        def __init__(self):
+            self.store = store
+            self.connected = []
+        async def first(self, sessions=None):
+            return first
+        async def connect(self, name):
+            self.connected.append(name)
+            return second
+    pool = Pool()
+    run = store.create_gift_crawl('@exampleuser', 1, 1, 100)
+    result = await crawl_gifts(pool, store, settings, '@exampleuser', run_id=run)
+    assert pool.connected == ['second']
+    assert result['new'] == 1 and client.calls == [(1, '')]
+    assert store.gift_crawl_counts(run)['done'] == 1
+
+
+async def test_seed_username_not_occupied_never_switches_explicit_account(setup):
+    store, client, _, settings = setup
+    async def missing(_):
+        username_not_occupied()
+    client.get_entity = missing
+    account = SimpleNamespace(name='first', client=client, limiter=RateLimiter(0, 0), user_id=5)
+    class Pool:
+        async def first(self, sessions=None):
+            return account
+        async def connect(self, name):
+            raise AssertionError('must not switch account')
+    with pytest.raises(ValueError, match='Telegram не нашёл этот username'):
+        await crawl_gifts(Pool(), store, settings, '@exampleuser', sessions=['first'], expected_session_user=5)
+    assert client.calls == []
+
+
+async def test_seed_other_value_error_is_not_treated_as_missing_username(setup):
+    store, client, pool, settings = setup
+    async def invalid(_):
+        raise ValueError('bad identifier')
+    client.get_entity = invalid
+    with pytest.raises(ValueError, match='bad identifier'):
+        await crawl_gifts(pool, store, settings, '@exampleuser')
+
+
+async def test_seed_missing_username_keeps_run_uninitialized_and_no_cache_fallback(setup):
+    store, client, _, settings = setup
+    async def missing(_):
+        username_not_occupied()
+    client.get_entity = missing
+    store.add_session('first', 'first.session')
+    account = SimpleNamespace(name='first', client=client, limiter=RateLimiter(0, 0))
+    class Pool:
+        def __init__(self):
+            self.store = store
+        async def first(self, sessions=None):
+            return account
+        async def connect(self, name):
+            raise AssertionError('no other sessions')
+    run = store.create_gift_crawl('@exampleuser', 1, 1, 100)
+    with pytest.raises(ValueError, match='попробуйте его числовой ID'):
+        await crawl_gifts(Pool(), store, settings, '@exampleuser', run_id=run)
+    assert not store.gift_crawl(run)['initialized']
+    assert store.gift_crawl_counts(run)['total'] == 0
+    assert not client.calls
