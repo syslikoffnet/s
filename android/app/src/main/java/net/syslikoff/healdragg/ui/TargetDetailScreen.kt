@@ -1,0 +1,946 @@
+package net.syslikoff.healdragg.ui
+
+import androidx.activity.compose.BackHandler
+
+import android.graphics.BitmapFactory
+import android.util.Base64
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private enum class DetailTab(val title: String) {
+    Chats("Чаты"),
+    Feed("Лента"),
+    Network("Паутина"),
+    Gifts("Подарки"),
+}
+
+@Composable
+fun TargetDetailScreen(
+    vm: AppViewModel,
+    tgId: Long,
+    onBack: () -> Unit,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+    onOpenAccounts: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val api = vm.api
+
+    var target by remember(tgId) { mutableStateOf(vm.targetByTgId(tgId)) }
+    var error by remember(tgId) { mutableStateOf<String?>(null) }
+    var tab by rememberSaveable(tgId) { mutableStateOf(DetailTab.Chats) }
+    var offerQuery by rememberSaveable(tgId) { mutableStateOf<String?>(null) }
+    var menu by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    var chats by remember(tgId) { mutableStateOf<List<Chat>>(emptyList()) }
+    var chatOrder by rememberSaveable(tgId) { mutableStateOf("last") }
+    var chatsLoading by remember(tgId) { mutableStateOf(false) }
+    var chatPage by remember(tgId) { mutableStateOf(1) }
+    var chatsDone by remember(tgId) { mutableStateOf(false) }
+
+    var messages by remember(tgId) { mutableStateOf<List<Message>>(emptyList()) }
+    var feedLoading by remember(tgId) { mutableStateOf(false) }
+
+    var job by remember(tgId) { mutableStateOf<Job?>(null) }
+    var actionBusy by remember { mutableStateOf(false) }
+    var linksOpen by remember { mutableStateOf(false) }
+    var chatQuery by remember(tgId) { mutableStateOf("") }
+    var photo by remember(tgId) { mutableStateOf<ImageBitmap?>(null) }
+    var liveOn by rememberSaveable(tgId) { mutableStateOf(false) }
+
+    LaunchedEffect(tgId, target?.photoUpdatedAt) {
+        val client = api ?: return@LaunchedEffect
+        if (target?.photoPresent != true) {
+            photo = null
+            return@LaunchedEffect
+        }
+        val data = runCatching { client.photo(tgId) }.getOrNull() ?: return@LaunchedEffect
+        photo = withContext(Dispatchers.Default) {
+            runCatching {
+                val bytes = Base64.decode(data.base64, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+
+    fun enrichProfile() {
+        vm.refreshProfile(tgId) { result ->
+            result.onSuccess { fresh ->
+                target = fresh
+                onToast("Профиль обновлён")
+            }.onFailure { onToast(it.message ?: "Не удалось обновить профиль") }
+        }
+    }
+
+    suspend fun loadTarget() {
+        val client = api ?: return
+        runCatching { client.target(tgId) }
+            .onSuccess {
+                target = it
+                error = null
+            }
+            .onFailure { error = it.message }
+    }
+
+    suspend fun loadChats(reset: Boolean) {
+        val client = api ?: return
+        if (chatsLoading) return
+        chatsLoading = true
+        if (reset) {
+            chats = emptyList()
+            chatPage = 0
+            chatsDone = false
+        }
+        val page = if (reset) 1 else chatPage + 1
+        runCatching { client.chats(tgId, page, size = 25, order = chatOrder) }
+            .onSuccess { rows ->
+                chats = (if (reset) rows else chats + rows).distinctBy { it.tgId }
+                chatPage = page
+                chatsDone = rows.size < 25
+                error = null
+            }
+            .onFailure { error = it.message }
+        chatsLoading = false
+    }
+
+    suspend fun loadFeed() {
+        val client = api ?: return
+        feedLoading = true
+        runCatching { client.activity(tgId, limit = 120) }
+            .onSuccess { (_, rows) ->
+                messages = rows
+                error = null
+            }
+            .onFailure { error = it.message }
+        feedLoading = false
+    }
+
+    LaunchedEffect(tgId) { loadTarget() }
+    LaunchedEffect(tgId, chatOrder) { loadChats(reset = true) }
+    LaunchedEffect(tgId) { loadFeed() }
+
+    LaunchedEffect(job?.key) {
+        val key = job?.key ?: return@LaunchedEffect
+        val client = api ?: return@LaunchedEffect
+        while (true) {
+            delay(2_000)
+            val fresh = runCatching { client.jobs().firstOrNull { it.key == key } }.getOrNull()
+            if (fresh == null) {
+                job = null
+                break
+            }
+            job = fresh
+            if (!fresh.finished) {
+                loadFeed()
+                loadChats(reset = true)
+                loadTarget()
+            }
+            if (fresh.finished) {
+                if (fresh.error != null) onToast("Ошибка: ${fresh.error}")
+                else onToast("Готово: ${fresh.found} находок")
+                loadTarget()
+                loadChats(reset = true)
+                loadFeed()
+                delay(1_200)
+                job = null
+                break
+            }
+        }
+    }
+
+    fun scan() {
+        actionBusy = true
+        vm.startScan(tgId, deep = false) { result ->
+            actionBusy = false
+            result.onSuccess {
+                job = it
+                onToast("Скан запущен")
+            }.onFailure { onToast(it.message ?: "Не удалось запустить скан") }
+        }
+    }
+
+    fun collect() {
+        actionBusy = true
+        vm.startCollect(tgId) { result ->
+            actionBusy = false
+            result.onSuccess {
+                job = it
+                onToast("Собираю ленту…")
+            }.onFailure { onToast(it.message ?: "Не удалось запустить сбор") }
+        }
+    }
+
+    // Режим наблюдения: без кнопок, сообщение появилось — оно уже в ленте.
+    LaunchedEffect(tgId, tab, liveOn) {
+        if (tab != DetailTab.Feed || !liveOn) return@LaunchedEffect
+        val client = api ?: return@LaunchedEffect
+        var cycles = 0
+        while (true) {
+            delay(4_000)
+            val fresh = runCatching { client.liveActivity(tgId) }.getOrNull() ?: continue
+            messages = fresh.second
+            if (++cycles % 3 == 0) {
+                loadTarget()
+                loadChats(reset = true)
+            }
+        }
+    }
+
+    val listState = rememberLazyListState()
+    LaunchedEffect(listState, chatsDone, tab) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .collect { last ->
+                if (tab == DetailTab.Chats && !chatsDone && !chatsLoading &&
+                    last >= chats.size - 3 && chats.isNotEmpty()
+                ) {
+                    loadChats(reset = false)
+                }
+            }
+    }
+
+    offerQuery?.let { slug ->
+        BackHandler { offerQuery = null }
+        QuickOfferScreen(vm, slug = slug, onBack = { offerQuery = null }, onOpenAccounts = onOpenAccounts)
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().navigationBarsPadding(),
+        state = listState,
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item("header") {
+            val data = target
+            HdCard(contentPadding = PaddingValues(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Назад", tint = Hd.Muted)
+                    }
+                    if (data != null) {
+                        val bitmap = photo
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "Фото профиля",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.size(46.dp).clip(CircleShape),
+                            )
+                        } else {
+                            Avatar(data.initials, data.tgId, size = 44)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                data.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Hd.Text,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "${data.handle} · ${data.tgId}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Hd.Dim,
+                                maxLines = 1,
+                            )
+                        }
+                    } else {
+                        Text("Загрузка…", color = Hd.Muted, modifier = Modifier.weight(1f))
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "Ещё", tint = Hd.Muted)
+                        }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Скопировать @username", color = Hd.Text) },
+                                onClick = {
+                                    menu = false
+                                    val handle = target?.username
+                                    if (handle != null) {
+                                        copyText(context, "username", "@$handle")
+                                        onToast("Скопировано")
+                                    } else onToast("У профиля нет публичного @username")
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Открыть в Telegram", color = Hd.Text) },
+                                onClick = {
+                                    menu = false
+                                    val link = telegramLink(target?.username)
+                                    if (!openLink(context, link)) onToast("Нет ссылки Telegram")
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Ссылки на все чаты", color = Hd.Text) },
+                                onClick = {
+                                    menu = false
+                                    linksOpen = true
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (vm.profileBusy) "Обновляю профиль…" else "Обновить профиль",
+                                        color = if (vm.profileBusy) Hd.Dim else Hd.Text,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Refresh, contentDescription = null, tint = Hd.Accent)
+                                },
+                                enabled = !vm.profileBusy,
+                                onClick = {
+                                    menu = false
+                                    enrichProfile()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Собрать архив ленты", color = Hd.Text) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Notifications,
+                                        contentDescription = null,
+                                        tint = Hd.Accent2,
+                                    )
+                                },
+                                enabled = !actionBusy && job == null,
+                                onClick = {
+                                    menu = false
+                                    collect()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Глубокий скан", color = Hd.Text) },
+                                onClick = {
+                                    menu = false
+                                    actionBusy = true
+                                    vm.startScan(tgId, deep = true) { result ->
+                                        actionBusy = false
+                                        result.onSuccess {
+                                            job = it
+                                            onToast("Глубокий скан запущен")
+                                        }.onFailure { onToast(it.message ?: "Не удалось запустить скан") }
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Удалить профиль", color = Hd.Bad) },
+                                leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = Hd.Bad) },
+                                onClick = {
+                                    menu = false
+                                    confirmDelete = true
+                                },
+                            )
+                        }
+                    }
+                }
+                data?.let { t ->
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Chip("${t.groupsCount} чатов", Hd.Accent2, icon = Icons.Filled.ChatBubble)
+                        Chip(compactNumber(t.activity.messages), Hd.Muted, icon = Icons.Filled.Email)
+                        Chip(compactNumber(t.activity.peers), Hd.Muted, icon = Icons.Filled.People)
+                        if (t.alertsUnread > 0) {
+                            Chip(t.alertsUnread.toString(), Hd.Bad, icon = Icons.Filled.Notifications)
+                        }
+                        if (t.giftsCount > 0) {
+                            Chip(t.giftsCount.toString(), Hd.Accent, icon = Icons.Filled.CardGiftcard)
+                        }
+                        Chip(t.lastScan ?: "не сканировалась", if (t.lastScanAt > 0) Hd.Good else Hd.Dim)
+                    }
+                    t.bio?.takeIf { it.isNotBlank() }?.let { bio ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            bio,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    val genderText = genderLabel(t.gender)
+                    if (genderText != null || t.countryName != null || !t.photoPresent) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (genderText != null) {
+                                Chip(
+                                    "${if (t.gender == "male") "♂" else "♀"} $genderText",
+                                    if (t.gender == "male") Hd.Accent2 else Hd.Warn,
+                                )
+                            }
+                            t.countryName?.let { name ->
+                                Chip("${countryFlag(t.country)} $name", Hd.Good)
+                            }
+                            if (!t.photoPresent) {
+                                TextButton(
+                                    onClick = { enrichProfile() },
+                                    enabled = !vm.profileBusy,
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                ) {
+                                    Text(
+                                        if (vm.profileBusy) "обновляю…" else "обогатить профиль",
+                                        color = Hd.Accent2,
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item("actions") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { scan() },
+                    enabled = !actionBusy && job == null,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Hd.Accent, contentColor = Hd.Black),
+                    modifier = Modifier.weight(1f).heightIn(min = 46.dp),
+                ) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Сканировать")
+                }
+                IconButton(
+                    onClick = { linksOpen = true },
+                    modifier = Modifier.semantics { contentDescription = "Ссылки на чаты" },
+                ) {
+                    Icon(Icons.Filled.Link, contentDescription = null, tint = Hd.Muted)
+                }
+                IconButton(onClick = { scope.launch { loadTarget(); loadChats(reset = true); loadFeed() } }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Обновить профиль", tint = Hd.Muted)
+                }
+            }
+        }
+
+        job?.let { current ->
+            item("job") {
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            color = Hd.Accent,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (current.kind == "scan") "Сканирую чаты" else "Собираю ленту",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Hd.Text,
+                            )
+                            Text(
+                                buildString {
+                                    append(current.phase)
+                                    if (current.total > 0) append(" · ${current.done}/${current.total}")
+                                    if (current.found > 0) append(" · найдено ${current.found}")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Hd.Muted,
+                            )
+                        }
+                        TextButton(onClick = {
+                            scope.launch {
+                                api?.cancelJob(current.key)
+                                onToast("Отменено")
+                            }
+                        }) { Text("Отменить", color = Hd.Bad) }
+                    }
+                    if (current.total > 0) {
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(
+                            progress = { current.percent },
+                            color = Hd.Accent,
+                            trackColor = Hd.Stroke,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
+
+        error?.let { message ->
+            item("error") { ErrorBanner(message, onRetry = { scope.launch { loadTarget(); loadChats(true); loadFeed() } }) }
+        }
+
+        item("tabs") {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                DetailTab.entries.forEach { item ->
+                    FilterChip(
+                        selected = tab == item,
+                        onClick = { tab = item },
+                        label = { Text(item.title) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Hd.Accent.copy(alpha = 0.18f),
+                            selectedLabelColor = Hd.Accent,
+                            labelColor = Hd.Muted,
+                            containerColor = Hd.Surface,
+                        ),
+                    )
+                }
+            }
+        }
+
+        when (tab) {
+            DetailTab.Chats -> {
+                item("chat-filter") {
+                    HdTextField(
+                        value = chatQuery,
+                        onValueChange = { chatQuery = it },
+                        label = "Поиск по чатам",
+                        singleLine = true,
+                    )
+                }
+                item("orders") {
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(
+                            "last" to "последние",
+                            "members" to "крупные",
+                            "title" to "алфавит",
+                            "found" to "найденные",
+                        ).forEach { (key, label) ->
+                            FilterChip(
+                                selected = chatOrder == key,
+                                onClick = { chatOrder = key },
+                                label = { Text(label, fontSize = 12.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Hd.Accent2.copy(alpha = 0.16f),
+                                    selectedLabelColor = Hd.Accent2,
+                                    labelColor = Hd.Dim,
+                                    containerColor = Color.Transparent,
+                                ),
+                            )
+                        }
+                    }
+                }
+                if (chats.isEmpty() && !chatsLoading) {
+                    item("chats-empty") {
+                        EmptyState(
+                            emoji = "💬",
+                            title = "Чатов пока нет",
+                            text = "Нажми «Сканировать» — приложение проверит, в каких публичных чатах состоит пользователь.",
+                        )
+                    }
+                }
+                val shownChats = if (chatQuery.isBlank()) chats else chats.filter {
+                    it.title.contains(chatQuery, ignoreCase = true) ||
+                        (it.username?.contains(chatQuery, ignoreCase = true) == true)
+                }
+                if (shownChats.isEmpty() && chats.isNotEmpty()) {
+                    item("chats-no-match") {
+                        EmptyState(
+                            emoji = "🔍",
+                            title = "Ничего не найдено",
+                            text = "Попробуй часть названия или @username. Поиск идёт по загруженным чатам.",
+                        )
+                    }
+                }
+                items(shownChats, key = { it.tgId }) { chat ->
+                    ChatCard(chat = chat, onToast = onToast)
+                }
+                if (chatsLoading) {
+                    item("chats-loading") { LoadingBlock() }
+                }
+            }
+
+            DetailTab.Feed -> {
+                item("feed-live") {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(Hd.Good.copy(alpha = 0.14f))
+                                .padding(horizontal = 9.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.size(7.dp).background(Hd.Good, CircleShape),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (liveOn) "наблюдение включено" else "наблюдение выключено",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Hd.Good,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (messages.isEmpty()) "нет сохранённых сообщений" else "${messages.size} сообщений",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            onClick = { liveOn = !liveOn },
+                        ) {
+                            Text(
+                                if (liveOn) "Остановить" else "Включить",
+                                color = Hd.Muted,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                }
+                if (messages.isEmpty() && !feedLoading) {
+                    item("feed-empty") {
+                        EmptyState(
+                            emoji = "",
+                            icon = Icons.Filled.ChatBubble,
+                            title = "Пока тихо",
+                            text = "Нет сохранённых сообщений. Соберите доступную историю или включите наблюдение; приватные и недоступные чаты не видны.",
+                            actionLabel = "Собрать архив",
+                            onAction = { collect() },
+                        )
+                    }
+                }
+                items(messages, key = { it.id }) { message ->
+                    MessageCard(message, onToast)
+                }
+                if (feedLoading) item("feed-loading") { LoadingBlock() }
+            }
+
+            DetailTab.Network -> item("graph") {
+                GraphTab(api = api, tgId = tgId, onToast = onToast, onOpenProfile = onOpenProfile)
+            }
+            DetailTab.Gifts -> item("profile-gifts") {
+                ProfileGiftsTab(vm, tgId, onToast, onOpenProfile, onOffer = { offerQuery = it })
+            }
+        }
+    }
+
+    if (linksOpen) {
+        LinksDialog(
+            api = api,
+            tgId = tgId,
+            onDismiss = { linksOpen = false },
+            onToast = onToast,
+        )
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Удалить профиль из базы?") },
+            text = {
+                Text(
+                    "«${target?.displayName ?: tgId}» и все её чаты, сообщения и алерты исчезнут из базы.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Hd.Muted,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    vm.deleteTarget(tgId) { ok ->
+                        if (ok) {
+                            onToast("Удалено")
+                            onBack()
+                        } else onToast("Не удалось удалить")
+                    }
+                }) { Text("Удалить", color = Hd.Bad) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Отмена", color = Hd.Muted) } },
+            containerColor = Hd.Surface,
+            titleContentColor = Hd.Text,
+            textContentColor = Hd.Muted,
+        )
+    }
+}
+
+@Composable
+private fun ChatCard(chat: Chat, onToast: (String) -> Unit) {
+    val context = LocalContext.current
+    HdCard(
+        onClick = {
+            if (!openLink(context, chat.link)) {
+                onToast("У чата нет публичной ссылки")
+            }
+        },
+        onLongClick = {
+            val text = chat.link ?: chat.title
+            copyText(context, "чат", text)
+            onToast(if (chat.link != null) "Ссылка скопирована" else "Название скопировано")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .background(Hd.avatarColor(chat.tgId).copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) { Text(if (chat.isPublic) "🌐" else "🔒", fontSize = 16.sp) }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    chat.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Hd.Text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (chat.username != null) {
+                        Text(
+                            "@${chat.username}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Accent2,
+                            maxLines = 1,
+                        )
+                        if (chat.members > 0) Text(" · ", style = MaterialTheme.typography.labelSmall, color = Hd.Dim)
+                    }
+                    if (chat.members > 0) {
+                        Text(
+                            membersLabel(chat.members),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                    }
+                }
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                StatusPill(chat.status)
+                if (chat.lastMessageAt > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        relativeTime(chat.lastMessageAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Dim,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageCard(message: Message, onToast: (String) -> Unit) {
+    val context = LocalContext.current
+    HdCard(
+        onLongClick = {
+            if (message.text.isNotBlank()) {
+                copyText(context, "сообщение", message.text)
+                onToast("Текст скопирован")
+            } else {
+                onToast("В этом сообщении нет текста")
+            }
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                message.groupTitle,
+                style = MaterialTheme.typography.labelMedium,
+                color = Hd.Accent2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).clickable {
+                    if (!openLink(context, message.groupLink)) onToast("Нет ссылки на чат")
+                },
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                relativeTime(message.date),
+                style = MaterialTheme.typography.labelSmall,
+                color = Hd.Dim,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        if (message.text.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                message.text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Hd.Text,
+                maxLines = 12,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else if (message.media != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                mediaLabel(message.media) ?: "вложение",
+                style = MaterialTheme.typography.bodySmall,
+                color = Hd.Muted,
+            )
+        }
+        val meta = buildList {
+            mediaLabel(message.media)?.let { add(it) }
+            if (message.views > 0) add("${compactNumber(message.views)} просмотров")
+            if (message.replies) add("ответ")
+        }
+        if (meta.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                meta.joinToString("  ·  "),
+                style = MaterialTheme.typography.labelSmall,
+                color = Hd.Dim,
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun LinksDialog(api: Api?, tgId: Long, onDismiss: () -> Unit, onToast: (String) -> Unit) {
+    val context = LocalContext.current
+    var rows by remember { mutableStateOf<List<ChatRow>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(tgId) {
+        runCatching { api?.links(tgId, offset = 0, limit = 500) }
+            .onSuccess { rows = it?.rows.orEmpty() }
+            .onFailure { onToast(it.message ?: "Не удалось загрузить ссылки") }
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Ссылки на чаты · ${rows.size}") },
+        text = {
+            if (loading) {
+                LoadingBlock()
+            } else if (rows.isEmpty()) {
+                Text("Ссылок пока нет — сначала просканируй профиль.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+            } else {
+                LazyColumn(Modifier.heightIn(max = 430.dp)) {
+                    items(rows, key = { it.tgId }) { row ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    row.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Hd.Text,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    row.username?.let { "@$it" } ?: "приватный · ID ${row.tgId}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Hd.Dim,
+                                    maxLines = 1,
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    if (row.link != null) {
+                                        copyText(context, "link", row.link!!)
+                                        onToast("Ссылка скопирована")
+                                    } else onToast("У чата нет ссылки")
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Скопировать ссылку" },
+                            ) { Text("⧉", color = Hd.Accent2, fontSize = 16.sp) }
+                            TextButton(
+                                onClick = {
+                                    if (!openLink(context, row.link)) onToast("Нет ссылки")
+                                },
+                                modifier = Modifier.semantics { contentDescription = "Открыть ссылку" },
+                            ) { Text("↗", color = Hd.Muted, fontSize = 16.sp) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть", color = Hd.Accent) } },
+        containerColor = Hd.Surface,
+        titleContentColor = Hd.Text,
+    )
+}

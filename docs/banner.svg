@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-label="Healdragg — карта публичных чатов Telegram">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#141427"/>
+      <stop offset="0.55" stop-color="#0d0d15"/>
+      <stop offset="1" stop-color="#131020"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff79c6"/>
+      <stop offset="0.5" stop-color="#bd93f9"/>
+      <stop offset="1" stop-color="#8be9fd"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e1e2e" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#16161f" stop-opacity="0.92"/>
+    </linearGradient>
+    <linearGradient id="chip" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#bd93f9" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#8be9fd" stop-opacity="0.16"/>
+    </linearGradient>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1.4" cy="1.4" r="1.4" fill="#bd93f9" fill-opacity="0.10"/>
+    </pattern>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="340" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="340" rx="28" fill="url(#dots)"/>
+  <circle cx="80" cy="-40" r="220" fill="#bd93f9" opacity="0.10"/>
+  <circle cx="1120" cy="380" r="260" fill="#8be9fd" opacity="0.07"/>
+
+  <!-- логотип -->
+  <g transform="translate(64, 76)">
+    <rect width="96" height="96" rx="26" fill="url(#chip)" stroke="#bd93f9" stroke-opacity="0.45"/>
+    <g filter="url(#glow)">
+      <path d="M48 20 C48 20 34 20 34 36 L34 48 C34 62 40 70 48 70 C56 70 62 62 62 48 L62 36 C62 20 48 20 48 20 Z"
+            fill="none" stroke="#bd93f9" stroke-width="4" stroke-linecap="round"/>
+      <path d="M48 70 L48 80" stroke="#8be9fd" stroke-width="4" stroke-linecap="round"/>
+      <path d="M42 42 L54 42 M48 36 L48 48" stroke="#50fa7b" stroke-width="3.4" stroke-linecap="round"/>
+      <path d="M40 80 A8 8 0 0 1 56 80" fill="none" stroke="#8be9fd" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- заголовок -->
+  <text x="188" y="132" font-family="'Segoe UI', 'Inter', 'Helvetica Neue', Arial, sans-serif"
+        font-size="60" font-weight="800" letter-spacing="2" fill="url(#title)">HEALDRAGG</text>
+  <text x="190" y="168" font-family="'Segoe UI', 'Inter', Arial, sans-serif"
+        font-size="20" fill="#c9c9dd" opacity="0.92">карта публичных чатов Telegram</text>
+  <text x="190" y="198" font-family="'Segoe UI', 'Inter', Arial, sans-serif"
+        font-size="15" fill="#8b8ba7">каталог групп · бот @healdragg_bot · терминал · веб · android</text>
+
+  <!-- чипы -->
+  <g font-family="'Segoe UI', 'Inter', Arial, sans-serif" font-size="13" font-weight="600">
+    <g transform="translate(190, 224)">
+      <rect width="104" height="32" rx="16" fill="#1e1e2e" stroke="#bd93f9" stroke-opacity="0.35"/>
+      <text x="52" y="21" text-anchor="middle" fill="#bd93f9">Termux</text>
+    </g>
+    <g transform="translate(306, 224)">
+      <rect width="132" height="32" rx="16" fill="#1e1e2e" stroke="#8be9fd" stroke-opacity="0.35"/>
+      <text x="66" y="21" text-anchor="middle" fill="#8be9fd">Telegram bot</text>
+    </g>
+    <g transform="translate(450, 224)">
+      <rect width="96" height="32" rx="16" fill="#1e1e2e" stroke="#50fa7b" stroke-opacity="0.35"/>
+      <text x="48" y="21" text-anchor="middle" fill="#50fa7b">TUI</text>
+    </g>
+    <g transform="translate(558, 224)">
+      <rect width="120" height="32" rx="16" fill="#1e1e2e" stroke="#ff79c6" stroke-opacity="0.35"/>
+      <text x="60" y="21" text-anchor="middle" fill="#ff79c6">Android</text>
+    </g>
+  </g>
+
+  <!-- мини-карточка со списком -->
+  <g transform="translate(790, 44)">
+    <rect width="348" height="252" rx="20" fill="url(#card)" stroke="#bd93f9" stroke-opacity="0.28"/>
+    <text x="24" y="38" font-family="'Segoe UI', Arial, sans-serif" font-size="14" font-weight="700" fill="#f2f2f7">Чаты аккаунта 7126917488.</text>
+    <text x="24" y="60" font-family="'Segoe UI', Arial, sans-serif" font-size="11" fill="#8b8ba7">👮🏻‍♂️-админ, 🔒-приватный, ✖️-вышел</text>
+    <line x1="24" y1="76" x2="324" y2="76" stroke="#bd93f9" stroke-opacity="0.18"/>
+
+    <g font-family="'SF Mono', 'Consolas', 'Menlo', monospace" font-size="12">
+      <text x="24" y="102" fill="#8be9fd">09 нояб.</text><text x="108" y="102" fill="#f2f2f7">дд</text><text x="300" y="102" fill="#bd93f9" text-anchor="end">301</text>
+      <text x="24" y="126" fill="#f1fa8c">🔒</text><text x="44" y="126" fill="#8be9fd">10 дек.</text><text x="108" y="126" fill="#f2f2f7">Аkвариум кктека</text><text x="300" y="126" fill="#bd93f9" text-anchor="end">2750</text>
+      <text x="24" y="150" fill="#f1fa8c">🔒</text><text x="44" y="150" fill="#8be9fd">24 нояб.</text><text x="108" y="150" fill="#f2f2f7">NEFERPITU SeRv..</text><text x="300" y="150" fill="#bd93f9" text-anchor="end">1627</text>
+      <text x="24" y="174" fill="#8be9fd">24 нояб.</text><text x="108" y="174" fill="#f2f2f7">ꜰʟᴏᴡ ᴄʜᴀᴛ</text><text x="300" y="174" fill="#bd93f9" text-anchor="end">485</text>
+      <text x="24" y="198" fill="#8be9fd">04 нояб.</text><text x="108" y="198" fill="#f2f2f7">EN/RU|POCO X6 PR..</text><text x="300" y="198" fill="#bd93f9" text-anchor="end">47</text>
+      <text x="24" y="222" fill="#f1fa8c">✖️</text><text x="44" y="222" fill="#8be9fd">29 авг.</text><text x="108" y="222" fill="#f2f2f7">Стак#эгоистов🥷</text><text x="300" y="222" fill="#bd93f9" text-anchor="end">2</text>
+    </g>
+    <text x="24" y="244" font-family="'Segoe UI', Arial, sans-serif" font-size="10" fill="#8b8ba7">Всего 115, cтρаница 1 из 8</text>
+  </g>
+</svg>

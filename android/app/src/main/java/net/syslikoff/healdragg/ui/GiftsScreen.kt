@@ -1,0 +1,2276 @@
+package net.syslikoff.healdragg.ui
+
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.CardGiftcard
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+private const val TASK_ACTIVE = 0
+private const val TASK_PROFILE = 1
+private const val TASK_COLLECTIONS = 2
+private const val TASK_OWNERS = 3
+private const val TASK_HISTORY = 4
+
+/**
+ * Подарки Telegram: кто, кому, что и когда дарил. Обход идёт по профилям:
+ * цель → её дарители → их дарители, с ограничением числа профилей.
+ */
+@Composable
+fun GiftsScreen(
+    vm: AppViewModel,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit = {},
+    onOpenAccounts: () -> Unit = {},
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val api = vm.api
+    val currentApi by rememberUpdatedState(api)
+    var showOfferCandidates by rememberSaveable { mutableStateOf(false) }
+    var offerQuery by rememberSaveable { mutableStateOf("") }
+    var selectedOwnerId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var selectedOwner by remember { mutableStateOf<NftOwner?>(null) }
+    val owner = selectedOwner?.takeIf { it.tgId == selectedOwnerId } ?: selectedOwnerId?.let {
+        NftOwner(tgId = it, username = null, name = null, nft = 0, onChain = 0, hosted = 0, seenAt = 0)
+    }
+    var query by rememberSaveable { mutableStateOf("") }
+    var depth by rememberSaveable { mutableStateOf(8) }
+    var maxProfiles by rememberSaveable { mutableStateOf(50_000) }
+    var nftOnly by rememberSaveable { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var job by remember { mutableStateOf<Job?>(null) }
+    var heavyTasks by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var heavyErrors by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var allJobs by remember { mutableStateOf<List<Job>>(emptyList()) }
+    var chainRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var archivedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var archivedChains by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var savedRuns by remember { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var savedRunLimit by remember { mutableStateOf(100) }
+    var chainRunLimit by remember { mutableStateOf(100) }
+    var rows by remember { mutableStateOf<List<GiftItem>>(emptyList()) }
+    var summary by remember { mutableStateOf(GiftSummary()) }
+    var loading by remember { mutableStateOf(true) }
+    var mode by rememberSaveable { mutableStateOf(0) }
+    var taskSection by rememberSaveable { mutableStateOf(TASK_ACTIVE) }
+    var historySection by rememberSaveable { mutableStateOf(0) }
+    val showDeleted = mode == 3 && taskSection == TASK_HISTORY && historySection == 2
+    var nftFiltersOpen by rememberSaveable { mutableStateOf(false) }
+    // Каждая вкладка сохраняет свою позицию при переключении.
+    val giftsListState = rememberLazyListState()
+    val nftListState = rememberLazyListState()
+    val ownersListState = rememberLazyListState()
+    val activeTaskListState = rememberLazyListState()
+    val profileTaskListState = rememberLazyListState()
+    val collectionTaskListState = rememberLazyListState()
+    val ownersTaskListState = rememberLazyListState()
+    val historyGiftsListState = rememberLazyListState()
+    val historyNftListState = rememberLazyListState()
+    val historyArchivedListState = rememberLazyListState()
+    val listState = when (mode) {
+        0 -> giftsListState
+        1 -> nftListState
+        2 -> ownersListState
+        else -> when (taskSection) {
+            TASK_ACTIVE -> activeTaskListState
+            TASK_PROFILE -> profileTaskListState
+            TASK_COLLECTIONS -> collectionTaskListState
+            TASK_OWNERS -> ownersTaskListState
+            else -> when (historySection) {
+                0 -> historyGiftsListState
+                1 -> historyNftListState
+                else -> historyArchivedListState
+            }
+        }
+    }
+    var chain by rememberSaveable { mutableStateOf("") }
+    var giftChain by rememberSaveable { mutableStateOf("") }
+    var giftSort by rememberSaveable { mutableStateOf("discovered") }
+    var giftTotal by remember { mutableStateOf(0) }
+    var giftSnapshot by remember { mutableStateOf(0L) }
+    var giftMoreBusy by remember { mutableStateOf(false) }
+    var chainRequests by rememberSaveable { mutableStateOf(2_000) }
+    var profileBudget by rememberSaveable { mutableStateOf(200) }
+    var nftRows by remember { mutableStateOf<List<NftItem>>(emptyList()) }
+    var nftSummary by remember { mutableStateOf(NftSummary()) }
+    var nftOwnersList by remember { mutableStateOf<List<NftOwner>>(emptyList()) }
+    var collections by remember { mutableStateOf<List<NftCollection>>(emptyList()) }
+    var nftQuery by rememberSaveable { mutableStateOf("") }
+    var nftSort by rememberSaveable { mutableStateOf("value") }
+    var nftHasMore by remember { mutableStateOf(false) }
+    var nftResale by rememberSaveable { mutableStateOf(false) }
+    var nftCollection by rememberSaveable { mutableStateOf("") }
+    var nftGender by rememberSaveable { mutableStateOf("") }
+    var nftCountry by rememberSaveable { mutableStateOf("") }
+    var nftDistribution by remember { mutableStateOf<NftDistribution?>(null) }
+    var nftTotal by remember { mutableStateOf(0) }
+    var ownerQuery by rememberSaveable { mutableStateOf("") }
+    var ownerTotal by remember { mutableStateOf(0) }
+    var nftMoreBusy by remember { mutableStateOf(false) }
+    var nftLoading by remember { mutableStateOf(false) }
+    var nftGeneration by remember { mutableStateOf(0) }
+    var lastNftKey by remember { mutableStateOf<List<String>?>(null) }
+    var lastNftClient by remember { mutableStateOf<Api?>(null) }
+    var reloadGeneration by remember { mutableStateOf(0) }
+    var pendingCsv by remember { mutableStateOf<ByteArray?>(null) }
+    val saveCsv = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        val payload = pendingCsv
+        pendingCsv = null
+        if (uri == null || payload == null) return@rememberLauncherForActivityResult
+        val ok = writeDocument(context, uri, payload)
+        onToast(if (ok) "CSV сохранён" else "Не удалось записать CSV")
+    }
+
+    if (showOfferCandidates) {
+        BackHandler { showOfferCandidates = false }
+        if (offerQuery.isNotBlank()) {
+            QuickOfferScreen(vm, slug = offerQuery, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts)
+        } else {
+            OfferCandidatesScreen(vm, onBack = { showOfferCandidates = false }, onOpenAccounts = onOpenAccounts, onOpenProfile = { key ->
+                showOfferCandidates = false
+                onOpenProfile(key)
+            })
+        }
+        return
+    }
+    owner?.let {
+        BackHandler { selectedOwner = null; selectedOwnerId = null }
+        OwnerGiftsScreen(vm, it, onBack = { selectedOwner = null; selectedOwnerId = null }, onToast = onToast, onOpenProfile = onOpenProfile,
+            onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
+        return
+    }
+
+    fun nftKey(): List<String> = listOf(chain, nftQuery.trim(), nftSort, nftResale.toString(), nftCollection, nftGender, nftCountry)
+
+    suspend fun reload() {
+        val client = api ?: run { loading = false; return }
+        val generation = ++reloadGeneration
+        val requestOwners = mode == 2
+        val requestedOwner = ownerQuery.trim().ifBlank { null }
+        val onlyNft = nftOnly
+        val giftChainArg = giftChain.ifBlank { null }
+        val giftSortArg = giftSort
+        loading = true
+        try {
+            val page = client.gifts(nftOnly = onlyNft, chain = giftChainArg, sort = giftSortArg, lite = true)
+            if (generation != reloadGeneration || client !== currentApi || onlyNft != nftOnly || giftChainArg != giftChain.ifBlank { null } || giftSortArg != giftSort) return
+            rows = page.rows
+            giftTotal = page.total
+            giftSnapshot = page.snapshotId
+            summary = page.summary
+            if (requestOwners) {
+                val owners = client.giftOwners(q = requestedOwner, limit = 500)
+                if (generation != reloadGeneration || client !== currentApi || requestedOwner != ownerQuery.trim().ifBlank { null }) return
+                nftOwnersList = owners
+                ownerTotal = owners.size
+            }
+        } catch (exc: CancellationException) {
+            throw exc
+        } catch (exc: Exception) {
+            if (generation == reloadGeneration) error = exc.message ?: "Не удалось прочитать подарки"
+        } finally {
+            if (generation == reloadGeneration) loading = false
+        }
+    }
+
+    fun loadMoreGifts() {
+        val client = api ?: return
+        if (giftMoreBusy || loading || rows.size >= giftTotal) return
+        val generation = reloadGeneration
+        val start = rows.size
+        val snapshot = giftSnapshot
+        val onlyNft = nftOnly
+        val chain = giftChain.ifBlank { null }
+        val sort = giftSort
+        giftMoreBusy = true
+        scope.launch {
+            try {
+                val page = client.gifts(nftOnly = onlyNft, chain = chain, sort = sort, lite = true, offset = start, snapshotId = snapshot)
+                if (generation == reloadGeneration && client === currentApi && onlyNft == nftOnly && chain == giftChain.ifBlank { null } && sort == giftSort) {
+                    rows = (rows + page.rows).distinctBy { it.id }
+                    giftTotal = page.total
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message ?: "Не удалось загрузить подарки" }
+            finally { giftMoreBusy = false }
+        }
+    }
+
+    suspend fun loadNft(reset: Boolean) {
+        val client = api ?: return
+        if (reset) nftGeneration++
+        val generation = nftGeneration
+        val requestedKey = nftKey()
+        val chainArg = chain.ifBlank { null }
+        val query = nftQuery.trim().ifBlank { null }
+        val offset = if (reset) 0 else nftRows.size
+        val sort = nftSort
+        val resale = nftResale
+        val collection = nftCollection.ifBlank { null }
+        if (reset) nftLoading = true
+        try {
+            val page = client.giftsNft(chain = chainArg, q = query, sort = sort, limit = 200,
+                offset = offset, resaleOnly = resale, collection = collection,
+                gender = nftGender.ifBlank { null }, country = nftCountry.ifBlank { null }, distribution = reset)
+            if (generation != nftGeneration || requestedKey != nftKey() || client !== currentApi) return
+            lastNftKey = requestedKey
+            lastNftClient = client
+            nftSummary = page.summary
+            if (reset) nftDistribution = page.distribution
+            collections = page.collections
+            nftRows = if (reset) page.rows else (nftRows + page.rows).distinctBy { row -> row.slug }
+            nftTotal = page.total
+            nftHasMore = nftRows.size < page.total
+        } catch (exc: CancellationException) {
+            throw exc
+        } catch (exc: Exception) {
+            if (generation == nftGeneration && requestedKey == nftKey() && client === currentApi)
+                error = exc.message ?: "Не удалось прочитать базу NFT"
+        } finally {
+            if (reset && generation == nftGeneration) nftLoading = false
+        }
+    }
+
+    fun loadMoreNft() {
+        if (nftMoreBusy || nftLoading || !nftHasMore || lastNftKey != nftKey()) return
+        nftMoreBusy = true
+        scope.launch {
+            try { loadNft(reset = false) } finally { nftMoreBusy = false }
+        }
+    }
+
+    fun exportNft() {
+        scope.launch {
+            val client = api ?: return@launch
+            onToast("Готовлю CSV…")
+            runCatching {
+                client.nftCsv(
+                    chain = chain.ifBlank { null },
+                    q = nftQuery.trim().ifBlank { null },
+                    sort = nftSort,
+                    resaleOnly = nftResale,
+                    collection = nftCollection.ifBlank { null },
+                    gender = nftGender.ifBlank { null }, country = nftCountry.ifBlank { null },
+                )
+            }
+                .onSuccess { payload ->
+                    pendingCsv = payload
+                    saveCsv.launch("healdragg-nft.csv")
+                }
+                .onFailure { onToast(it.message ?: "Не удалось выгрузить CSV") }
+        }
+    }
+
+    LaunchedEffect(api, mode, nftOnly, giftChain, giftSort, ownerQuery) {
+        if (mode == 2 && ownerQuery.isNotBlank()) delay(400)
+        reload()
+    }
+    LaunchedEffect(api, mode, chain, nftQuery, nftSort, nftResale, nftCollection, nftGender, nftCountry) {
+        if (mode == 0 || api == null || (lastNftKey == nftKey() && lastNftClient === api)) return@LaunchedEffect
+        if (nftQuery.isNotBlank()) delay(400)
+        loadNft(reset = true)
+    }
+
+    // При возврате на экран получаем состояние из движка, а не из remember.
+    LaunchedEffect(api, savedRunLimit, chainRunLimit, showDeleted, mode) {
+        val client = api ?: return@LaunchedEffect
+        while (true) {
+            runCatching { client.jobs() }.onSuccess { jobs ->
+                allJobs = jobs.filter { !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles") }
+                val active = jobs.firstOrNull {
+                    !it.finished && it.kind in listOf("gifts", "giftchain", "giftrefresh", "giftprofiles")
+                }
+                if (job == null && active != null) job = active
+                heavyTasks = jobs.filter { !it.finished && it.kind in listOf("gift_heavy", "gift_heavy_watch") }
+            }
+            if (mode == 3) {
+                runCatching { client.giftRuns(limit = savedRunLimit) }.onSuccess { savedRuns = it }
+                runCatching { client.failedHeavyTasks() }.onSuccess { heavyErrors = it }
+                runCatching { client.nftChainRuns(limit = chainRunLimit) }.onSuccess { chainRuns = it }
+            }
+            if (showDeleted) {
+                runCatching { client.giftRuns(limit = savedRunLimit, archived = true) }.onSuccess { archivedRuns = it }
+                runCatching { client.nftChainRuns(archived = true, limit = chainRunLimit) }.onSuccess { archivedChains = it }
+            }
+            delay(3_000)
+        }
+    }
+
+    LaunchedEffect(job?.key) {
+        val key = job?.key ?: return@LaunchedEffect
+        val client = api ?: return@LaunchedEffect
+        while (true) {
+            delay(5_000)
+            val poll = runCatching { client.jobs().firstOrNull { it.key == key } }
+            if (poll.isFailure) continue  // временный сбой API не скрывает текущий обход
+            val fresh = poll.getOrNull()
+            if (fresh == null) {
+                job = null
+                break
+            }
+            job = fresh
+            if (!fresh.finished) {
+                // real-time: пока идёт обход, показываем уже найденное
+                // Автообновление не должно сбрасывать загруженные страницы.
+                if (mode == 1 && nftRows.size <= 200 && !nftMoreBusy) loadNft(reset = true)
+                if (mode == 0 && rows.size <= 100 && !giftMoreBusy) reload()
+            }
+            if (fresh.finished) {
+                if (fresh.error != null) {
+                    error = fresh.error
+                    onToast("Обход прервался: ${fresh.error}")
+                } else {
+                    if (fresh.kind == "giftprofiles" && (fresh.state?.optInt("errors") ?: 0) > 0) {
+                        val lastError = fresh.state?.str("last_error")
+                        error = "Сбор завершён с ошибками: ${fresh.state?.optInt("errors") ?: 0}" +
+                            if (lastError != null) ". Последняя ошибка: $lastError" else ""
+                    }
+                    onToast(when (fresh.kind) {
+                        "giftchain" -> "Поиск завершён: новых NFT ${fresh.found}"
+                        "giftprofiles" -> if (fresh.state?.optInt("owners_total") == 0) "Новых владельцев для чтения нет" else
+                            "Обработано профилей: ${fresh.done} · новых подарков: ${fresh.found} · ошибок: ${fresh.state?.optInt("errors") ?: 0}"
+                        else -> "Готово: новых подарков ${fresh.found}"
+                    })
+                }
+                reload()
+                if (mode == 1 && nftRows.size <= 200 && !nftMoreBusy) loadNft(reset = true)
+                delay(1_500)
+                job = null
+                break
+            }
+        }
+    }
+
+    fun openGiftOwner(id: Long) {
+        scope.launch {
+            val client = api ?: return@launch
+            runCatching { client.giftOwners(q = id.toString(), limit = 100).firstOrNull { it.tgId == id } }
+                .onSuccess { owner ->
+                    if (owner != null) { selectedOwner = owner; selectedOwnerId = owner.tgId } else onOpenProfile(id.toString())
+                }
+                .onFailure { error = it.message ?: "Не удалось открыть профиль" }
+        }
+    }
+
+    fun refreshKnown() {
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.refreshGifts(limit = 500, perProfile = 1000) { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                onToast("Обновляю уже известные профили…")
+            }.onFailure { error = it.message ?: "Не удалось запустить обновление" }
+        }
+    }
+
+    fun startChain() {
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.startNftChain(chainRequests) { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                mode = 1
+                onToast("Обход NFT-коллекций запущен")
+            }.onFailure { error = it.message ?: "Не удалось запустить обход NFT" }
+        }
+    }
+
+    fun startProfiles() {
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.startNftProfiles(profileBudget) { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                mode = 2
+                onToast("Читаю подарки владельцев NFT…")
+            }.onFailure { error = it.message ?: "Не удалось запустить обход профилей" }
+        }
+    }
+
+    fun start() {
+        val target = query.trim()
+        if (target.isEmpty()) {
+            onToast("Вставь @username, ссылку t.me/… или ID")
+            return
+        }
+        if (busy || job != null) return
+        busy = true
+        error = null
+        vm.crawlGifts(target, depth, maxProfiles) { result ->
+            busy = false
+            result.onSuccess {
+                job = it
+                onToast("Обход запущен")
+            }.onFailure { error = it.message ?: "Не удалось запустить обход" }
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = mode.coerceIn(0, 3), containerColor = Hd.Bg, contentColor = Hd.Accent) {
+            listOf("Подарки", "NFT", "Владельцы", "Задачи").forEachIndexed { index, label ->
+                Tab(selected = mode == index, onClick = { mode = index }, text = {
+                    Text(label, maxLines = 1, style = MaterialTheme.typography.labelSmall, overflow = TextOverflow.Ellipsis)
+                })
+            }
+        }
+        if (mode == 3) {
+            ScrollableTabRow(selectedTabIndex = taskSection.coerceIn(0, 4), edgePadding = 8.dp,
+                containerColor = Hd.Surface, contentColor = Hd.Accent) {
+                listOf("Активные", "Профиль", "Коллекции", "Владельцы", "История").forEachIndexed { index, label ->
+                    Tab(selected = taskSection == index, onClick = { taskSection = index }, text = {
+                        Text(label, maxLines = 1, style = MaterialTheme.typography.labelSmall, overflow = TextOverflow.Ellipsis)
+                    })
+                }
+            }
+        }
+        if (mode == 3 && taskSection == TASK_HISTORY) {
+            TabRow(selectedTabIndex = historySection.coerceIn(0, 2), containerColor = Hd.Surface, contentColor = Hd.Accent) {
+                listOf("Обходы", "Поиск NFT", "Удалённые").forEachIndexed { index, label ->
+                    Tab(selected = historySection == index, onClick = { historySection = index }, text = {
+                        Text(label, maxLines = 1, style = MaterialTheme.typography.labelSmall, overflow = TextOverflow.Ellipsis)
+                    })
+                }
+            }
+        }
+    RefreshableBox(
+        refreshing = loading && rows.isNotEmpty(),
+        onRefresh = { scope.launch { reload(); if (mode == 1 || mode == 2 || mode == 3) loadNft(reset = true) } },
+        modifier = Modifier.weight(1f),
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 96.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            error?.let { message ->
+                item("error") {
+                    ErrorBanner(message = message, onRetry = {
+                        error = null
+                        scope.launch { reload(); if (mode != 0) loadNft(reset = true) }
+                    })
+                    TextButton(onClick = { error = null }) { Text("Скрыть сообщение") }
+                }
+            }
+
+            if (mode != 3 && (allJobs.isNotEmpty() || heavyTasks.isNotEmpty() || job?.finished == false || heavyErrors.isNotEmpty())) {
+                item("active-tasks-shortcut") {
+                    val count = maxOf(allJobs.size + heavyTasks.size, if (job?.finished == false) 1 else 0)
+                    HdCard(onClick = { mode = 3; taskSection = TASK_ACTIVE }, contentPadding = PaddingValues(12.dp)) {
+                        Text(if (count > 0) "Активные задачи: $count  ›" else "Задачи требуют внимания  ›",
+                            color = Hd.Accent, style = MaterialTheme.typography.titleSmall)
+                        Text(job?.phase ?: if (heavyErrors.isNotEmpty()) "Есть остановленные задачи с ошибкой" else "Открыть управление задачами",
+                            color = Hd.Muted, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                    }
+                }
+            }
+            if (mode == 0) {
+            item("summary") {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    StatTile("${summary.total}", "подарков", Hd.Accent2)
+                    StatTile("${summary.nft}", "NFT", Hd.Accent)
+                    StatTile("${summary.owners}", "профилей", Hd.Good)
+                    StatTile("${summary.senders}", "дарителей", Hd.Text)
+                }
+            }
+
+                item("start-gift-task") {
+                    OutlinedButton(onClick = { mode = 3; taskSection = TASK_PROFILE }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Собрать подарки профиля")
+                    }
+                }
+            }
+            if (mode == 0) {
+                item("filter") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = !nftOnly,
+                            onClick = { nftOnly = false },
+                            label = { Text("Все · ${summary.total}") },
+                            colors = giftChipColors(),
+                        )
+                        FilterChip(
+                            selected = nftOnly,
+                            onClick = { nftOnly = true },
+                            label = { Text("NFT · ${summary.nft}") },
+                            colors = giftChipColors(),
+                        )
+                    }
+                }
+
+                item("gift-sort") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = giftSort == "discovered", onClick = { giftSort = "discovered" }, label = { Text("Недавно найдены") }, colors = giftChipColors())
+                        FilterChip(selected = giftSort == "date", onClick = { giftSort = "date" }, label = { Text("Дата подарка") }, colors = giftChipColors())
+                    }
+                    Text("Недавно найдены — порядок добавления в базу, не дата отправки подарка. Список обновляется во время сбора.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                }
+
+                item("gift-address-filter") {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("" to "Любой адрес", "wallet" to "Есть адрес", "telegram" to "Без адреса").forEach { (value, label) ->
+                            FilterChip(selected = giftChain == value, onClick = { giftChain = value },
+                                label = { Text(label) }, colors = giftChipColors())
+                        }
+                    }
+                }
+
+                if (loading && rows.isEmpty()) {
+                    item("loading") { LoadingBlock() }
+                }
+
+                if (!loading && rows.isEmpty()) {
+                    item("empty") {
+                        if (nftOnly && summary.total > 0) {
+                            EmptyState(
+                                emoji = "",
+                                icon = Icons.Filled.AutoAwesome,
+                                title = "NFT пока не найдено",
+                                text = "Собери подарки по профилю, где они точно есть, или запусти " +
+                                    "поиск коллекций в разделе «Задачи».",
+                            )
+                        } else {
+                            EmptyState(
+                                emoji = "",
+                                icon = Icons.Outlined.CardGiftcard,
+                                title = "Подарков пока нет",
+                                text = "Открой «Собрать подарки профиля» и запусти сбор: приложение покажет, " +
+                                    "кто, кому, что и когда дарил — включая NFT.",
+                            )
+                        }
+                    }
+                }
+
+                items(rows, key = { it.id }) { gift ->
+                    GiftCard(gift = gift, api = api, onToast = onToast, onOpenProfile = onOpenProfile,
+                        onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
+                }
+                if (rows.isNotEmpty() && rows.size < giftTotal) item("more-gifts") {
+                    OutlinedButton(onClick = { loadMoreGifts() }, enabled = !giftMoreBusy && !loading, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (giftMoreBusy) "Загружаю…" else "Показать ещё · ${rows.size} из $giftTotal")
+                    }
+                    if (job?.finished == false && rows.size > 100) TextButton(onClick = { scope.launch { reload() } }) { Text("Обновить новые находки") }
+                }
+            }
+
+            if (mode == 1) {
+                item("nftSearch") {
+                    HdCard(contentPadding = PaddingValues(12.dp)) {
+                        HdTextField(
+                            value = nftQuery,
+                            onValueChange = { nftQuery = it.take(80) },
+                            label = "Поиск по базе NFT",
+                            hint = "ник, id, PlushPepe, адрес кошелька",
+                            singleLine = true,
+                            trailing = if (nftQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { nftQuery = "" }) {
+                                        Icon(
+                                            Icons.Filled.Clear,
+                                            contentDescription = "Очистить поиск",
+                                            tint = Hd.Muted,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            if (api == null) "Движок не запущен"
+                            else if (!nftLoading && lastNftKey != nftKey() && error != null) "Результаты не загружены"
+                            else if (nftLoading || lastNftKey != nftKey()) "Обновляю результаты…"
+                            else if (nftRows.isEmpty()) "В базе пока ничего не найдено"
+                            else "Найдено ${compactNumber(nftTotal)} · показано ${compactNumber(nftRows.size)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                        if (nftResale || nftCollection.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (nftResale) {
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = { nftResale = false },
+                                        label = { Text("только ресейл") },
+                                        trailingIcon = {
+                                            Icon(
+                                                Icons.Filled.Clear,
+                                                contentDescription = null,
+                                                tint = Hd.Muted,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        },
+                                        colors = giftChipColors(),
+                                    )
+                                }
+                                if (nftCollection.isNotBlank()) {
+                                    FilterChip(
+                                        selected = true,
+                                        onClick = { nftCollection = "" },
+                                        label = { Text(nftCollection) },
+                                        trailingIcon = {
+                                            Icon(
+                                                Icons.Filled.Clear,
+                                                contentDescription = null,
+                                                tint = Hd.Muted,
+                                                modifier = Modifier.size(14.dp),
+                                            )
+                                        },
+                                        colors = giftChipColors(),
+                                    )
+                                }
+                            }
+                        }
+                        TextButton(onClick = { nftFiltersOpen = !nftFiltersOpen }) {
+                            Text(if (nftFiltersOpen) "Скрыть фильтры и действия" else "Фильтры и действия ▾")
+                        }
+                        Text(buildString {
+                            append(when (chain) { "wallet" -> "С адресом"; "telegram" -> "Без адреса"; else -> "Любое расположение" })
+                            append(" · ")
+                            append(when (nftSort) { "resell" -> "ресейл"; "recent" -> "новые"; "num" -> "по номеру"; else -> "дороже" })
+                            if (nftGender.isNotBlank()) append(" · имена: " + when (nftGender) { "female" -> "женские"; "male" -> "мужские"; else -> "неизвестно" })
+                            if (nftCountry.isNotBlank()) append(" · страна по имени: " + (nftDistribution?.countries?.firstOrNull { it.code == nftCountry }?.name ?: nftCountry))
+                        }, color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        if (nftFiltersOpen) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Владелец · категории по имени (предположение)", color = Hd.Muted, style = MaterialTheme.typography.labelMedium)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("" to "Все", "female" to "Женские имена", "male" to "Мужские имена", "unknown" to "Неизвестно").forEach { (value, label) ->
+                                FilterChip(selected = nftGender == value, onClick = { nftGender = value },
+                                    label = { Text(label) }, colors = giftChipColors())
+                            }
+                        }
+                        Text("Предполагаемая страна по имени", color = Hd.Muted, style = MaterialTheme.typography.labelMedium)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(selected = nftCountry.isBlank(), onClick = { nftCountry = "" },
+                                label = { Text("Все") }, colors = giftChipColors())
+                            nftDistribution?.countries?.forEach { entry ->
+                                FilterChip(selected = nftCountry == entry.code, onClick = { nftCountry = entry.code },
+                                    label = { Text("${entry.name} · ${compactNumber(entry.count)}") }, colors = giftChipColors())
+                            }
+                        }
+                        nftDistribution?.let { stats ->
+                            Text("Уникальных аккаунтов: ${compactNumber(stats.owners)} · женские имена ${compactNumber(stats.female)} · мужские ${compactNumber(stats.male)} · неизвестно ${compactNumber(stats.unknown)}",
+                                color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                            Text("По текущему поиску и расположению, до фильтров пола и страны. Имя не доказывает пол, страну или владение NFT. Данные могут устареть." +
+                                if (stats.withoutOwner) " NFT без известного аккаунта не входят в число аккаунтов." else "",
+                                color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf(
+                                "value" to "Дороже",
+                                "resell" to "Ресейл",
+                                "recent" to "Новые",
+                                "num" to "По номеру",
+                            ).forEach { (value, label) ->
+                                FilterChip(
+                                    selected = nftSort == value,
+                                    onClick = { nftSort = value },
+                                    label = { Text(label) },
+                                    colors = giftChipColors(),
+                                )
+                            }
+                            FilterChip(
+                                selected = nftResale,
+                                onClick = { nftResale = !nftResale },
+                                label = { Text("На продажу") },
+                                leadingIcon = if (nftResale) {
+                                    {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = Hd.Accent,
+                                            modifier = Modifier.size(14.dp),
+                                        )
+                                    }
+                                } else {
+                                    null
+                                },
+                                colors = giftChipColors(),
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { exportNft() },
+                                enabled = nftRows.isNotEmpty(),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Выгрузить CSV", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                            }
+                            OutlinedButton(
+                                onClick = { scope.launch { loadNft(reset = true) } },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("Обновить", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                        }
+                    }
+                }
+
+                if (nftFiltersOpen) {
+                item("chain") {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(
+                            "" to "Все",
+                            "wallet" to "Есть адрес",
+                            "telegram" to "Без адреса",
+                        ).forEach { (value, label) ->
+                            FilterChip(
+                                selected = chain == value,
+                                onClick = { chain = value },
+                                label = { Text(label) },
+                                colors = giftChipColors(),
+                            )
+                        }
+                    }
+                }
+
+                }
+
+                item("nft-actions") {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { mode = 3; taskSection = TASK_COLLECTIONS }, modifier = Modifier.weight(1f)) {
+                            Text("По коллекциям", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                        }
+                        OutlinedButton(onClick = { offerQuery = ""; showOfferCandidates = true }, modifier = Modifier.weight(1f)) {
+                            Text("Подбор офферов", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                item("nftSummary") {
+                    Text("В базе: ${compactNumber(nftSummary.total)} NFT · ${compactNumber(nftSummary.owners)} владельцев",
+                        color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                    if (nftFiltersOpen) Text("С адресом: ${compactNumber(nftSummary.onChain)} · без адреса: ${compactNumber(nftSummary.hosted)}",
+                        color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                }
+
+            }
+            if (mode == 1) {
+                if (api != null && (nftLoading || (lastNftKey != nftKey() && error == null))) {
+                    item("nftLoading") { LoadingBlock() }
+                }
+                if (nftRows.isEmpty() && !nftLoading && lastNftKey == nftKey()) {
+                    item("nftEmpty") {
+                        HdCard(contentPadding = PaddingValues(16.dp)) {
+                            Text(
+                                if (nftQuery.isBlank() && nftCollection.isBlank() && !nftResale && chain.isBlank() && nftGender.isBlank() && nftCountry.isBlank())
+                                    "В базе пока пусто"
+                                else "Ничего не нашлось",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Hd.Text,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Ищи по нику или id владельца, названию коллекции " +
+                                    "(PlushPepe), номеру подарка или адресу кошелька. " +
+                                    "База пополняется обходами — открой «По коллекциям», и " +
+                                    "результат сразу появится здесь.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Hd.Muted,
+                            )
+                            if (nftQuery.isNotBlank() || nftCollection.isNotBlank() || nftResale || chain.isNotBlank() || nftGender.isNotBlank() || nftCountry.isNotBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(onClick = {
+                                    nftQuery = ""
+                                    nftCollection = ""
+                                    nftResale = false
+                                    chain = ""
+                                    nftGender = ""
+                                    nftCountry = ""
+                                }) {
+                                    Text(
+                                        "Сбросить фильтры",
+                                        color = Hd.Accent2,
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!nftLoading && lastNftKey == nftKey()) {
+                    items(nftRows, key = { "nft-${it.slug}" }) { item ->
+                        NftItemCard(item = item, api = api, onToast = onToast, onOpenProfile = onOpenProfile,
+                            onOffer = { slug -> offerQuery = slug; showOfferCandidates = true })
+                    }
+                }
+
+                if (nftHasMore && !nftLoading && lastNftKey == nftKey()) {
+                    item("nftMore") {
+                        OutlinedButton(
+                            onClick = { loadMoreNft() },
+                            enabled = !nftMoreBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                        ) {
+                            if (nftMoreBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Hd.Accent2,
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(
+                                if (nftMoreBusy) "Загружаю…" else "Показать ещё",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (mode == 2) {
+                item("ownersSearch") {
+                    HdCard(contentPadding = PaddingValues(12.dp)) {
+                        HdTextField(
+                            value = ownerQuery,
+                            onValueChange = { ownerQuery = it.take(80) },
+                            label = "Поиск владельцев",
+                            hint = "ник, имя или id",
+                            singleLine = true,
+                            trailing = if (ownerQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { ownerQuery = "" }) {
+                                        Icon(
+                                            Icons.Filled.Clear,
+                                            contentDescription = "Очистить поиск",
+                                            tint = Hd.Muted,
+                                            modifier = Modifier.size(18.dp),
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Показано ${compactNumber(ownerTotal)} владельцев и отложенных профилей",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                    }
+                }
+                item("owners-task-shortcut") {
+                    OutlinedButton(onClick = { mode = 3; taskSection = TASK_OWNERS }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Сбор профилей владельцев")
+                    }
+                }
+                if (loading && nftOwnersList.isEmpty()) {
+                    item("ownersLoading") { LoadingBlock() }
+                }
+                if (!loading && nftOwnersList.isEmpty()) {
+                    item("ownersEmpty") {
+                        EmptyState(
+                            emoji = "",
+                            icon = Icons.Filled.AutoAwesome,
+                            title = "Владельцев пока нет",
+                            text = "После обхода здесь появятся найденные владельцы NFT — " +
+                                "с числом вещей и раскладкой «кошелёк / Telegram».",
+                        )
+                    }
+                }
+                items(nftOwnersList, key = { "owner-${it.tgId}" }) { owner ->
+                    NftOwnerCard(owner = owner, onToast = onToast, onOpenProfile = { selectedOwner = owner; selectedOwnerId = owner.tgId })
+                }
+            }
+            if (mode == 3 && taskSection == TASK_ACTIVE) {
+            job?.let { current ->
+                item("job") {
+                    HdCard(contentPadding = PaddingValues(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                color = Hd.Accent,
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    when (current.kind) {
+                                        "giftchain" -> "Ищу NFT по коллекциям"
+                                        "giftprofiles" -> "Читаю подарки владельцев"
+                                        else -> "Читаю подарки"
+                                    },
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Hd.Text,
+                                )
+                                Text(
+                                    buildString {
+                                        append(current.phase)
+                                        if (current.kind == "giftprofiles") append(" · профилей ${current.done} из лимита ${current.total} · новых подарков ${current.found}")
+                                        else {
+                                            if (current.total > 0) append(" · ${current.done}/${current.total}")
+                                            if (current.kind == "giftchain") append(" · новых NFT ${current.found}")
+                                            else if (current.found > 0) append(" · новых подарков ${current.found}")
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Hd.Muted,
+                                )
+                            }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching { api?.cancelJob(current.key) ?: false }
+                                        .onSuccess { stopped ->
+                                            if (stopped) { job = null; onToast("Обход остановлен") }
+                                            else error = "Задача уже завершилась"
+                                        }
+                                        .onFailure { error = it.message ?: "Не удалось остановить задачу" }
+                                }
+                            }) { Text("Стоп", color = Hd.Bad) }
+                        }
+                        if (current.kind == "giftprofiles") {
+                            current.state?.let { state ->
+                                if (state.has("owners_total")) Text("Владельцев обработано: ${state.optInt("owners_done")} / ${state.optInt("owners_total")} · ошибок: ${state.optInt("errors")}", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                                if (state.has("page_received")) Text("В текущем профиле получено: ${state.optInt("page_received")}" +
+                                    if (!state.isNull("page_total")) " / ${state.optInt("page_total")}" else "", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                                state.str("last_error")?.let { Text("Последняя ошибка: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                            }
+                            Text("Ожидание Telegram может включать ограничение запросов и повторы. Если этап долго не меняется, проверьте сеть и журнал движка.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (current.kind == "gifts") {
+                            current.state?.let { state ->
+                                if (state.has("page_received")) Text("В текущем профиле: ${state.optInt("page_received")}" +
+                                    if (!state.isNull("page_total")) " / ${state.optInt("page_total")}" else "", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text("Ожидание включает паузу между запросами, возможный FloodWait и повторы. Недоступные профили можно повторить позже.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                        }
+                        current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                        current.state?.optJSONObject("queue")?.let { counts ->
+                            Text(
+                                "В очереди: ${counts.optInt("pending")} · недоступно: ${counts.optInt("unavailable")} · отложено: ${counts.optInt("deferred")}",
+                                style = MaterialTheme.typography.labelSmall, color = Hd.Muted,
+                            )
+                        }
+                        if (current.total > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            LinearProgressIndicator(
+                                progress = { current.percent },
+                                color = Hd.Accent,
+                                trackColor = Hd.Stroke,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            }
+
+            items(allJobs.filter { it.key != job?.key }, key = { "queued-${it.key}" }) { current ->
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Text("Другая задача: ${current.key}", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                    Text(current.phase, color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                    current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching { api?.cancelJob(current.key) ?: false }
+                                .onSuccess { stopped ->
+                                    if (stopped) { allJobs = allJobs.filterNot { it.key == current.key }; onToast("Задача остановлена") }
+                                    else error = "Задача уже завершилась"
+                                }
+                                .onFailure { error = it.message ?: "Не удалось остановить задачу" }
+                        }
+                    }) { Text("Стоп", color = Hd.Bad) }
+                }
+            }
+
+            items(heavyTasks, key = { "active-heavy-${it.targetId}" }) { current ->
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Text(
+                        (if (current.kind == "gift_heavy_watch") "Наблюдение" else "Большой профиль") +
+                            " · ID ${current.targetId}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                    )
+                    Text(current.phase + if (current.total > 0) " · ${current.done}/${current.total}" else "",
+                        style = MaterialTheme.typography.labelSmall, color = Hd.Muted)
+                    current.state?.str("waiting_for")?.let { Text("Ожидает: $it", color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                    current.state?.str("session")?.let { Text("Аккаунт: $it", color = Hd.Dim, style = MaterialTheme.typography.labelSmall) }
+                    current.state?.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { openGiftOwner(current.targetId) }) { Text("Открыть профиль") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { api?.cancelJob(current.key) ?: false }
+                                    .onSuccess { stopped ->
+                                        if (stopped) {
+                                            heavyTasks = heavyTasks.filterNot { it.key == current.key }
+                                            onToast("Задача остановлена")
+                                        } else error = "Не удалось остановить задачу: она уже завершилась"
+                                    }
+                                    .onFailure { error = it.message ?: "Не удалось остановить задачу" }
+                            }
+                        }) { Text("Стоп", color = Hd.Bad) }
+                    }
+                }
+            }
+
+            items(heavyErrors, key = { "error-heavy-${it.optLong("owner_tg_id")}" }) { failed ->
+                val id = failed.optLong("owner_tg_id")
+                HdCard(contentPadding = PaddingValues(14.dp)) {
+                    Text("Задача профиля $id остановилась", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                    failed.str("last_error")?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Hd.Warn) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { openGiftOwner(id) }) { Text("Открыть и запустить снова") }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { api?.dismissHeavyError(id) }
+                                    .onSuccess { heavyErrors = heavyErrors.filterNot { it.optLong("owner_tg_id") == id } }
+                                    .onFailure { error = it.message ?: "Не удалось скрыть сообщение" }
+                            }
+                        }) { Text("Скрыть") }
+                    }
+                }
+            }
+
+                if (allJobs.isEmpty() && heavyTasks.isEmpty() && job?.finished != false && heavyErrors.isEmpty()) {
+                    item("no-active-jobs") {
+                        HdCard {
+                            Text("Активных задач нет", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                            Text("Запустите сбор профиля, поиск по коллекциям или откройте историю задач.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                            TextButton(onClick = { taskSection = TASK_PROFILE }) { Text("Собрать подарки профиля") }
+                        }
+                    }
+                }
+            }
+            if (mode == 3) {
+                if (taskSection == TASK_PROFILE) {
+            item("form") {
+                HdCard {
+                    Text(
+                        "Подарки и дарители",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Вставь @username, ссылку t.me/… или ID профиля. Приложение соберёт, " +
+                            "кто кому и когда дарил подарки — с текстом и датой. Изображения NFT " +
+                            "загружаются с Fragment и кэшируются на устройстве.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Hd.Muted,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    HdTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = "Профиль",
+                        hint = "@durov или 777000",
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("Глубина по сети", style = MaterialTheme.typography.labelMedium, color = Hd.Dim)
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(1, 2, 3, 4, 5, 6, 7, 8).forEach { value ->
+                            FilterChip(
+                                selected = depth == value,
+                                onClick = { depth = value },
+                                label = { Text(value.toString()) },
+                                colors = giftChipColors(),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when (depth) {
+                            1 -> "1 — только этот профиль"
+                            2 -> "2 — профиль и те, кто ему дарил"
+                            3 -> "3 — дарители дарителей"
+                            8 -> "вся доступная сеть дарителей, пока хватает лимита профилей"
+                            else -> "$depth — на $depth шага по сети дарителей"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Dim,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Сколько профилей пройти",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Hd.Dim,
+                    )
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(5, 50, 250, 1_000, 5_000, 50_000).forEach { value ->
+                            FilterChip(
+                                selected = maxProfiles == value,
+                                onClick = { maxProfiles = value },
+                                label = { Text("до ${compactNumber(value)}") },
+                                colors = giftChipColors(),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = { start() },
+                        enabled = !busy && job == null && query.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Hd.Accent,
+                            contentColor = Hd.Black,
+                        ),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    ) {
+                        if (busy || job != null) {
+                            CircularProgressIndicator(
+                                strokeWidth = 2.dp,
+                                color = Hd.Black,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (job != null) "Обход идёт…" else "Собрать подарки")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { refreshKnown() },
+                        enabled = !busy && job == null && summary.total > 0,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = Hd.Accent2,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (summary.total > 0) "Обновить уже известные (${summary.owners})" else "Пока нечего обновлять",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
+
+                }
+                if (taskSection == TASK_COLLECTIONS) {
+                item("chainForm") {
+                    HdCard {
+                        Text(
+                            "Поиск NFT по коллекциям",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Hd.Text,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Поиск сначала проверяет каталог подарков и их текущие продажи, затем номера известных коллекций. " +
+                                "Найденные NFT и доступные владельцы попадают в общую базу. Каталог и данные владельцев могут быть неполными. " +
+                                "Это может занять много времени и запросов Telegram. " +
+                                "После перезапуска приложения активный поиск продолжится. После «Стоп» его можно продолжить вручную. " +
+                                "Лимит учитывает вызовы поиска; Telegram может повторить запрос внутри соединения.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Сколько запросов за проход",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Hd.Dim,
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf(500, 2_000, 10_000, 50_000, 200_000).forEach { value ->
+                                FilterChip(
+                                    selected = chainRequests == value,
+                                    onClick = { chainRequests = value },
+                                    label = { Text(compactNumber(value)) },
+                                    colors = giftChipColors(),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Лимит расходуется также на каталог и продажи; новые NFT — только те, которых ещё не было в базе. Скорость зависит от Telegram.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Dim,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = { startChain() },
+                            enabled = !busy && job == null,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Hd.Accent,
+                                contentColor = Hd.Black,
+                            ),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.AutoAwesome,
+                                contentDescription = null,
+                                tint = Hd.Black,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Искать NFT по коллекциям")
+                        }
+                        if (collections.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            val scanned = collections.sumOf { it.scanned }
+                            val total = collections.sumOf { it.total }
+                            Text(
+                                "Коллекции: ${collections.size} · просмотрено " +
+                                    "${compactNumber(scanned)} из ${compactNumber(total)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Hd.Dim,
+                            )
+                            collections.take(3).forEach { collection ->
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    (collection.title ?: collection.slugBase) +
+                                        " · ${compactNumber(collection.scanned)}/" +
+                                        compactNumber(collection.total),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Hd.Muted,
+                                )
+                                LinearProgressIndicator(
+                                    progress = { collection.percent },
+                                    color = Hd.Accent,
+                                    trackColor = Hd.Stroke,
+                                    modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+                }
+                if (taskSection == TASK_OWNERS) {
+                item("profilesForm") {
+                    HdCard {
+                        Text(
+                            "Шаг 2: профили владельцев",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Hd.Text,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Читаем подарки известных владельцев NFT и по доступным дарителям " +
+                                "продолжаем обход. Так можно найти дополнительные профили.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Hd.Muted,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            listOf(100, 200, 500, 2_000, 10_000).forEach { value ->
+                                FilterChip(
+                                    selected = profileBudget == value,
+                                    onClick = { profileBudget = value },
+                                    label = { Text("${compactNumber(value)} профилей") },
+                                    colors = giftChipColors(),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { startProfiles() },
+                            enabled = !busy && job == null && nftSummary.owners > 0,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.Person,
+                                contentDescription = null,
+                                tint = Hd.Accent2,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (nftSummary.owners > 0) "Собрать профили владельцев" else "Сначала найдите NFT",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
+                }
+                if (taskSection == TASK_HISTORY) {
+                    if (historySection == 0) {
+            items(
+                savedRuns.filter { job?.kind != "gifts" || it.optLong("id") != job?.state?.optLong("run_id") },
+                key = { "saved-run-${it.optLong("id")}" },
+            ) { run ->
+                GiftCrawlCard(
+                    run = run, api = api, canResume = !busy && job == null,
+                    onOpenProfile = onOpenProfile,
+                    onArchive = {
+                        scope.launch {
+                            runCatching { api?.archiveGiftRun(run.optLong("id"), true) ?: throw ApiException(0, "Движок не запущен") }
+                                .onSuccess { savedRuns = savedRuns.filterNot { it.optLong("id") == run.optLong("id") } }
+                                .onFailure { error = it.message ?: "Не удалось удалить из списка" }
+                        }
+                    },
+                    onResume = {
+                        scope.launch {
+                            val client = api ?: return@launch
+                            runCatching { client.resumeGiftRun(run.optLong("id")) }
+                                .onSuccess { job = it; savedRuns = savedRuns.filterNot { row -> row.optLong("id") == run.optLong("id") } }
+                                .onFailure { error = it.message ?: "Не удалось продолжить обход" }
+                        }
+                    },
+                )
+            }
+            if (savedRuns.size >= savedRunLimit && savedRunLimit < 500) {
+                item("more-saved-runs") {
+                    TextButton(onClick = { savedRunLimit = (savedRunLimit + 100).coerceAtMost(500) }) {
+                        Text("Показать ещё сохранённые обходы")
+                    }
+                }
+            }
+
+                        if (savedRuns.isEmpty()) item("no-saved-runs") { Text("Сохранённых обходов нет", color = Hd.Muted) }
+                    }
+                    if (historySection == 2) {
+                    item("archive-description") {
+                        Text("Удалённые из списка задачи можно восстановить. Собранные данные не удаляются.",
+                            color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                    }
+            if (showDeleted) {
+                items(archivedRuns, key = { "deleted-gift-${it.optLong("id")}" }) { run ->
+                    val id = run.optLong("id")
+                    HdCard {
+                        Text("Удалённый обход: ${run.optString("query")} · #$id", color = Hd.Muted)
+                        TextButton(onClick = { scope.launch {
+                            runCatching { api?.archiveGiftRun(id, false) ?: throw ApiException(0, "Движок не запущен") }
+                                .onSuccess { archivedRuns = archivedRuns.filterNot { it.optLong("id") == id } }
+                                .onFailure { error = it.message ?: "Не удалось восстановить" }
+                        } }) { Text("Восстановить") }
+                    }
+                }
+                items(archivedChains, key = { "deleted-chain-${it.optLong("id")}" }) { run ->
+                    val id = run.optLong("id")
+                    HdCard {
+                        Text("Удалённый поиск NFT #$id · ${run.optInt("used")} / ${run.optInt("budget")}", color = Hd.Muted)
+                        TextButton(onClick = { scope.launch {
+                            runCatching { api?.archiveNftChain(id, false) ?: throw ApiException(0, "Движок не запущен") }
+                                .onSuccess { archivedChains = archivedChains.filterNot { it.optLong("id") == id } }
+                                .onFailure { error = it.message ?: "Не удалось восстановить" }
+                        } }) { Text("Восстановить") }
+                    }
+                }
+                if (archivedRuns.isEmpty() && archivedChains.isEmpty()) {
+                    item("deleted-empty") { Text("Удалённых задач нет", color = Hd.Muted, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+
+                    }
+                    if (historySection == 1) {
+                items(chainRuns.filter { it.optString("status") != "running" }, key = { "chain-saved-${it.optLong("id")}" }) { run ->
+                    val id = run.optLong("id")
+                    val used = run.optInt("used")
+                    val budget = run.optInt("budget")
+                    HdCard {
+                        Text("Поиск NFT #$id · запросы $used / $budget · новых NFT ${run.optInt("new_items")}", color = Hd.Text, style = MaterialTheme.typography.titleSmall)
+                        run.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) }
+                        Text("Позиции коллекций общие: продолжение учитывает результаты других поисков.", color = Hd.Muted, style = MaterialTheme.typography.labelSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(enabled = !busy && job == null && (used < budget || budget < 2_000_000_000), onClick = {
+                                scope.launch {
+                                    val extra = if (used >= budget) minOf(chainRequests, 2_000_000_000 - budget) else 0
+                                    runCatching { api?.resumeNftChain(id, extra) ?: throw ApiException(0, "Движок не запущен") }
+                                        .onSuccess { job = it }
+                                        .onFailure { error = it.message ?: "Не удалось продолжить поиск" }
+                                }
+                            }) { Text(if (used >= budget) "Продолжить с доп. лимитом" else "Продолжить") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching { api?.archiveNftChain(id, true) ?: throw ApiException(0, "Движок не запущен") }
+                                        .onSuccess { chainRuns = chainRuns.filterNot { it.optLong("id") == id } }
+                                        .onFailure { error = it.message ?: "Не удалось удалить из списка" }
+                                }
+                            }) { Text("Удалить") }
+                        }
+                        if (used >= budget && budget < 2_000_000_000) {
+                            Text("Будет добавлено до ${minOf(chainRequests, 2_000_000_000 - budget)} запросов.", color = Hd.Dim, style = MaterialTheme.typography.labelSmall)
+                            TextButton(onClick = { taskSection = TASK_COLLECTIONS }) { Text("Изменить дополнительный лимит") }
+                        }
+                    }
+                }
+
+                if (chainRuns.size >= chainRunLimit && chainRunLimit < 500) {
+                    item("more-chain-runs") {
+                        TextButton(onClick = { chainRunLimit = (chainRunLimit + 100).coerceAtMost(500) }) {
+                            Text("Показать ещё поиски NFT")
+                        }
+                    }
+                }
+
+                    if (chainRuns.none { it.optString("status") != "running" }) item("no-chain-runs") {
+                        Text("Сохранённых поисков NFT нет", color = Hd.Muted)
+                    }
+                    }
+                }
+            }
+        }
+    }
+    }
+}
+
+@Composable
+private fun GiftCrawlCard(
+    run: org.json.JSONObject,
+    api: Api?,
+    canResume: Boolean,
+    onResume: () -> Unit,
+    onArchive: () -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val runId = run.optLong("id")
+    val counts = run.optJSONObject("queue")
+    val problemCount = (counts?.optInt("unavailable") ?: 0) + (counts?.optInt("deferred") ?: 0)
+    var expanded by remember(runId) { mutableStateOf(false) }
+    var issues by remember(runId) { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    var total by remember(runId) { mutableStateOf(0) }
+    var loading by remember(runId) { mutableStateOf(false) }
+    var issueError by remember(runId) { mutableStateOf<String?>(null) }
+    fun loadIssues(reset: Boolean) {
+        val client = api ?: return
+        if (loading) return
+        loading = true
+        scope.launch {
+            runCatching { client.giftRunIssues(runId, if (reset) 0 else issues.size) }
+                .onSuccess { (rows, count) ->
+                    issues = if (reset) rows else (issues + rows).distinctBy { it.optLong("tg_id") }
+                    total = count
+                    issueError = null
+                }
+                .onFailure { issueError = it.message ?: "Не удалось загрузить список" }
+            loading = false
+        }
+    }
+    HdCard(contentPadding = PaddingValues(14.dp)) {
+        Text("Сохранённый обход: ${run.optString("query")}", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Готово: ${counts?.optInt("done") ?: 0} · в очереди: ${counts?.optInt("pending") ?: 0} · " +
+                "недоступно: ${counts?.optInt("unavailable") ?: 0} · отложено: ${counts?.optInt("deferred") ?: 0}",
+            style = MaterialTheme.typography.labelSmall, color = Hd.Muted,
+        )
+        run.optString("error").takeIf { it.isNotBlank() && it != "null" }?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = Hd.Bad)
+        }
+        val pending = counts?.optInt("pending") ?: 0
+        val unavailable = counts?.optInt("unavailable") ?: 0
+        if (run.optString("status") != "running" &&
+            (pending > 0 || unavailable > 0 || run.optString("status") in listOf("paused", "error"))) {
+            OutlinedButton(onClick = onResume, enabled = canResume) {
+                Text(if (pending > 0 || unavailable == 0) "Продолжить обход" else "Повторить недоступные")
+            }
+        }
+        if (run.optString("status") != "running") {
+            TextButton(onClick = onArchive) { Text("Удалить") }
+        }
+        if (problemCount > 0) {
+            TextButton(onClick = {
+                expanded = !expanded
+                if (expanded) loadIssues(reset = true)
+            }) { Text(if (expanded) "Скрыть список" else "Показать недоступные и отложенные") }
+        }
+        if (expanded) {
+            if (loading && issues.isEmpty()) Text("Загружаю список…", color = Hd.Muted)
+            issueError?.let { Text(it, color = Hd.Bad, style = MaterialTheme.typography.labelSmall) }
+            issues.forEach { issue ->
+                val id = issue.optLong("tg_id")
+                val username = issue.optString("username").takeIf { it.isNotBlank() && it != "null" }
+                val label = username?.let { "@$it · ID $id" } ?: "ID $id"
+                TextButton(onClick = { onOpenProfile(username?.let { "@$it" } ?: id.toString()) }) { Text(label) }
+                val reason = if (issue.optString("state") == "deferred") {
+                    "Отложен: профиль с большим числом подарков"
+                } else {
+                    issue.optString("error").takeIf { it.isNotBlank() && it != "null" } ?: "Профиль недоступен"
+                }
+                Text(reason, style = MaterialTheme.typography.labelSmall, color = Hd.Muted)
+            }
+            if (issues.size < total) {
+                TextButton(enabled = !loading, onClick = { loadIssues(reset = false) }) {
+                    Text(if (loading) "Загружаю…" else "Показать ещё (${issues.size} из $total)")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun giftChipColors() = FilterChipDefaults.filterChipColors(
+    selectedContainerColor = Hd.Accent.copy(alpha = 0.18f),
+    selectedLabelColor = Hd.Accent,
+    labelColor = Hd.Muted,
+    containerColor = Hd.Surface,
+)
+
+
+/**
+ * Плашка подарка вместо общей иконки: цвет и узор зависят от коллекции,
+ * внутри — первые буквы названия. Узнаётся с первого взгляда, как в Telegram.
+ */
+@Composable
+private fun GiftBadge(
+    title: String,
+    token: String,
+    size: Dp = 42.dp,
+) {
+    val palette = listOf(
+        Color(0xFF8E7BFF) to Color(0xFF5B8CFF),
+        Color(0xFFFF9A6C) to Color(0xFFFFD166),
+        Color(0xFF4DD0E1) to Color(0xFF7C9BFF),
+        Color(0xFFF56CA0) to Color(0xFFB98CFF),
+        Color(0xFF7BD88F) to Color(0xFFCBE86B),
+        Color(0xFFFFB74D) to Color(0xFFF06292),
+        Color(0xFF64B5F6) to Color(0xFF4DB6AC),
+    )
+    val seed = (token.ifBlank { title }).hashCode()
+    val pair = palette[((seed % palette.size) + palette.size) % palette.size]
+    val letters = title.trim()
+        .split(" ")
+        .filter { it.isNotBlank() }
+        .take(2)
+        .map { it.first().uppercaseChar() }
+        .joinToString("")
+    Box(
+        Modifier
+            .size(size)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Brush.linearGradient(listOf(pair.first, pair.second))),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            letters.ifBlank { "★" },
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+internal fun GiftCard(
+    gift: GiftItem,
+    api: Api?,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+    onOffer: ((String) -> Unit)? = null,
+) {
+    val context = LocalContext.current
+    var detailsOpen by remember(gift.id) { mutableStateOf(false) }
+    val ownerKey = gift.ownerTgId.toString()
+    HdCard(
+        onClick = { detailsOpen = true },
+        onLongClick = {
+            val payload = buildString {
+                append(gift.title)
+                gift.message?.let { append(" · «$it»") }
+                append(" · ${gift.ownerHandle}")
+                if (gift.fromTgId > 0) {
+                    append(" ← ")
+                    append(gift.fromUsername?.let { "@$it" } ?: gift.fromName ?: "id ${gift.fromTgId}")
+                }
+            }
+            copyText(context, "gift", payload)
+            onToast("Подарок скопирован")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            if (gift.isNft) {
+                GiftArtwork(slug = gift.slug, title = gift.title, size = 68.dp) {
+                    GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 68.dp)
+                }
+            } else {
+                RegularGiftArtwork(api = api, giftId = gift.giftId, title = gift.title, size = 68.dp) {
+                    GiftBadge(title = gift.title, token = gift.title, size = 68.dp)
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        gift.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (gift.isNft) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "NFT",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Accent,
+                            modifier = Modifier
+                                .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                }
+                if (gift.presence != "visible") {
+                    Text(
+                        when (gift.presence) {
+                            "previous_owner" -> "Предыдущий владелец"
+                            "hidden" -> "Не виден в профиле · возможно скрыт"
+                            else -> "Не виден в профиле · скрыт или продан"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Hd.Warn,
+                    )
+                }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "кому: ${gift.ownerName ?: gift.ownerHandle}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    buildString {
+                        append("от: ")
+                        append(
+                            when {
+                                gift.nameHidden -> "аноним"
+                                gift.fromTgId > 0 -> gift.fromName
+                                    ?: gift.fromUsername?.let { "@$it" }
+                                    ?: "id ${gift.fromTgId}"
+                                else -> "неизвестно"
+                            },
+                        )
+                        if (gift.stars > 0) append(" · ${gift.stars}★")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                gift.message?.takeIf { it.isNotBlank() }?.let { message ->
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        "«$message»",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Hd.Text,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (gift.isNft) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (gift.num > 0) Chip("#${gift.num}", Hd.Accent)
+                        Chip(if (gift.onChain) "кошелёк" else "Telegram", if (gift.onChain) Hd.Warn else Hd.Accent2)
+                        gift.priceLabel?.let { Chip(it, Hd.Warn) }
+                        if (gift.availabilityTotal > 0) {
+                            Chip(
+                                "${gift.availabilityIssued}/${gift.availabilityTotal}",
+                                Hd.Dim,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = { onOpenProfile(ownerKey) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                        ) {
+                            Text(
+                                "Профиль владельца",
+                                color = Hd.Accent2,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                        if (onOffer != null && !gift.slug.isNullOrBlank()) {
+                            TextButton(onClick = { onOffer(gift.slug) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                                Text("Подбор оффера", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                        gift.nftLink?.let { link ->
+                            TextButton(
+                                onClick = {
+                                    if (!openLink(context, link)) {
+                                        copyText(context, "nft", link)
+                                        onToast("Ссылка на NFT скопирована")
+                                    }
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            ) {
+                                Text(
+                                    "Открыть NFT",
+                                    color = Hd.Accent,
+                                    style = MaterialTheme.typography.labelMedium,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    relativeTime(gift.date),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (gift.kind == "unique") "уник." else "обыч.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                )
+            }
+        }
+    }
+    if (detailsOpen) {
+        GiftDetailsDialog(gift, api, onDismiss = { detailsOpen = false })
+    }
+}
+
+/** Карточка одной NFT-вещи: где лежит, сколько стоит, чья и по какой ссылке. */
+@Composable
+internal fun NftItemCard(
+    item: NftItem,
+    api: Api?,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+    onOffer: ((String) -> Unit)? = null,
+) {
+    val context = LocalContext.current
+    var detailsOpen by remember(item.slug) { mutableStateOf(false) }
+    HdCard(
+        onClick = { detailsOpen = true },
+        onLongClick = {
+            val payload = buildString {
+                append(item.title)
+                if (item.num > 0) append(" #${item.num}")
+                append(" · ${item.slug}")
+                append(" · ${item.chainLabel}")
+                append(" · ${item.ownerHandle}")
+                item.priceLabel?.let { append(" · $it") }
+            }
+            copyText(context, "nft", payload)
+            onToast("NFT скопирован")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            GiftArtwork(slug = item.slug, title = item.title, size = 68.dp) {
+                GiftBadge(title = item.title, token = item.slug, size = 68.dp)
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Hd.Text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (item.num > 0) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "#${item.num}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Hd.Accent,
+                            modifier = Modifier
+                                .background(Hd.Accent.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 5.dp, vertical = 1.dp),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    item.ownerHandle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (item.ownerPresence == "hidden" || item.ownerPresence == "previous_owner") {
+                    Text("Не виден в профиле · владелец уточняется", color = Hd.Warn, style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(Modifier.height(5.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Chip(
+                        if (item.onChain) "на кошельке" else "в Telegram",
+                        if (item.onChain) Hd.Warn else Hd.Accent2,
+                    )
+                    item.priceLabel?.let { Chip(it, Hd.Accent) }
+                    if (item.availabilityTotal > 0) {
+                        Chip("${item.availabilityIssued}/${item.availabilityTotal}", Hd.Dim)
+                    }
+                }
+                Spacer(Modifier.height(2.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = { onOpenProfile(item.ownerTgId.toString()) },
+                        enabled = item.ownerTgId > 0,
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            "Профиль владельца",
+                            color = Hd.Accent2,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    if (onOffer != null) {
+                        TextButton(onClick = { onOffer(item.slug) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                            Text("Подбор оффера", color = Hd.Accent2, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            if (!openLink(context, item.nftLink)) {
+                                copyText(context, "nft", item.nftLink)
+                                onToast("Ссылка на NFT скопирована")
+                            }
+                        },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    ) {
+                        Text(
+                            "Открыть NFT",
+                            color = Hd.Accent,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                relativeTime(item.seenAt),
+                style = MaterialTheme.typography.labelSmall,
+                color = Hd.Dim,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+    if (detailsOpen) {
+        GiftDetailsDialog(
+            gift = GiftItem(
+                id = 0, ownerTgId = item.ownerTgId, ownerUsername = item.ownerUsername,
+                ownerName = item.ownerName, title = item.title, kind = "unique", stars = 0,
+                fromTgId = 0, fromUsername = null, fromName = null, message = null,
+                date = item.seenAt, isNft = true, nameHidden = false, slug = item.slug,
+                num = item.num, valueAmount = item.valueAmount, valueCurrency = item.valueCurrency,
+                resellAmount = item.resellAmount, availabilityIssued = item.availabilityIssued,
+                availabilityTotal = item.availabilityTotal, onChain = item.onChain,
+                giftAddress = item.giftAddress, ownerAddress = item.ownerAddress,
+                valueUsd = item.valueUsd, burned = item.burned,
+            ),
+            api = api,
+            onDismiss = { detailsOpen = false },
+        )
+    }
+}
+
+/** Владелец NFT: почти любой пользователь, встреченный при обходе сети. */
+@Composable
+private fun NftOwnerCard(
+    owner: NftOwner,
+    onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    HdCard(
+        onClick = { onOpenProfile(owner.username?.let { "@$it" } ?: owner.tgId.toString()) },
+        onLongClick = {
+            copyText(context, "owner", "${owner.handle} · id ${owner.tgId} · NFT ${owner.nft}")
+            onToast("Владелец скопирован")
+        },
+        contentPadding = PaddingValues(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(38.dp)
+                    .background(Hd.Good.copy(alpha = 0.16f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = Hd.Good,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    owner.handle,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Hd.Text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "id ${owner.tgId}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    if (owner.deferredCount >= 1000) "${owner.deferredCount} подарков · отложено" else "${owner.gifts} подарков · ${owner.nft} NFT",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Hd.Accent,
+                )
+                Text(
+                    "${owner.onChain} / ${owner.hosted}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Hd.Dim,
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun OwnerGiftsScreen(
+    vm: AppViewModel, owner: NftOwner, onBack: () -> Unit, onToast: (String) -> Unit,
+    onOpenProfile: (String) -> Unit,
+    onOffer: (String) -> Unit,
+) {
+    val api = vm.api
+    val scope = rememberCoroutineScope()
+    val accounts = vm.sessions.filter { it.active && it.purpose == "scan" }
+    var selectedSession by rememberSaveable(owner.tgId) { mutableStateOf("") }
+    var rows by remember(owner.tgId) { mutableStateOf<List<GiftItem>>(emptyList()) }
+    var total by remember(owner.tgId) { mutableStateOf(0) }
+    var inventory by remember(owner.tgId) { mutableStateOf<List<NftItem>>(emptyList()) }
+    var profile by remember(owner.tgId) { mutableStateOf<org.json.JSONObject?>(null) }
+    var photo by remember(owner.tgId) { mutableStateOf<ImageBitmap?>(null) }
+    var error by remember(owner.tgId) { mutableStateOf<String?>(null) }
+    var loading by remember(owner.tgId) { mutableStateOf(true) }
+    var busy by remember(owner.tgId) { mutableStateOf(false) }
+    var task by remember(owner.tgId) { mutableStateOf<Job?>(null) }
+    var controlsOpen by rememberSaveable(owner.tgId) { mutableStateOf(false) }
+
+    suspend fun loadFirst() {
+        val client = api ?: return
+        runCatching { client.gifts(owner = owner.tgId, limit = 200) }
+            .onSuccess { page ->
+                total = page.total
+                // Сохраняем уже загруженные страницы при поступлении новых записей.
+                rows = (page.rows + rows.drop(200)).distinctBy { it.id }
+            }
+            .onFailure { error = it.message }
+    }
+
+    LaunchedEffect(owner.tgId) {
+        if (api == null) { loading = false; return@LaunchedEffect }
+        loadFirst()
+        runCatching { api.giftOwnerNft(owner.tgId) }.onSuccess { inventory = it }
+        runCatching { api.heavyGiftStatus(owner.tgId) }.onSuccess { previous ->
+            previous?.str("session")?.let { if (selectedSession.isBlank()) selectedSession = it }
+            if (previous?.str("status") == "error") error = previous.str("last_error")
+        }
+        loading = false
+        val key = "gifts:heavy:${owner.tgId}"
+        while (true) {
+            val poll = runCatching { api.jobs().firstOrNull { it.key == key } }
+            if (poll.isFailure) { delay(3_000); continue }
+            val found = poll.getOrNull()
+            val wasRunning = task?.finished == false
+            task = found?.takeIf { !it.finished }
+            if (task != null || wasRunning) {
+                loadFirst()
+                runCatching { api.giftOwnerNft(owner.tgId) }.onSuccess { inventory = it }
+            }
+            if (wasRunning && found?.finished == true) {
+                if (found.error != null) error = found.error
+                else onToast(found.phase)
+            }
+            delay(3_000)
+        }
+    }
+    LaunchedEffect(owner.tgId) {
+        if (api == null) return@LaunchedEffect
+        runCatching { api.giftOwnerProfile(owner.tgId, owner.username) }.onSuccess { result ->
+            profile = result
+            result.str("photo")?.let { raw ->
+                photo = runCatching {
+                    val bytes = Base64.decode(raw, Base64.DEFAULT)
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                }.getOrNull()
+            }
+        }.onFailure { error = it.message }
+    }
+
+    fun start(watch: Boolean) {
+        val client = api ?: return
+        if (selectedSession.isBlank() || busy || task != null) return
+        busy = true
+        scope.launch {
+            runCatching { client.startHeavyGifts(owner.tgId, selectedSession, watch) }
+                .onSuccess { task = it; error = null }
+                .onFailure { error = it.message }
+            busy = false
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            TextButton(onClick = onBack) { Text("Назад к владельцам") }
+            HdCard(contentPadding = PaddingValues(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val avatar = photo
+                    if (avatar != null) {
+                        Image(avatar, contentDescription = "Аватар владельца", modifier = Modifier.size(64.dp).clip(RoundedCornerShape(18.dp)))
+                    } else {
+                        Icon(Icons.Filled.Person, contentDescription = null, tint = Hd.Good, modifier = Modifier.size(64.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        val fullName = listOfNotNull(profile?.str("first_name"), profile?.str("last_name")).joinToString(" ")
+                        Text(fullName.ifBlank { owner.name ?: owner.handle }, style = MaterialTheme.typography.titleMedium, color = Hd.Text)
+                        Text(profile?.str("username")?.let { "@$it" } ?: owner.handle, color = Hd.Muted)
+                        Text("ID ${owner.tgId}", style = MaterialTheme.typography.labelSmall, color = Hd.Dim)
+                    }
+                }
+                profile?.str("bio")?.let { Text(it, modifier = Modifier.padding(top = 8.dp), color = Hd.Text) }
+                Text("В базе: ${compactNumber(total)} · показано ${compactNumber(rows.size)}", modifier = Modifier.padding(top = 8.dp), color = Hd.Muted)
+            }
+        }
+        item("open-profile") {
+            OutlinedButton(onClick = { onOpenProfile(owner.tgId.toString()) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Профиль и OSINT-паутина")
+            }
+        }
+        item("heavy-controls") {
+            HdCard(contentPadding = PaddingValues(14.dp)) {
+                Text("Сбор и наблюдение", style = MaterialTheme.typography.titleSmall, color = Hd.Text)
+                val current = task
+                if (current == null) {
+                    TextButton(onClick = { controlsOpen = !controlsOpen }) {
+                        Text(if (controlsOpen) "Скрыть настройки" else "Настроить сбор или наблюдение")
+                    }
+                }
+                if (current != null) {
+                    Text(current.phase + if (current.total > 0) " · ${current.done}/${current.total}" else "", color = Hd.Muted)
+                    current.state?.str("session")?.let { Text("Аккаунт: $it", color = Hd.Dim, style = MaterialTheme.typography.labelSmall) }
+                    current.state?.str("last_error")?.let { Text(it, color = Hd.Warn, style = MaterialTheme.typography.labelSmall) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching { api?.cancelJob(current.key) ?: false }
+                                .onSuccess { stopped ->
+                                    if (stopped) { task = null; loadFirst(); onToast("Задача остановлена") }
+                                    else error = "Не удалось остановить задачу: она уже завершилась"
+                                }
+                                .onFailure { error = it.message }
+                        }
+                    }) { Text("Остановить", color = Hd.Bad) }
+                } else if (controlsOpen) {
+                    Text("Выберите аккаунт для одного прохода или наблюдения каждые 15 минут. После перезапуска приложения задача продолжится. Другие обходы подарков ждут завершения прохода.", color = Hd.Muted, style = MaterialTheme.typography.bodySmall)
+                    if (accounts.isEmpty()) {
+                        Text("Нет активных аккаунтов Telegram", color = Hd.Warn)
+                    } else {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            accounts.forEach { account ->
+                                FilterChip(selected = selectedSession == account.name, onClick = { selectedSession = account.name }, label = { Text(account.name) }, colors = giftChipColors())
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { start(false) }, enabled = accounts.any { it.name == selectedSession } && !busy) { Text("Один проход") }
+                            Button(onClick = { start(true) }, enabled = accounts.any { it.name == selectedSession } && !busy) { Text("Наблюдать") }
+                        }
+                    }
+                }
+            }
+        }
+        error?.let { item { Text(it, color = Hd.Warn, style = MaterialTheme.typography.bodySmall) } }
+        if (loading) item { LoadingBlock() }
+        if (!loading && rows.isEmpty() && inventory.isEmpty()) item {
+            Text("Для этого профиля пока нет сохранённых подарков.", color = Hd.Muted)
+        }
+        items(rows, key = { "gift-${it.id}" }) { gift ->
+            GiftCard(gift, api, onToast, onOpenProfile, onOffer)
+        }
+        if (rows.size < total) item("more-gifts") {
+            OutlinedButton(onClick = {
+                scope.launch {
+                    val client = api ?: return@launch
+                    runCatching { client.gifts(owner = owner.tgId, limit = 200, offset = rows.size) }
+                        .onSuccess { page -> rows = (rows + page.rows).distinctBy { it.id }; total = page.total }
+                        .onFailure { error = it.message }
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text("Показать ещё") }
+        }
+        val knownSlugs = rows.mapNotNull { it.slug }.toSet()
+        items(inventory.filterNot { it.slug in knownSlugs }, key = { "inventory-${it.slug}" }) { nft ->
+            NftItemCard(nft, api, onToast, onOpenProfile, onOffer)
+        }
+    }
+}
+
+@Composable
+private fun GiftDetailsDialog(gift: GiftItem, api: Api?, onDismiss: () -> Unit) {
+    var history by remember(gift.slug) { mutableStateOf<List<org.json.JSONObject>>(emptyList()) }
+    LaunchedEffect(gift.slug) {
+        val slug = gift.slug ?: return@LaunchedEffect
+        if (api != null) history = runCatching { api.giftHistory(slug) }.getOrDefault(emptyList())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(gift.title) },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState())) {
+                if (gift.isNft) {
+                    GiftArtwork(gift.slug, gift.title, 120.dp) {
+                        GiftBadge(title = gift.title, token = gift.slug ?: gift.title, size = 120.dp)
+                    }
+                } else {
+                    RegularGiftArtwork(api, gift.giftId, gift.title, 120.dp) {
+                        GiftBadge(title = gift.title, token = gift.title, size = 120.dp)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Владелец: ${gift.ownerName ?: gift.ownerHandle} · ID ${gift.ownerTgId}")
+                Text("От: ${gift.fromName ?: gift.fromUsername ?: if (gift.nameHidden) "аноним" else "неизвестно"}")
+                gift.message?.let { Text("Описание: $it") }
+                gift.slug?.let { Text("NFT: https://t.me/nft/$it") }
+                gift.priceLabel?.let { Text("Стоимость: $it") }
+                gift.attributes?.let { raw ->
+                    val attributes = runCatching { org.json.JSONArray(raw) }.getOrNull()
+                    if (attributes != null) for (i in 0 until attributes.length()) {
+                        val attr = attributes.optJSONObject(i) ?: continue
+                        val label = when (attr.optString("type")) {
+                            "StarGiftAttributeModel" -> "Модель"
+                            "StarGiftAttributeBackdrop" -> "Фон"
+                            "StarGiftAttributePattern" -> "Узор"
+                            else -> "Атрибут"
+                        }
+                        val rarity = attr.optInt("rarity", -1)
+                        Text("$label: ${attr.optString("name")}" + if (rarity >= 0) " · ${rarity / 10.0}%" else "")
+                    }
+                }
+                if (history.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("История наблюдений", style = MaterialTheme.typography.titleSmall)
+                    Text("Даты — время обнаружения, а не точное время передачи.", style = MaterialTheme.typography.bodySmall)
+                    history.forEach { row ->
+                        val who = row.str("owner_name") ?: row.str("owner_username") ?: "ID ${row.num("owner_tg_id")}"
+                        Text("$who · ${relativeTime(row.num("observed_at"))}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}

@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Healdragg</string>
+
+    <!-- уведомление foreground-сервиса с движком -->
+    <string name="engine_channel">Движок Healdragg</string>
+    <string name="engine_channel_desc">Панель работает в фоне</string>
+    <string name="engine_starting">Движок запускается…</string>
+    <string name="engine_on">Движок работает</string>
+    <string name="engine_failed">Движок не запустился</string>
+    <string name="engine_stop">Остановить</string>
+</resources>

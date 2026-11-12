@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          pip install -e .
+
+      - name: Линтер
+        run: ruff check healdragg tests
+
+      - name: Тесты
+        run: pytest -q
+
+      - name: CLI smoke-test
+        env:
+          HEALDRAGG_HOME: ${{ runner.temp }}/hd
+        run: |
+          healdragg demo --total 20
+          healdragg stats
+          healdragg groups 7126917488 --size 5 --json | head -20
+          healdragg doctor || true
+
+  scripts:
+    name: Скрипты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Синтаксис bash
+        run: bash -n install.sh termux/termuxctl.sh scripts/healdragg
+      - name: SVG-превью собираются
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python scripts/make_preview.py
+          test -s docs/preview.svg
